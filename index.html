@@ -214,6 +214,7 @@ tr:last-child td{border-bottom:none;}
 "use strict";
 
 /* ---------------- Constants ---------------- */
+const APP_VERSION = "0.2.0";
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -239,9 +240,8 @@ function defaultState(){
     settings:{
       preferenceSlider:5,        // 0..10
       allowOffPreference:true,
-      strictSpecialistMode:false,
       topTwoOnly:false,          // §4 rule 4 toggle
-      fairnessWeights:{missed:4, onCourt:3, bench:2, positionPurity:1} // relative priority order, higher = more important
+      fairnessWeights:{onCourt:3, bench:2, positionPurity:1} // relative priority order, higher = more important
     },
     activeTab:"setup"
   };
@@ -253,12 +253,14 @@ function newGameState(){
     rosterOffLockIds:null,      // array of playerIds|null - manual explicit roster-off selection (locked)
     fillInIds:[],               // fill-ins assigned to this game
     lockedSlots:{},             // "q-pos" -> playerId (manual lock, survives rebalance)
+    strictSpecialistMode:false, // per-game: bounded fairness deviation to protect scarce positions in roster-off
     schedule:null,              // computed: {quarters:[{onCourt:{pos:playerId|fillinId},bench:[ids],offPreference:{pos:true}}]}
     squadIds:null,              // computed regular player ids in squad (post roster-off)
     rosteredOffIds:null,        // computed
     unavailableIds:null,        // computed (regulars unavailable this game)
     shortfall:false,
-    generated:false
+    generated:false,
+    coverageWarnings:[]         // computed: [{position,count,causedBy:[names]}]
   };
 }
 
@@ -271,13 +273,20 @@ function loadState(){
     if(!raw) return defaultState();
     const parsed = JSON.parse(raw);
     const d = defaultState();
-    return Object.assign(d, parsed, {
+    const merged = Object.assign(d, parsed, {
       players: parsed.players||[],
       fillIns: parsed.fillIns||[],
       season: Object.assign(d.season, parsed.season||{}),
       games: parsed.games||{},
       settings: Object.assign(d.settings, parsed.settings||{}, {fairnessWeights:Object.assign(d.settings.fairnessWeights,(parsed.settings&&parsed.settings.fairnessWeights)||{})})
     });
+    delete merged.settings.strictSpecialistMode; // moved to per-game state
+    delete merged.settings.fairnessWeights.missed; // missed-games evenness is now a strict primary rule, not a tunable weight
+    Object.values(merged.games||{}).forEach(g=>{
+      if(typeof g.strictSpecialistMode!=="boolean") g.strictSpecialistMode=false;
+      if(!Array.isArray(g.coverageWarnings)) g.coverageWarnings=[];
+    });
+    return merged;
   }catch(e){ console.warn("Failed to load state, starting fresh.",e); return defaultState(); }
 }
 function saveState(){
@@ -303,7 +312,6 @@ function ensureGamesExist(){
 /* ============================================================
    ENGINE
    ============================================================ */
-const OFF_PREF_BASE = 20;      // base cost of playing a position outside prefs at all
 const ERROR_NO_ELIGIBLE = "NO_ELIGIBLE_PLAYER";
 
 function regularRosterInvalid(){
@@ -361,14 +369,7 @@ function planGameSquad(gameNum, cumulative){
       rosterOffCount = Math.max(0, availableRegulars.length-(7+Number(STATE.season.desiredBenchSize||0)));
     }
     if(!rosteredOffIds.length && rosterOffCount>0){
-      // auto-select: fewest cumulative missed games so far get rostered off (evens things out)
-      const ranked = availableRegulars.slice().sort((a,b)=>{
-        const ma=(cumulative.missed[a.id]||0), mb=(cumulative.missed[b.id]||0);
-        if(ma!==mb) return ma-mb;
-        const oa=(cumulative.onCourt[a.id]||0), ob=(cumulative.onCourt[b.id]||0);
-        return ob-oa; // if tied on missed, roster off whoever has played more on-court time
-      });
-      rosteredOffIds = ranked.slice(0,rosterOffCount).map(p=>p.id);
+      rosteredOffIds = selectRosterOff(availableRegulars, rosterOffCount, cumulative, gameNum, !!game.strictSpecialistMode);
     }
     const rosteredOffSet = new Set(rosteredOffIds);
     squad = availableRegulars.filter(p=>!rosteredOffSet.has(p.id))
@@ -382,6 +383,106 @@ function planGameSquad(gameNum, cumulative){
     unavailableIds, rosteredOffIds, squad,
     noBenchOnly: !shortfall && squad.length===7 && availableRegulars.length===7 && rosteredOffIds.length===0
   };
+}
+
+/* How many games strictly after gameNum this player is already known to miss —
+   used to avoid front-loading roster-off onto someone who'll naturally reach
+   missed-games parity later in the season anyway. */
+function futureAbsenceCount(player, gameNum){
+  return (player.unavailable||[]).filter(g=>g>gameNum).length;
+}
+
+/* Coverage penalty for rostering `candidate` off this round: for each position in their
+   preference list (weighted by rank — top preference matters most), penalize heavily if
+   no other still-available player also lists it, moderately if only one does, not at all
+   if 2+ remain. Also penalizes overlap with players already picked off earlier this same
+   round, weighted by both players' ranks for the shared position — the direct mechanism
+   for not rostering off two similar specialists together. */
+function rosterOffCoveragePenalty(candidate, remainingPool, pickedThisRound){
+  let penalty = 0;
+  candidate.prefs.forEach((pos,rank)=>{
+    const rankWeight = 1/(rank+1);
+    const others = remainingPool.filter(p=>p.id!==candidate.id && p.prefs.includes(pos)).length;
+    const gapPenalty = others===0 ? 100 : others===1 ? 30 : 0;
+    penalty += gapPenalty*rankWeight;
+  });
+  pickedThisRound.forEach(prev=>{
+    candidate.prefs.forEach((pos,rankC)=>{
+      const rankP = prev.prefs.indexOf(pos);
+      if(rankP>=0) penalty += 10*(1/(rankC+1) + 1/(rankP+1));
+    });
+  });
+  return penalty;
+}
+
+/* True if rostering `candidate` off would drop some position they list down to 0-1
+   other still-available covering players. */
+function rosterOffHasSevereGap(candidate, remainingPool){
+  return candidate.prefs.some(pos=>{
+    const others = remainingPool.filter(p=>p.id!==candidate.id && p.prefs.includes(pos)).length;
+    return others<=1;
+  });
+}
+
+/* Sequential greedy roster-off selection: fairness (fewest cumulative missed games) is
+   the strict primary filter — only players exactly tied for fewest missed are eligible
+   for a given pick, in default mode. Within the tied group, pick whoever's coverage
+   penalty is lowest, one slot at a time, so each pick reacts to picks already made this
+   round. When `strict` is on and the tied group has no alternative (a single option) whose
+   pick would create a severe coverage gap, allow a small, bounded look 1-2 missed-games
+   tiers outside the tied group for a pick that actually resolves the gap. */
+function selectRosterOff(pool, count, cumulative, gameNum, strict){
+  const remaining = pool.slice();
+  const picked = [];
+  const missedOf = p => cumulative.missed[p.id]||0;
+  const scoreOf = (c,remainingPool) => rosterOffCoveragePenalty(c, remainingPool, picked) + futureAbsenceCount(c, gameNum)*3;
+
+  for(let i=0;i<count && remaining.length;i++){
+    const minMissed = Math.min(...remaining.map(missedOf));
+    const tiedGroup = remaining.filter(p=>missedOf(p)===minMissed);
+
+    let best=null, bestScore=Infinity;
+    tiedGroup.forEach(c=>{
+      const s = scoreOf(c, remaining);
+      if(s<bestScore){ bestScore=s; best=c; }
+    });
+
+    if(strict && tiedGroup.length===1 && rosterOffHasSevereGap(best, remaining)){
+      const outsideTiers = Array.from(new Set(remaining.map(missedOf)))
+        .filter(m=>m>minMissed).sort((a,b)=>a-b).slice(0,2);
+      const extended = remaining.filter(p=>outsideTiers.includes(missedOf(p)));
+      let safer=null, saferScore=Infinity;
+      extended.forEach(c=>{
+        if(rosterOffHasSevereGap(c, remaining)) return; // must actually resolve the gap
+        const s = scoreOf(c, remaining);
+        if(s<saferScore){ saferScore=s; safer=c; }
+      });
+      if(safer) best=safer;
+    }
+
+    picked.push(best);
+    remaining.splice(remaining.indexOf(best),1);
+  }
+  return picked.map(p=>p.id);
+}
+
+/* After roster-off, flag any position where 0 or 1 of the resulting squad's members list
+   it in their preferences — the coverage warning is informational regardless of whether
+   strict specialist pairing is on for this game. */
+function computeCoverageWarnings(plan){
+  if(plan.shortfall) return [];
+  const warnings = [];
+  POSITIONS.forEach(pos=>{
+    const coverers = plan.squad.filter(p=>p.prefs.includes(pos));
+    if(coverers.length<=1){
+      const causedBy = plan.rosteredOffIds
+        .map(id=>byId(STATE.players,id))
+        .filter(p=>p && p.prefs.includes(pos))
+        .map(p=>p.name);
+      warnings.push({position:pos, count:coverers.length, causedBy});
+    }
+  });
+  return warnings;
 }
 
 /* fill-in position gap suggestions for a shortfall game */
@@ -431,8 +532,10 @@ function foldGameIntoCumulative(cumulative, gameNum, plan, schedule){
 /* Assign positions for a single quarter given the on-court pool. Returns {onCourt, offPreference, error} */
 function assignQuarterPositions(onCourtPool, cumulative, forcedSlots){
   const slider = clamp(Number(STATE.settings.preferenceSlider),0,10);
+  const sliderNorm = slider/10;
   const allowOff = !!STATE.settings.allowOffPreference;
   const topTwo = !!STATE.settings.topTwoOnly;
+  const weights = STATE.settings.fairnessWeights;
   const remaining = onCourtPool.slice();
   const onCourt = {}; const offPreference = {}; const errors = [];
 
@@ -462,15 +565,42 @@ function assignQuarterPositions(onCourtPool, cumulative, forcedSlots){
       return true;
     });
   }
-  function cost(p,pos){
+  // Preference cost: rank within the player's preference list (0 = top choice); one worse
+  // than their whole list if the position isn't listed at all, so it stays on the same
+  // numeric scale as in-preference ranks instead of a huge fixed penalty.
+  function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
-    const inFullPrefs = p.prefs.includes(pos);
-    const prefCost = idx>=0 ? idx : (inFullPrefs? p.prefs.indexOf(pos) : OFF_PREF_BASE);
-    const sliderMultiplier = 1 + slider*4; // higher slider => in-pref/off-pref gap widens
-    const weighted = inFullPrefs ? prefCost : prefCost*sliderMultiplier;
+    return idx>=0 ? idx : p.prefs.length;
+  }
+  // Position-purity variety term (fairness rule #4): nudges a player away from a position
+  // they've already played a lot this season, in favor of others in their own pref list.
+  // Bounded strictly below 1 regardless of weight/posCount so it can never flip an
+  // in-preference rank (integer steps) into losing against an off-preference candidate
+  // (whose cost is exactly "one worse than list length") — that would break the slider's
+  // monotonicity guarantee at high slider values.
+  function purityTerm(p,pos){
     const pck = posCountKey(p.id,pos);
-    const fairness = (cumulative.posCount[pck]||0) * 0.6;
-    return weighted + fairness;
+    const posCount = cumulative.posCount[pck]||0;
+    const wPurity = Number(weights.positionPurity)||0;
+    return Math.min(0.95, 0.15*wPurity*Math.log2(1+posCount));
+  }
+  // Balance cost: how many quarters this player has been on court this season so far —
+  // fairness rule #2 (on-court time evenness), the competing signal against preference purity.
+  function balanceCost(p){
+    return (cumulative.onCourt[p.id]||0) * (Number(weights.onCourt)||0);
+  }
+  // Blend the two axes with the slider. At slider=0 the cost is pure balance (a fresh,
+  // under-used off-preference candidate can legitimately outrank an overplayed specialist).
+  // At slider=10 the cost is pure preference (off-preference only wins when it's the sole
+  // eligible option). Because this is a straight linear blend, for any two candidates the
+  // sign of (cost(off-pref) - cost(in-pref)) is a linear function of slider with a single
+  // crossing point — so raising the slider can only ever make an in-preference candidate
+  // relatively cheaper, never more expensive. That's what keeps off-preference fill counts
+  // monotonically non-increasing as the slider rises.
+  function cost(p,pos){
+    const prefSide = preferenceCost(p,pos) + purityTerm(p,pos);
+    const balanceSide = balanceCost(p);
+    return sliderNorm*prefSide + (1-sliderNorm)*balanceSide;
   }
 
   let posLeft = openPositions.slice();
@@ -507,11 +637,12 @@ function chooseBenchGroup(squad, benchCount, cumulative, gameBenchSoFar, benched
   const candidates = squad.filter(p=>!forced.has(p.id) && !p.isFillIn); // prefer resting regulars over fill-ins by default
   const fillInCandidates = squad.filter(p=>!forced.has(p.id) && p.isFillIn);
   const pool = candidates.concat(fillInCandidates); // regulars considered first for bench-fairness purposes
+  const wBench = Number(STATE.settings.fairnessWeights.bench)||0;
   function key(p){
     const season = cumulative.bench[p.id]||0;
     const thisGame = gameBenchSoFar[p.id]||0;
     const backToBack = benchedLastQuarter.has(p.id) ? 5 : 0;
-    return season*10 + thisGame*3 + backToBack;
+    return season*10*wBench + thisGame*3 + backToBack*5;
   }
   const sorted = pool.slice().sort((a,b)=>key(b)-key(a)); // highest score = most "deserving" of court time -> least likely benched
   // we want to bench those with LOWEST season bench count (to catch them up), i.e. ascending key
@@ -549,6 +680,7 @@ function runGeneration(){
     game.minFillIns = plan.minFillIns;
     game.recommendedFillIns = plan.recommendedFillIns;
     game.noBenchOnly = plan.noBenchOnly;
+    game.coverageWarnings = computeCoverageWarnings(plan);
 
     if(game.isPlayed){
       // locked: leave schedule untouched, but still fold into cumulative fairness
@@ -715,7 +847,7 @@ function render(){
           <div class="brand-mark">GK</div>
           <div>
             <h1>Season Roster</h1>
-            <div class="sub">Netball rotation &amp; fairness planner</div>
+            <div class="sub">Netball rotation &amp; fairness planner · v${APP_VERSION}</div>
           </div>
         </div>
         <div class="topbar-actions">
@@ -971,6 +1103,11 @@ function statusPillsForGame(game, num){
   else if(game.noBenchOnly) pills.push(`<span class="pill pill-warn">No bench this game</span>`);
   if(!game.error && game.generated) pills.push(`<span class="pill pill-ok">Generated</span>`);
   if(!game.generated && !game.isPlayed && !game.error) pills.push(`<span class="pill pill-muted">Not yet generated</span>`);
+  (game.coverageWarnings||[]).forEach(w=>{
+    const causedText = w.causedBy && w.causedBy.length ? ` — rostered off: ${w.causedBy.join(", ")}` : "";
+    const suggestion = `Consider enabling strict specialist pairing for this game, lowering the desired bench size, or adding a fill-in comfortable at ${w.position}.`;
+    pills.push(`<span class="pill pill-warn" title="${esc(suggestion)}">Low ${w.position} coverage: ${w.count} player(s)${esc(causedText)}</span>`);
+  });
   return pills.join(" ");
 }
 
@@ -1011,6 +1148,11 @@ function renderGameBody(num){
           <div class="section-label">Rostered off</div>
           <div class="hint">${esc(rosteredOffNames)}</div>
           <button class="btn btn-sm" style="margin-top:6px;" data-manageoff="${num}" ${game.isPlayed?"disabled":""}>Set roster-off manually</button>
+          <label class="checkbox-row" style="padding:6px 0 0;">
+            <input type="checkbox" id="strictMode-${num}" ${game.strictSpecialistMode?"checked":""} ${game.isPlayed?"disabled":""}>
+            <span class="cb-label" style="font-size:12px;">Strict specialist pairing</span>
+            <span class="cb-desc">Allow a small, bounded fairness deviation in roster-off if it avoids stripping a position to 0–1 covering players</span>
+          </label>
         </div>
         <div>
           <div class="section-label">Unavailable</div>
@@ -1099,6 +1241,11 @@ function wireGameCard(el, num){
   };
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
+  const strictModeToggle = card.querySelector(`#strictMode-${num}`);
+  if(strictModeToggle) strictModeToggle.onchange=e=>{
+    const game=getGame(num); game.strictSpecialistMode=e.target.checked;
+    saveState(); toast("Regenerate to apply.");
+  };
   const assignFillin = card.querySelector(`[data-assignfillin="${num}"]`);
   if(assignFillin) assignFillin.onclick=()=>openAssignFillInDialog(num);
   card.querySelectorAll("[data-rmfillin]").forEach(b=>b.onclick=()=>{
@@ -1397,28 +1544,23 @@ function renderSettings(root){
         <span class="cb-label">Prefer top-2 positions only</span>
         <span class="cb-desc">Off: balances a player's on-court time across their entire preference list, not just their top 2</span>
       </label>
-      <label class="checkbox-row">
-        <input type="checkbox" id="strictMode" ${s.strictSpecialistMode?"checked":""}>
-        <span class="cb-label">Strict specialist pairing (reduces off-preference)</span>
-        <span class="cb-desc">Avoid rostering off / benching more than one specialist for the same scarce position at once — may reduce bench-time evenness</span>
-      </label>
+      <p class="hint">Strict specialist pairing is now set per game, in that game's detail view on the Schedule tab.</p>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Fairness priority order</h2><p>Relative weight — higher number matters more when trade-offs arise.</p></div></div>
-      ${["missed","onCourt","bench","positionPurity"].map(k=>{
-        const labels = {missed:"Games missed evenness",onCourt:"On-court time evenness",bench:"Bench time evenness",positionPurity:"Position preference purity"};
+      <div class="card-head"><div><h2>Fairness priority order</h2><p>Relative weight — higher number matters more when trade-offs arise. Games-missed evenness is always a strict rule and isn't tunable here.</p></div></div>
+      ${["onCourt","bench","positionPurity"].map(k=>{
+        const labels = {onCourt:"On-court time evenness",bench:"Bench time evenness",positionPurity:"Position preference purity"};
         return `<div class="field"><label>${labels[k]}</label>
           <div class="slider-wrap"><input type="range" data-weight="${k}" min="1" max="10" step="1" value="${s.fairnessWeights[k]}">
           <span class="slider-val mono">${s.fairnessWeights[k]}</span></div></div>`;
       }).join("")}
-      <p class="hint">These weights bias the roster-off and bench-rotation ordering; regenerate after changing them.</p>
+      <p class="hint">These weights bias the preference/balance trade-off and bench-rotation ordering; regenerate after changing them.</p>
     </div>
   `;
   document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; };
   document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
   document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; saveState(); toast("Regenerate to apply."); };
   document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; saveState(); toast("Regenerate to apply."); };
-  document.getElementById("strictMode").onchange=e=>{ s.strictSpecialistMode=e.target.checked; saveState(); toast("Regenerate to apply."); };
   root.querySelectorAll("[data-weight]").forEach(inp=>{
     inp.oninput=e=>{ e.target.nextElementSibling.textContent=e.target.value; };
     inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
@@ -1474,14 +1616,12 @@ function downloadBlob(filename, blob){
 function exportFullCsv(){
   const lines = [];
   const row = (...fields)=>lines.push(fields.map(toCsvField).join(","));
-  row("#META"); row("version",1); row("exportedAt",todayIso());
+  row("#META"); row("version",1); row("appVersion",APP_VERSION); row("exportedAt",todayIso());
   row("#SEASON"); row("numGames",STATE.season.numGames); row("desiredBenchSize",STATE.season.desiredBenchSize);
   row("#SETTINGS");
   row("preferenceSlider",STATE.settings.preferenceSlider);
   row("allowOffPreference",STATE.settings.allowOffPreference?1:0);
   row("topTwoOnly",STATE.settings.topTwoOnly?1:0);
-  row("strictSpecialistMode",STATE.settings.strictSpecialistMode?1:0);
-  row("weight_missed",STATE.settings.fairnessWeights.missed);
   row("weight_onCourt",STATE.settings.fairnessWeights.onCourt);
   row("weight_bench",STATE.settings.fairnessWeights.bench);
   row("weight_positionPurity",STATE.settings.fairnessWeights.positionPurity);
@@ -1490,12 +1630,12 @@ function exportFullCsv(){
   STATE.players.forEach(p=>row(p.id,p.name,(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
   row("#FILLINS","id","name","prefs");
   STATE.fillIns.forEach(f=>row(f.id,f.name,(f.prefs||[]).join("|")));
-  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","fillInIds","lockedSlots","error");
+  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","fillInIds","lockedSlots","error","strictSpecialistMode");
   gameNums().forEach(n=>{
     const g = getGame(n);
     const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
     row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
-      (g.rosterOffLockIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"");
+      (g.rosterOffLockIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"", g.strictSpecialistMode?1:0);
   });
   row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
   gameNums().forEach(n=>{
@@ -1535,23 +1675,22 @@ function importFullCsv(text){
     if(set.preferenceSlider!==undefined) ns.settings.preferenceSlider = Number(set.preferenceSlider);
     if(set.allowOffPreference!==undefined) ns.settings.allowOffPreference = set.allowOffPreference==="1";
     if(set.topTwoOnly!==undefined) ns.settings.topTwoOnly = set.topTwoOnly==="1";
-    if(set.strictSpecialistMode!==undefined) ns.settings.strictSpecialistMode = set.strictSpecialistMode==="1";
-    ["missed","onCourt","bench","positionPurity"].forEach(k=>{
+    ["onCourt","bench","positionPurity"].forEach(k=>{
       const v = set["weight_"+k]; if(v!==undefined) ns.settings.fairnessWeights[k]=Number(v);
     });
     if(set.theme) ns.theme = set.theme;
 
-    ns.players = (sections.PLAYERS||[]).slice(1).filter(r=>r[0]).map(r=>({
+    ns.players = (sections.PLAYERS||[]).filter(r=>r[0]).map(r=>({
       id:r[0], name:r[1]||"", prefs:(r[2]||"").split("|").filter(Boolean),
       unavailable:(r[3]||"").split("|").filter(Boolean).map(Number)
     }));
-    ns.fillIns = (sections.FILLINS||[]).slice(1).filter(r=>r[0]).map(r=>({
+    ns.fillIns = (sections.FILLINS||[]).filter(r=>r[0]).map(r=>({
       id:r[0], name:r[1]||"", prefs:(r[2]||"").split("|").filter(Boolean)
     }));
 
     ns.games = {};
-    (sections.GAMES||[]).slice(1).filter(r=>r[0]).forEach(r=>{
-      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,fillInIds,lockedSlotsStr,errorStr] = r;
+    (sections.GAMES||[]).filter(r=>r[0]).forEach(r=>{
+      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,fillInIds,lockedSlotsStr,errorStr,strictSpecialistMode] = r;
       const g = newGameState();
       g.isPlayed = isPlayed==="1";
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
@@ -1564,10 +1703,11 @@ function importFullCsv(text){
         g.lockedSlots[pair.slice(0,eq)] = pair.slice(eq+1);
       });
       g.error = errorStr||null;
+      g.strictSpecialistMode = strictSpecialistMode==="1";
       ns.games[String(num)] = g;
     });
 
-    (sections.SCHEDULE||[]).slice(1).filter(r=>r[0]!==undefined && r[0]!=="").forEach(r=>{
+    (sections.SCHEDULE||[]).filter(r=>r[0]!==undefined && r[0]!=="").forEach(r=>{
       const [num,qi,slot,playerId,offPref] = r;
       const g = ns.games[String(num)] || (ns.games[String(num)]=newGameState());
       if(!g.schedule) g.schedule = {quarters:[0,1,2,3].map(()=>({onCourt:{},bench:[],offPreference:{}}))};
@@ -1588,6 +1728,7 @@ function importFullCsv(text){
       g.unavailableIds = plan.unavailableIds;
       g.shortfall = plan.shortfall; g.minFillIns = plan.minFillIns; g.recommendedFillIns = plan.recommendedFillIns;
       g.noBenchOnly = plan.noBenchOnly;
+      g.coverageWarnings = computeCoverageWarnings(plan);
       if(!g.squadIds || !g.squadIds.length) g.squadIds = plan.squad.map(p=>p.id);
     });
     saveState();
