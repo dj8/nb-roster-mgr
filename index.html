@@ -1,0 +1,1655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Season Roster — Netball</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --pos-gs:#F4B740; --pos-ga:#EF7B3C; --pos-wa:#E0577A; --pos-c:#B073E0;
+  --pos-wd:#5B8CE0; --pos-gd:#3FB6A8; --pos-gk:#6FBF5E;
+  --accent:#54D6C9; --accent-dim:#2C6E68;
+  --warn:#E8A33D; --danger:#E2637A; --ok:#5FBF7A;
+  --radius:10px; --radius-lg:16px;
+  --font-display:'Space Grotesk',system-ui,sans-serif;
+  --font-body:'Inter',system-ui,-apple-system,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+}
+html[data-theme="dark"]{
+  --bg:#10141B; --bg-alt:#151B24; --surface:#1A2130; --surface-2:#212A3B;
+  --border:#2B3446; --border-soft:#232B3B;
+  --text:#E9EDF4; --text-dim:#9AA6BA; --text-faint:#5F6B80;
+  --shadow:0 8px 24px rgba(0,0,0,.35);
+}
+html[data-theme="light"]{
+  --bg:#F3F1EC; --bg-alt:#EAE7E0; --surface:#FFFFFF; --surface-2:#F6F4EF;
+  --border:#DAD5C9; --border-soft:#E6E2D8;
+  --text:#20242C; --text-dim:#5B6270; --text-faint:#9198A4;
+  --shadow:0 8px 24px rgba(20,20,10,.08);
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;transition:background .2s,color .2s;}
+h1,h2,h3,.display{font-family:var(--font-display);letter-spacing:-.01em;}
+.mono{font-family:var(--font-mono);}
+button{font-family:var(--font-body);cursor:pointer;}
+input,select,textarea{font-family:var(--font-body);}
+::selection{background:var(--accent);color:#0A1512;}
+
+/* ---------- App shell ---------- */
+#app{min-height:100vh;display:flex;flex-direction:column;}
+.topbar{position:sticky;top:0;z-index:40;background:linear-gradient(180deg,var(--bg) 70%,transparent);
+  padding:18px 20px 0;backdrop-filter:blur(6px);}
+.topbar-inner{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.brand{display:flex;align-items:center;gap:10px;}
+.brand-mark{width:34px;height:34px;border-radius:9px;flex:none;
+  background:linear-gradient(135deg,var(--pos-gs),var(--pos-gd));
+  display:flex;align-items:center;justify-content:center;font-family:var(--font-display);
+  font-weight:700;color:#12161d;font-size:13px;}
+.brand h1{font-size:17px;margin:0;font-weight:700;}
+.brand .sub{font-size:11px;color:var(--text-dim);margin-top:1px;}
+.topbar-actions{display:flex;gap:8px;align-items:center;}
+.icon-btn{width:36px;height:36px;border-radius:10px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text);display:flex;align-items:center;justify-content:center;
+  font-size:16px;transition:.15s;}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent);}
+
+.tabs{display:flex;gap:4px;overflow-x:auto;margin:14px 0 0;padding-bottom:2px;scrollbar-width:none;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab-btn{flex:none;padding:9px 14px;border-radius:9px 9px 0 0;border:none;background:transparent;
+  color:var(--text-dim);font-size:13px;font-weight:600;border-bottom:2px solid transparent;white-space:nowrap;}
+.tab-btn.active{color:var(--text);border-bottom-color:var(--accent);background:var(--surface);}
+.tab-btn:hover:not(.active){color:var(--text);}
+
+main{flex:1;padding:18px 20px 60px;max-width:1180px;width:100%;margin:0 auto;}
+.panel{display:none;}
+.panel.active{display:block;animation:fadein .18s ease;}
+@keyframes fadein{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:18px;margin-bottom:16px;}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.card-head h2{font-size:15px;margin:0;font-weight:700;}
+.card-head p{font-size:12px;color:var(--text-dim);margin:2px 0 0;}
+.hint{font-size:12px;color:var(--text-dim);line-height:1.5;}
+.section-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);
+  font-weight:700;margin:0 0 8px;}
+
+/* ---------- Forms ---------- */
+.field{margin-bottom:12px;}
+.field label{display:block;font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:5px;}
+input[type=text],input[type=number],select,textarea{
+  width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
+  color:var(--text);padding:9px 11px;font-size:13.5px;outline:none;transition:.15s;}
+input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{border-color:var(--accent);}
+.row{display:flex;gap:10px;flex-wrap:wrap;}
+.row > *{flex:1;min-width:140px;}
+.checkbox-row{display:flex;align-items:center;gap:9px;padding:10px 0;}
+.checkbox-row input{width:17px;height:17px;accent-color:var(--accent);}
+.checkbox-row .cb-label{font-size:13px;font-weight:600;}
+.checkbox-row .cb-desc{font-size:11.5px;color:var(--text-dim);}
+
+.btn{display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:9px;border:1px solid var(--border);
+  background:var(--surface-2);color:var(--text);font-size:13px;font-weight:600;transition:.15s;}
+.btn:hover{border-color:var(--accent);color:var(--accent);}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#0A1512;}
+.btn-primary:hover{filter:brightness(1.08);color:#0A1512;}
+.btn-danger{color:var(--danger);}
+.btn-danger:hover{border-color:var(--danger);color:var(--danger);}
+.btn-sm{padding:6px 11px;font-size:12px;}
+.btn[disabled]{opacity:.4;cursor:not-allowed;}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
+
+/* ---------- Slider ---------- */
+.slider-wrap{display:flex;align-items:center;gap:12px;}
+input[type=range]{-webkit-appearance:none;flex:1;height:5px;border-radius:3px;
+  background:linear-gradient(90deg,var(--pos-wa),var(--accent));outline:none;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:var(--text);border:3px solid var(--accent);cursor:pointer;}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
+  background:var(--text);border:3px solid var(--accent);cursor:pointer;}
+.slider-val{font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--accent);width:26px;text-align:right;}
+
+/* ---------- Position badges ---------- */
+.pos-badge{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:22px;
+  padding:0 6px;border-radius:6px;font-size:11px;font-weight:700;font-family:var(--font-mono);color:#10141B;}
+.pos-GS{background:var(--pos-gs);} .pos-GA{background:var(--pos-ga);} .pos-WA{background:var(--pos-wa);color:#fff;}
+.pos-C{background:var(--pos-c);color:#fff;} .pos-WD{background:var(--pos-wd);color:#fff;}
+.pos-GD{background:var(--pos-gd);} .pos-GK{background:var(--pos-gk);}
+.pref-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 4px 4px 9px;border-radius:20px;
+  background:var(--surface-2);border:1px solid var(--border);font-size:11.5px;margin:2px 3px 2px 0;}
+.pref-chip button{background:none;border:none;color:var(--text-faint);font-size:13px;line-height:1;padding:2px 4px;}
+.pref-chip button:hover{color:var(--danger);}
+.pref-rank{font-family:var(--font-mono);font-size:10px;color:var(--text-faint);}
+
+/* ---------- Tables / lists ---------- */
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);
+  padding:8px 8px;border-bottom:1px solid var(--border);font-weight:700;white-space:nowrap;}
+td{padding:9px 8px;border-bottom:1px solid var(--border-soft);vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+.table-scroll{overflow-x:auto;border-radius:10px;}
+.empty-state{text-align:center;padding:36px 16px;color:var(--text-dim);}
+.empty-state .glyph{font-size:26px;margin-bottom:8px;opacity:.6;}
+.empty-state .cta{font-size:12.5px;margin-top:4px;}
+
+.list-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 4px;
+  border-bottom:1px solid var(--border-soft);}
+.list-row:last-child{border-bottom:none;}
+.player-name{font-weight:700;font-size:13.5px;}
+.player-meta{font-size:11.5px;color:var(--text-dim);margin-top:2px;}
+
+/* ---------- Grid (rotation) ---------- */
+.grid-cell{border-radius:7px;padding:6px 8px;font-size:12px;min-width:88px;position:relative;}
+.grid-cell .pname{font-weight:600;}
+.cell-oncourt{background:var(--surface-2);}
+.cell-bench{background:var(--bg-alt);color:var(--text-dim);}
+.cell-off{background:transparent;color:var(--text-faint);font-style:italic;}
+.cell-fillin{outline:2px dashed var(--warn);outline-offset:-2px;}
+.cell-offpref{outline:2px solid var(--danger);outline-offset:-2px;}
+.cell-locked{outline:2px solid var(--accent);outline-offset:-2px;}
+.cell-clickable{cursor:pointer;}
+.cell-clickable:hover{filter:brightness(1.15);}
+.game-locked-banner{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;
+  color:var(--accent);background:rgba(84,214,201,.12);padding:3px 9px;border-radius:20px;}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim);margin-top:10px;}
+.legend span{display:inline-flex;align-items:center;gap:6px;}
+.swatch{width:12px;height:12px;border-radius:4px;display:inline-block;}
+
+/* ---------- Badges / pills ---------- */
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;}
+.pill-warn{background:rgba(232,163,61,.15);color:var(--warn);}
+.pill-danger{background:rgba(226,99,122,.15);color:var(--danger);}
+.pill-ok{background:rgba(95,191,122,.15);color:var(--ok);}
+.pill-accent{background:rgba(84,214,201,.15);color:var(--accent);}
+.pill-muted{background:var(--surface-2);color:var(--text-dim);}
+
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;}
+.stat-box{background:var(--surface-2);border-radius:10px;padding:12px 14px;}
+.stat-box .num{font-family:var(--font-display);font-size:22px;font-weight:700;}
+.stat-box .lbl{font-size:11px;color:var(--text-dim);margin-top:2px;}
+
+/* ---------- Modal ---------- */
+.modal-backdrop{position:fixed;inset:0;background:rgba(6,8,12,.6);backdrop-filter:blur(2px);
+  display:flex;align-items:center;justify-content:center;z-index:100;padding:16px;}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  width:100%;max-width:460px;padding:20px;box-shadow:var(--shadow);max-height:88vh;overflow-y:auto;}
+.modal h3{margin:0 0 4px;font-size:16px;}
+.modal .modal-sub{font-size:12px;color:var(--text-dim);margin:0 0 16px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+
+.toast-stack{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;}
+.toast{background:var(--surface-2);border:1px solid var(--border);color:var(--text);padding:10px 16px;
+  border-radius:9px;font-size:13px;box-shadow:var(--shadow);animation:toastin .2s ease;}
+@keyframes toastin{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+
+.quarter-tabs{display:flex;gap:6px;margin-bottom:10px;}
+.qtab{padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--surface-2);
+  font-size:12px;font-weight:600;color:var(--text-dim);}
+.qtab.active{color:var(--accent);border-color:var(--accent);background:rgba(84,214,201,.1);}
+
+.game-card{border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--surface-2);}
+.game-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;}
+.game-card h4{margin:0;font-size:13.5px;}
+
+@media (max-width:640px){
+  main{padding:14px 12px 60px;}
+  .card{padding:14px;}
+  .row > *{min-width:100%;}
+}
+[hidden]{display:none !important;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ============================================================
+   Netball Season Roster App
+   Single-file, client-only. Data model + engine + UI + I/O.
+   ============================================================ */
+(function(){
+"use strict";
+
+/* ---------------- Constants ---------------- */
+const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
+const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
+const STORAGE_KEY = "netballRosterApp_v1";
+const QUARTERS = [0,1,2,3];
+
+/* ---------------- Utilities ---------------- */
+function uid(prefix){ return prefix+"_"+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4); }
+function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
+function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
+function byId(arr,id){ return arr.find(x=>x.id===id); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function todayIso(){ return new Date().toISOString(); }
+
+/* ---------------- Default state ---------------- */
+function defaultState(){
+  return {
+    version:1,
+    theme:"dark",
+    players:[],            // {id,name,prefs:[pos,...],unavailable:[gameNum,...]}
+    fillIns:[],            // {id,name,prefs:[pos,...]}
+    season:{numGames:11, desiredBenchSize:2},
+    games:{},              // gameNum(string) -> gameState
+    settings:{
+      preferenceSlider:5,        // 0..10
+      allowOffPreference:true,
+      strictSpecialistMode:false,
+      topTwoOnly:false,          // §4 rule 4 toggle
+      fairnessWeights:{missed:4, onCourt:3, bench:2, positionPurity:1} // relative priority order, higher = more important
+    },
+    activeTab:"setup"
+  };
+}
+function newGameState(){
+  return {
+    isPlayed:false,
+    rosterOffOverride:null,     // number|null - overrides derived roster_off_count
+    rosterOffLockIds:null,      // array of playerIds|null - manual explicit roster-off selection (locked)
+    fillInIds:[],               // fill-ins assigned to this game
+    lockedSlots:{},             // "q-pos" -> playerId (manual lock, survives rebalance)
+    schedule:null,              // computed: {quarters:[{onCourt:{pos:playerId|fillinId},bench:[ids],offPreference:{pos:true}}]}
+    squadIds:null,              // computed regular player ids in squad (post roster-off)
+    rosteredOffIds:null,        // computed
+    unavailableIds:null,        // computed (regulars unavailable this game)
+    shortfall:false,
+    generated:false
+  };
+}
+
+/* ---------------- State ---------------- */
+let STATE = loadState();
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return defaultState();
+    const parsed = JSON.parse(raw);
+    const d = defaultState();
+    return Object.assign(d, parsed, {
+      players: parsed.players||[],
+      fillIns: parsed.fillIns||[],
+      season: Object.assign(d.season, parsed.season||{}),
+      games: parsed.games||{},
+      settings: Object.assign(d.settings, parsed.settings||{}, {fairnessWeights:Object.assign(d.settings.fairnessWeights,(parsed.settings&&parsed.settings.fairnessWeights)||{})})
+    });
+  }catch(e){ console.warn("Failed to load state, starting fresh.",e); return defaultState(); }
+}
+function saveState(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE)); }
+  catch(e){ toast("Could not save to local storage ("+e.message+")"); }
+}
+function gameNums(){
+  const n = STATE.season.numGames;
+  const arr=[]; for(let i=1;i<=n;i++) arr.push(i); return arr;
+}
+function getGame(num){
+  const key=String(num);
+  if(!STATE.games[key]) STATE.games[key]=newGameState();
+  return STATE.games[key];
+}
+function ensureGamesExist(){
+  gameNums().forEach(n=>getGame(n));
+  // prune games beyond numGames
+  Object.keys(STATE.games).forEach(k=>{ if(Number(k)>STATE.season.numGames) delete STATE.games[k]; });
+}
+
+
+/* ============================================================
+   ENGINE
+   ============================================================ */
+const OFF_PREF_BASE = 20;      // base cost of playing a position outside prefs at all
+const ERROR_NO_ELIGIBLE = "NO_ELIGIBLE_PLAYER";
+
+function regularRosterInvalid(){
+  const n = STATE.players.length;
+  const need = 7 + Number(STATE.season.desiredBenchSize||0);
+  if(n===0) return null;
+  if(need > n) return `Desired bench size (${STATE.season.desiredBenchSize}) needs a squad of ${need} (7 on court + bench), but the roster only has ${n} player(s). Lower the bench size or add players.`;
+  return null;
+}
+
+function playerLabel(p){ return p ? p.name : "—"; }
+
+/* Build the pool of "playable units": regular players + assigned fill-ins,
+   each normalised to {id, name, prefs, isFillIn} */
+function poolFor(game){
+  const regulars = STATE.players.map(p=>({id:p.id,name:p.name,prefs:p.prefs.slice(),isFillIn:false}));
+  const fillins = (game.fillInIds||[]).map(fid=>{
+    const f = byId(STATE.fillIns, fid);
+    return f ? {id:f.id,name:f.name,prefs:f.prefs.slice(),isFillIn:true} : null;
+  }).filter(Boolean);
+  return {regulars, fillins};
+}
+
+function isUnavailable(player, gameNum){
+  return (player.unavailable||[]).includes(gameNum);
+}
+
+/* Decide squad composition for one game given cumulative fairness so far. */
+function planGameSquad(gameNum, cumulative){
+  const game = getGame(gameNum);
+  const regulars = STATE.players;
+  const availableRegulars = regulars.filter(p=>!isUnavailable(p,gameNum));
+  const unavailableIds = regulars.filter(p=>isUnavailable(p,gameNum)).map(p=>p.id);
+  const assignedFillIns = (game.fillInIds||[]).map(fid=>byId(STATE.fillIns,fid)).filter(Boolean);
+
+  const shortfall = availableRegulars.length < 7;
+  const minFillIns = shortfall ? (7-availableRegulars.length) : 0;
+  const recommendedFillIns = shortfall ? minFillIns+1 : 0;
+
+  let rosteredOffIds = [];
+  let squad = [];
+
+  if(shortfall){
+    // §6: don't force the normal roster-off rule; use all available regulars + fill-ins
+    squad = availableRegulars.map(p=>({id:p.id,name:p.name,prefs:p.prefs.slice(),isFillIn:false}))
+      .concat(assignedFillIns.map(f=>({id:f.id,name:f.name,prefs:f.prefs.slice(),isFillIn:true})));
+  } else {
+    let rosterOffCount;
+    if(game.rosterOffLockIds && game.rosterOffLockIds.length){
+      rosteredOffIds = game.rosterOffLockIds.filter(id=>availableRegulars.some(p=>p.id===id));
+      rosterOffCount = rosteredOffIds.length;
+    } else if(Number.isFinite(game.rosterOffOverride)){
+      rosterOffCount = clamp(game.rosterOffOverride,0,Math.max(0,availableRegulars.length-7));
+    } else {
+      rosterOffCount = Math.max(0, availableRegulars.length-(7+Number(STATE.season.desiredBenchSize||0)));
+    }
+    if(!rosteredOffIds.length && rosterOffCount>0){
+      // auto-select: fewest cumulative missed games so far get rostered off (evens things out)
+      const ranked = availableRegulars.slice().sort((a,b)=>{
+        const ma=(cumulative.missed[a.id]||0), mb=(cumulative.missed[b.id]||0);
+        if(ma!==mb) return ma-mb;
+        const oa=(cumulative.onCourt[a.id]||0), ob=(cumulative.onCourt[b.id]||0);
+        return ob-oa; // if tied on missed, roster off whoever has played more on-court time
+      });
+      rosteredOffIds = ranked.slice(0,rosterOffCount).map(p=>p.id);
+    }
+    const rosteredOffSet = new Set(rosteredOffIds);
+    squad = availableRegulars.filter(p=>!rosteredOffSet.has(p.id))
+      .map(p=>({id:p.id,name:p.name,prefs:p.prefs.slice(),isFillIn:false}))
+      .concat(assignedFillIns.map(f=>({id:f.id,name:f.name,prefs:f.prefs.slice(),isFillIn:true})));
+  }
+
+  return {
+    shortfall, minFillIns, recommendedFillIns,
+    availableRegularIds: availableRegulars.map(p=>p.id),
+    unavailableIds, rosteredOffIds, squad,
+    noBenchOnly: !shortfall && squad.length===7 && availableRegulars.length===7 && rosteredOffIds.length===0
+  };
+}
+
+/* fill-in position gap suggestions for a shortfall game */
+function fillInGapSuggestions(gameNum){
+  const plan = planGameSquad(gameNum, emptyCumulative());
+  if(!plan.shortfall) return [];
+  const availIds = new Set(plan.availableRegularIds);
+  const avail = STATE.players.filter(p=>availIds.has(p.id));
+  return POSITIONS.filter(pos=>{
+    const coverage = avail.filter(p=>p.prefs.includes(pos)).length;
+    return coverage<=1;
+  });
+}
+
+function emptyCumulative(){
+  return {missed:{}, onCourt:{}, bench:{}, posCount:{}, offPref:{}};
+}
+function bumpCum(cumulative, key, id, amt){
+  cumulative[key][id] = (cumulative[key][id]||0) + amt;
+}
+function posCountKey(id,pos){ return id+"::"+pos; }
+
+/* Apply a game's *actual* outcome (played or freshly generated) into cumulative totals */
+function foldGameIntoCumulative(cumulative, gameNum, plan, schedule){
+  plan.unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
+  plan.rosteredOffIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
+  if(!schedule) return;
+  schedule.quarters.forEach(q=>{
+    POSITIONS.forEach(pos=>{
+      const pid = q.onCourt[pos];
+      if(!pid) return;
+      const isFillIn = STATE.fillIns.some(f=>f.id===pid);
+      if(isFillIn) return; // §6: fill-ins excluded from fairness totals
+      bumpCum(cumulative,"onCourt",pid,1);
+      const pck = posCountKey(pid,pos);
+      cumulative.posCount[pck] = (cumulative.posCount[pck]||0)+1;
+      if(q.offPreference && q.offPreference[pos]) bumpCum(cumulative,"offPref",pid,1);
+    });
+    (q.bench||[]).forEach(pid=>{
+      const isFillIn = STATE.fillIns.some(f=>f.id===pid);
+      if(isFillIn) return;
+      bumpCum(cumulative,"bench",pid,1);
+    });
+  });
+}
+
+/* Assign positions for a single quarter given the on-court pool. Returns {onCourt, offPreference, error} */
+function assignQuarterPositions(onCourtPool, cumulative, forcedSlots){
+  const slider = clamp(Number(STATE.settings.preferenceSlider),0,10);
+  const allowOff = !!STATE.settings.allowOffPreference;
+  const topTwo = !!STATE.settings.topTwoOnly;
+  const remaining = onCourtPool.slice();
+  const onCourt = {}; const offPreference = {}; const errors = [];
+
+  // apply forced (locked) slots first
+  POSITIONS.forEach(pos=>{
+    const forcedId = forcedSlots && forcedSlots[pos];
+    if(forcedId){
+      const idx = remaining.findIndex(p=>p.id===forcedId);
+      if(idx>=0){
+        const p = remaining.splice(idx,1)[0];
+        onCourt[pos]=p.id;
+        if(!p.prefs.includes(pos)) offPreference[pos]=true;
+      }
+    }
+  });
+  const openPositions = POSITIONS.filter(pos=>!onCourt[pos]);
+
+  function prefRank(p,pos){
+    const list = topTwo ? p.prefs.slice(0,2) : p.prefs;
+    const idx = list.indexOf(pos);
+    return idx;
+  }
+  function eligibleFor(pos){
+    return remaining.filter(p=>{
+      const inPrefs = p.prefs.includes(pos);
+      if(!allowOff) return inPrefs;
+      return true;
+    });
+  }
+  function cost(p,pos){
+    const idx = prefRank(p,pos);
+    const inFullPrefs = p.prefs.includes(pos);
+    const prefCost = idx>=0 ? idx : (inFullPrefs? p.prefs.indexOf(pos) : OFF_PREF_BASE);
+    const sliderMultiplier = 1 + slider*4; // higher slider => in-pref/off-pref gap widens
+    const weighted = inFullPrefs ? prefCost : prefCost*sliderMultiplier;
+    const pck = posCountKey(p.id,pos);
+    const fairness = (cumulative.posCount[pck]||0) * 0.6;
+    return weighted + fairness;
+  }
+
+  let posLeft = openPositions.slice();
+  while(posLeft.length){
+    // most-constrained-first: position with fewest eligible in-pref candidates goes next
+    let bestPos=null, bestCount=Infinity;
+    posLeft.forEach(pos=>{
+      const elig = eligibleFor(pos);
+      const inPrefCount = elig.filter(p=>p.prefs.includes(pos)).length;
+      const score = allowOff ? inPrefCount : elig.length;
+      if(score<bestCount){ bestCount=score; bestPos=pos; }
+    });
+    const pos = bestPos;
+    posLeft = posLeft.filter(p=>p!==pos);
+    const elig = eligibleFor(pos);
+    if(!elig.length){
+      errors.push({position:pos, reason:ERROR_NO_ELIGIBLE});
+      continue;
+    }
+    let best=null,bestCost=Infinity;
+    elig.forEach(p=>{ const c=cost(p,pos); if(c<bestCost){bestCost=c;best=p;} });
+    const idx = remaining.findIndex(p=>p.id===best.id);
+    remaining.splice(idx,1);
+    onCourt[pos]=best.id;
+    if(!best.prefs.includes(pos)) offPreference[pos]=true;
+  }
+  return {onCourt, offPreference, errors, leftoverBench:remaining.map(p=>p.id)};
+}
+
+/* Choose who is benched this quarter, given squad & season/game bench history */
+function chooseBenchGroup(squad, benchCount, cumulative, gameBenchSoFar, benchedLastQuarter, forcedOnCourtIds){
+  if(benchCount<=0) return [];
+  const forced = new Set(forcedOnCourtIds||[]);
+  const candidates = squad.filter(p=>!forced.has(p.id) && !p.isFillIn); // prefer resting regulars over fill-ins by default
+  const fillInCandidates = squad.filter(p=>!forced.has(p.id) && p.isFillIn);
+  const pool = candidates.concat(fillInCandidates); // regulars considered first for bench-fairness purposes
+  function key(p){
+    const season = cumulative.bench[p.id]||0;
+    const thisGame = gameBenchSoFar[p.id]||0;
+    const backToBack = benchedLastQuarter.has(p.id) ? 5 : 0;
+    return season*10 + thisGame*3 + backToBack;
+  }
+  const sorted = pool.slice().sort((a,b)=>key(b)-key(a)); // highest score = most "deserving" of court time -> least likely benched
+  // we want to bench those with LOWEST season bench count (to catch them up), i.e. ascending key
+  sorted.sort((a,b)=>key(a)-key(b));
+  return sorted.slice(0,Math.min(benchCount,sorted.length)).map(p=>p.id);
+}
+
+function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squad){
+  const player = byId(STATE.players,playerId) || byId(STATE.fillIns,playerId);
+  const specialists = STATE.players.filter(p=>p.id!==playerId && p.prefs.includes(pos));
+  const squadIds = new Set(squad.map(p=>p.id));
+  const unavailableSpecialists = specialists.filter(p=>!squadIds.has(p.id)).map(p=>p.name);
+  return {
+    game:gameNum, quarter:quarterIdx+1, playerId, playerName: player?player.name:"?",
+    position:pos, unavailableSpecialists
+  };
+}
+
+/* Generate (or re-generate) the full season, in game order, skipping played games,
+   respecting per-slot locks and roster-off locks. Used by both "Generate" and "Rebalance". */
+function runGeneration(){
+  ensureGamesExist();
+  const invalid = regularRosterInvalid();
+  const offPrefLog = [];
+  const cumulative = emptyCumulative();
+  const nums = gameNums();
+
+  nums.forEach(num=>{
+    const game = getGame(num);
+    const plan = planGameSquad(num, cumulative);
+    game.squadIds = plan.squad.map(p=>p.id);
+    game.rosteredOffIds = plan.rosteredOffIds;
+    game.unavailableIds = plan.unavailableIds;
+    game.shortfall = plan.shortfall;
+    game.minFillIns = plan.minFillIns;
+    game.recommendedFillIns = plan.recommendedFillIns;
+    game.noBenchOnly = plan.noBenchOnly;
+
+    if(game.isPlayed){
+      // locked: leave schedule untouched, but still fold into cumulative fairness
+      foldGameIntoCumulative(cumulative, num, plan, game.schedule);
+      return;
+    }
+
+    if(plan.squad.length<7){
+      game.error = `Not enough players for game ${num}: ${plan.squad.length} available (need 7). Add ${7-plan.squad.length} more fill-in(s).`;
+      game.schedule = null; game.generated=false;
+      foldGameIntoCumulative(cumulative, num, plan, null);
+      return;
+    }
+    game.error = null;
+
+    const benchCount = plan.squad.length-7;
+    const gameBenchSoFar = {};
+    let benchedLastQuarter = new Set();
+    const quarters = [];
+    let quarterError = null;
+
+    for(let q=0;q<4;q++){
+      const forcedSlots = {};
+      POSITIONS.forEach(pos=>{
+        const lockKey = q+"-"+pos;
+        if(game.lockedSlots && game.lockedSlots[lockKey]) forcedSlots[pos]=game.lockedSlots[lockKey];
+      });
+      const forcedIds = Object.values(forcedSlots);
+      const benchIds = chooseBenchGroup(plan.squad, benchCount, cumulative, gameBenchSoFar, benchedLastQuarter, forcedIds);
+      const benchSet = new Set(benchIds);
+      const onCourtPool = plan.squad.filter(p=>!benchSet.has(p.id));
+      const result = assignQuarterPositions(onCourtPool, cumulative, forcedSlots);
+
+      if(result.errors.length){
+        quarterError = `Game ${num}, Quarter ${q+1}: no eligible in-preference player for ${result.errors.map(e=>e.position).join(", ")}. Add/adjust a fill-in, or allow off-preference positions.`;
+      }
+
+      // fold this quarter immediately so later quarters in same game see updated counts
+      POSITIONS.forEach(pos=>{
+        const pid = result.onCourt[pos]; if(!pid) return;
+        const isFillIn = STATE.fillIns.some(f=>f.id===pid);
+        if(isFillIn) return;
+        const pck = posCountKey(pid,pos);
+        cumulative.posCount[pck]=(cumulative.posCount[pck]||0)+1;
+        cumulative.onCourt[pid]=(cumulative.onCourt[pid]||0)+1;
+        if(result.offPreference[pos]){
+          cumulative.offPref[pid]=(cumulative.offPref[pid]||0)+1;
+          offPrefLog.push(buildOffPrefLog(num,q,pos,pid,plan.squad));
+        }
+      });
+      benchIds.forEach(pid=>{
+        const isFillIn = STATE.fillIns.some(f=>f.id===pid);
+        if(isFillIn) return;
+        cumulative.bench[pid]=(cumulative.bench[pid]||0)+1;
+        gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1;
+      });
+      benchedLastQuarter = benchSet;
+      quarters.push({onCourt:result.onCourt, bench:benchIds, offPreference:result.offPreference});
+    }
+    plan.unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
+    plan.rosteredOffIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
+
+    game.schedule = {quarters};
+    game.generated = true;
+    game.error = quarterError;
+  });
+
+  STATE._offPrefLog = offPrefLog;
+  STATE._lastGeneratedAt = todayIso();
+  saveState();
+  return {invalid, offPrefLog};
+}
+
+/* Season-wide player summary stats (for reports) */
+function computePlayerSummaries(){
+  const summary = {};
+  STATE.players.forEach(p=>{ summary[p.id]={id:p.id,name:p.name,onCourt:0,bench:0,missed:0,gamesPlayedIn:0,positions:{},offPrefPositions:{},offPrefTotal:0}; POSITIONS.forEach(pos=>summary[p.id].positions[pos]=0); });
+  gameNums().forEach(num=>{
+    const game = getGame(num);
+    (game.rosteredOffIds||[]).forEach(id=>{ if(summary[id]) summary[id].missed++; });
+    (game.unavailableIds||[]).forEach(id=>{ if(summary[id]) summary[id].missed++; });
+    if(!game.schedule) return;
+    const playedThisGame = new Set();
+    game.schedule.quarters.forEach(q=>{
+      POSITIONS.forEach(pos=>{
+        const pid=q.onCourt[pos]; if(!pid || !summary[pid]) return;
+        summary[pid].onCourt++; summary[pid].positions[pos]++; playedThisGame.add(pid);
+        if(q.offPreference && q.offPreference[pos]){
+          summary[pid].offPrefTotal++;
+          summary[pid].offPrefPositions[pos]=(summary[pid].offPrefPositions[pos]||0)+1;
+        }
+      });
+      (q.bench||[]).forEach(pid=>{ if(summary[pid]){ summary[pid].bench++; playedThisGame.add(pid);} });
+    });
+    playedThisGame.forEach(pid=>{ if(summary[pid]) summary[pid].gamesPlayedIn++; });
+  });
+  return Object.values(summary);
+}
+
+function computeOffPrefLog(){ return STATE._offPrefLog||[]; }
+function computeOffPrefRate(){
+  const log = computeOffPrefLog();
+  let totalSlots=0;
+  gameNums().forEach(num=>{ const g=getGame(num); if(g.schedule) totalSlots += g.schedule.quarters.length*7; });
+  return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
+}
+
+/* ============================================================
+   TOASTS / MODALS
+   ============================================================ */
+function toast(msg){
+  let stack = document.querySelector(".toast-stack");
+  if(!stack){ stack=document.createElement("div"); stack.className="toast-stack"; document.body.appendChild(stack); }
+  const el = document.createElement("div"); el.className="toast"; el.textContent=msg;
+  stack.appendChild(el);
+  setTimeout(()=>{ el.style.opacity="0"; el.style.transition="opacity .25s"; setTimeout(()=>el.remove(),260); }, 2600);
+}
+function closeModal(){
+  const bd = document.querySelector(".modal-backdrop");
+  if(bd) bd.remove();
+}
+function openModal(html, onMount){
+  closeModal();
+  const bd = document.createElement("div");
+  bd.className="modal-backdrop";
+  bd.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`;
+  bd.addEventListener("mousedown", e=>{ if(e.target===bd) closeModal(); });
+  document.body.appendChild(bd);
+  if(onMount) onMount(bd.querySelector(".modal"));
+  return bd.querySelector(".modal");
+}
+function confirmDialog(title, msg, onYes){
+  openModal(`
+    <h3>${esc(title)}</h3>
+    <p class="modal-sub">${esc(msg)}</p>
+    <div class="modal-actions">
+      <button class="btn" data-act="cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="yes">Confirm</button>
+    </div>`, m=>{
+    m.querySelector('[data-act="cancel"]').onclick=closeModal;
+    m.querySelector('[data-act="yes"]').onclick=()=>{ closeModal(); onYes(); };
+  });
+}
+
+/* ============================================================
+   RENDER: SHELL
+   ============================================================ */
+const TABS = [
+  {id:"setup", label:"Setup"},
+  {id:"schedule", label:"Schedule"},
+  {id:"fillins", label:"Fill-ins"},
+  {id:"reports", label:"Reports"},
+  {id:"settings", label:"Settings"},
+  {id:"data", label:"Data"}
+];
+
+function render(){
+  document.documentElement.setAttribute("data-theme", STATE.theme);
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark">GK</div>
+          <div>
+            <h1>Season Roster</h1>
+            <div class="sub">Netball rotation &amp; fairness planner</div>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="themeToggle" title="Toggle dark / light mode">${STATE.theme==="dark"?"&#9728;":"&#9789;"}</button>
+        </div>
+      </div>
+      <div class="tabs" id="tabs">
+        ${TABS.map(t=>`<button class="tab-btn ${STATE.activeTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</button>`).join("")}
+      </div>
+    </div>
+    <main id="main"></main>
+  `;
+  document.getElementById("themeToggle").onclick=()=>{
+    STATE.theme = STATE.theme==="dark"?"light":"dark"; saveState(); render();
+  };
+  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{ STATE.activeTab=b.dataset.tab; saveState(); renderMain(); syncTabButtons(); });
+  renderMain();
+}
+function syncTabButtons(){
+  document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("active", b.dataset.tab===STATE.activeTab));
+}
+function renderMain(){
+  const main = document.getElementById("main");
+  ensureGamesExist();
+  const fns = {setup:renderSetup, schedule:renderSchedule, fillins:renderFillIns, reports:renderReports, settings:renderSettings, data:renderData};
+  main.innerHTML = `<div class="panel active" id="panelRoot"></div>`;
+  fns[STATE.activeTab](document.getElementById("panelRoot"));
+}
+
+/* ============================================================
+   RENDER: SETUP TAB
+   ============================================================ */
+function renderSetup(root){
+  const invalidMsg = regularRosterInvalid();
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div><h2>Season parameters</h2><p>Drives roster-off &amp; bench math for every game.</p></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Number of games</label>
+          <input type="number" id="numGames" min="1" max="60" value="${STATE.season.numGames}"></div>
+        <div class="field"><label>Desired bench size</label>
+          <input type="number" id="benchSize" min="0" max="20" value="${STATE.season.desiredBenchSize}"></div>
+      </div>
+      ${invalidMsg? `<div class="pill pill-danger" style="display:block;margin-top:4px;">${esc(invalidMsg)}</div>` : `<p class="hint">On-court is always 7. Roster-off count per game = available regulars − (7 + desired bench size), auto-derived unless you override a specific game in the Schedule tab.</p>`}
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div><h2>Players (${STATE.players.length})</h2><p>Ordered position preferences, best first.</p></div>
+        <div class="btn-row">
+          <button class="btn btn-sm" id="importCsvBtn">Import CSV</button>
+          <input type="file" id="csvFileInput" accept=".csv" hidden>
+          <button class="btn btn-primary btn-sm" id="addPlayerBtn">+ Add player</button>
+        </div>
+      </div>
+      <div id="playerList"></div>
+    </div>
+  `;
+  renderPlayerList(document.getElementById("playerList"));
+
+  document.getElementById("numGames").onchange=e=>{
+    const v = clamp(parseInt(e.target.value||"1",10),1,60);
+    STATE.season.numGames=v; ensureGamesExist(); saveState(); renderSetup(root);
+  };
+  document.getElementById("benchSize").onchange=e=>{
+    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value||"0",10),0,20); saveState(); renderSetup(root);
+  };
+  document.getElementById("addPlayerBtn").onclick=()=>openPlayerDialog(null);
+  document.getElementById("importCsvBtn").onclick=()=>document.getElementById("csvFileInput").click();
+  document.getElementById("csvFileInput").onchange=e=>{
+    const f = e.target.files[0]; if(!f) return;
+    const reader = new FileReader();
+    reader.onload = ev=>{ importPlayersCsv(ev.target.result); e.target.value=""; };
+    reader.readAsText(f);
+  };
+}
+
+function renderPlayerList(el){
+  if(!STATE.players.length){
+    el.innerHTML = `<div class="empty-state"><div class="glyph">&#127940;</div>
+      <div>No players yet.</div>
+      <div class="cta">Add your squad, or import a CSV of names + preferences.</div></div>`;
+    return;
+  }
+  el.innerHTML = STATE.players.map(p=>`
+    <div class="list-row">
+      <div style="flex:1;min-width:0;">
+        <div class="player-name">${esc(p.name)}</div>
+        <div class="player-meta">
+          ${p.prefs.map((pos,i)=>`<span class="pos-badge pos-${pos}" title="${POS_LABEL[pos]}">${pos}</span>`).join(" ")}
+          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn" style="margin-left:6px;">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
+        </div>
+      </div>
+      <div class="btn-row" style="margin:0;">
+        <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-del="${p.id}">Remove</button>
+      </div>
+    </div>
+  `).join("");
+  el.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>openPlayerDialog(b.dataset.edit));
+  el.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
+    const p = byId(STATE.players,b.dataset.del);
+    confirmDialog("Remove player", `Remove ${p.name} from the roster? This also clears them from any generated schedule.`, ()=>{
+      STATE.players = STATE.players.filter(x=>x.id!==b.dataset.del);
+      saveState(); renderMain();
+    });
+  });
+}
+
+function openPlayerDialog(playerId){
+  const existing = playerId ? byId(STATE.players,playerId) : null;
+  const draft = existing ? deepClone(existing) : {id:uid("p"), name:"", prefs:[], unavailable:[]};
+  const isDup = name => STATE.players.some(p=>p.id!==draft.id && p.name.trim().toLowerCase()===name.trim().toLowerCase());
+
+  const m = openModal(`
+    <h3>${existing?"Edit player":"Add player"}</h3>
+    <p class="modal-sub">Preferences are ordered best-to-worst. Positions not listed are treated as off-preference.</p>
+    <div class="field"><label>Name</label><input type="text" id="pfName" value="${esc(draft.name)}" placeholder="e.g. Jess Nguyen"></div>
+    <div class="field" id="dupWarn" style="display:none;"><span class="pill pill-danger">A player with this name already exists</span></div>
+    <div class="field">
+      <label>Position preferences (click to add, in order)</label>
+      <div id="prefChips" style="min-height:30px;"></div>
+      <div class="btn-row" id="prefButtons"></div>
+    </div>
+    <div class="field">
+      <label>Unavailable for game numbers (comma-separated, e.g. "3, 7")</label>
+      <input type="text" id="pfUnavail" value="${(draft.unavailable||[]).join(', ')}">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" data-act="cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="save">${existing?"Save changes":"Add player"}</button>
+    </div>
+  `, modal=>{
+    function paintChips(){
+      modal.querySelector("#prefChips").innerHTML = draft.prefs.length
+        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${pos}">${pos}</span>${POS_LABEL[pos]}<button data-rm="${pos}" title="Remove">&times;</button></span>`).join("")
+        : `<span class="hint">No preferences set yet — click a position below.</span>`;
+      modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs = draft.prefs.filter(p=>p!==b.dataset.rm); paintChips(); paintButtons(); });
+    }
+    function paintButtons(){
+      modal.querySelector("#prefButtons").innerHTML = POSITIONS.filter(p=>!draft.prefs.includes(p))
+        .map(pos=>`<button class="btn btn-sm" data-add="${pos}"><span class="pos-badge pos-${pos}">${pos}</span> ${POS_LABEL[pos]}</button>`).join("");
+      modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paintChips(); paintButtons(); });
+    }
+    paintChips(); paintButtons();
+    modal.querySelector("#pfName").addEventListener("input", e=>{
+      modal.querySelector("#dupWarn").style.display = isDup(e.target.value) && e.target.value.trim() ? "block":"none";
+    });
+    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
+    modal.querySelector('[data-act="save"]').onclick=()=>{
+      const name = modal.querySelector("#pfName").value.trim();
+      if(!name){ toast("Enter a name first."); return; }
+      if(isDup(name)){ toast("That name is already on the roster."); return; }
+      draft.name = name;
+      draft.unavailable = modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)).filter(n=>Number.isFinite(n)&&n>0);
+      if(existing){ Object.assign(existing, draft); }
+      else STATE.players.push(draft);
+      saveState(); closeModal(); renderMain();
+    };
+  });
+}
+
+function importPlayersCsv(text){
+  try{
+    const rows = parseCsv(text);
+    if(!rows.length){ toast("CSV appears empty."); return; }
+    let header = rows[0].map(h=>h.trim().toLowerCase());
+    let startIdx = 1;
+    if(!header.includes("name")){ header=["name","preferences"]; startIdx=0; }
+    const nameIdx = header.indexOf("name");
+    const prefIdx = header.indexOf("preferences")>=0?header.indexOf("preferences"):1;
+    let added=0, skipped=0;
+    for(let i=startIdx;i<rows.length;i++){
+      const r = rows[i]; if(!r || !r[nameIdx] || !r[nameIdx].trim()) continue;
+      const name = r[nameIdx].trim();
+      if(STATE.players.some(p=>p.name.toLowerCase()===name.toLowerCase())){ skipped++; continue; }
+      const prefsRaw = (r[prefIdx]||"").trim();
+      const prefs = prefsRaw.split(/[|,;\s]+/).map(s=>s.toUpperCase().trim()).filter(s=>POSITIONS.includes(s));
+      STATE.players.push({id:uid("p"), name, prefs, unavailable:[]});
+      added++;
+    }
+    saveState(); renderMain();
+    toast(`Imported ${added} player(s)${skipped?`, skipped ${skipped} duplicate(s)`:""}.`);
+  }catch(e){ toast("Could not read that CSV: "+e.message); }
+}
+
+/* Minimal RFC4180-ish CSV parser (handles quoted fields, commas, newlines) */
+function parseCsv(text){
+  const rows=[]; let row=[]; let field=""; let inQuotes=false;
+  text = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(inQuotes){
+      if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;} else inQuotes=false; }
+      else field+=c;
+    } else {
+      if(c==='"') inQuotes=true;
+      else if(c===','){ row.push(field); field=""; }
+      else if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=""; }
+      else field+=c;
+    }
+  }
+  if(field.length||row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r=>r.some(f=>f.trim()!==""));
+}
+function toCsvField(v){
+  v = v==null?"":String(v);
+  if(/[",\n]/.test(v)) return '"'+v.replace(/"/g,'""')+'"';
+  return v;
+}
+
+/* ============================================================
+   RENDER: SCHEDULE TAB
+   ============================================================ */
+let scheduleUiState = { openGame:null };
+
+function renderSchedule(root){
+  const invalidMsg = regularRosterInvalid();
+  const hasAnyGenerated = gameNums().some(n=>getGame(n).generated || getGame(n).isPlayed);
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div><h2>Generate &amp; rebalance</h2><p>Runs the assignment engine across every unplayed game, in order.</p></div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="genBtn" ${invalidMsg||!STATE.players.length?"disabled":""}>Generate season</button>
+          <button class="btn" id="rebalBtn" ${invalidMsg||!STATE.players.length?"disabled":""}>Rebalance remaining games</button>
+        </div>
+      </div>
+      ${!STATE.players.length? `<p class="hint">Add players in the Setup tab first.</p>` :
+        invalidMsg ? `<div class="pill pill-danger">${esc(invalidMsg)}</div>` :
+        `<p class="hint">Rebalance re-runs the same engine honoring every lock and edit you've made — played games and manually locked slots are never touched, but the fairness math folds their results in.</p>`}
+      <div id="genSummary"></div>
+    </div>
+    <div id="gamesList"></div>
+  `;
+  document.getElementById("genBtn").onclick=()=>{ const r=runGeneration(); toast("Season generated."); renderSchedule(root); };
+  document.getElementById("rebalBtn").onclick=()=>{ const r=runGeneration(); toast("Remaining games rebalanced."); renderSchedule(root); };
+  renderGamesList(document.getElementById("gamesList"));
+}
+
+function renderGamesList(el){
+  el.innerHTML = gameNums().map(num=>renderGameCard(num)).join("");
+  gameNums().forEach(num=>wireGameCard(el, num));
+}
+
+function statusPillsForGame(game, num){
+  const pills=[];
+  if(game.isPlayed) pills.push(`<span class="game-locked-banner">&#128274; Played &amp; locked</span>`);
+  if(game.error) pills.push(`<span class="pill pill-danger">${esc(game.error)}</span>`);
+  else if(game.shortfall) pills.push(`<span class="pill pill-danger">Shortfall — recommend ${game.recommendedFillIns} fill-in(s)</span>`);
+  else if(game.noBenchOnly) pills.push(`<span class="pill pill-warn">No bench this game</span>`);
+  if(!game.error && game.generated) pills.push(`<span class="pill pill-ok">Generated</span>`);
+  if(!game.generated && !game.isPlayed && !game.error) pills.push(`<span class="pill pill-muted">Not yet generated</span>`);
+  return pills.join(" ");
+}
+
+function renderGameCard(num){
+  const game = getGame(num);
+  const open = scheduleUiState.openGame===num;
+  return `
+  <div class="game-card" data-game="${num}">
+    <div class="game-card-head">
+      <h4>Game ${num}</h4>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        ${statusPillsForGame(game,num)}
+        <button class="btn btn-sm" data-toggle="${num}">${open?"Hide":"Details"}</button>
+      </div>
+    </div>
+    <div id="gameBody-${num}">${open?renderGameBody(num):""}</div>
+  </div>`;
+}
+
+function renderGameBody(num){
+  const game = getGame(num);
+  const plan = planGameSquad(num, emptyCumulative());
+  const rosteredOffNames = (game.rosteredOffIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ")||"—";
+  const unavailNames = (game.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ")||"—";
+  const fillinChips = (game.fillInIds||[]).map(fid=>{ const f=byId(STATE.fillIns,fid); return f?`<span class="pill pill-warn">${esc(f.name)} <button data-rmfillin="${fid}" style="background:none;border:none;color:inherit;cursor:pointer;">&times;</button></span>`:""; }).join(" ");
+
+  let gapHtml="";
+  if(plan.shortfall){
+    const gaps = fillInGapSuggestions(num);
+    gapHtml = `<div class="pill pill-danger" style="display:block;">Minimum ${plan.minFillIns} fill-in(s) needed, ${plan.recommendedFillIns} recommended for bench rotation.
+      ${gaps.length?` Coverage gaps: ${gaps.join(", ")}.`:""}</div>`;
+  }
+
+  return `
+    <div style="margin-top:12px;">
+      <div class="row">
+        <div>
+          <div class="section-label">Rostered off</div>
+          <div class="hint">${esc(rosteredOffNames)}</div>
+          <button class="btn btn-sm" style="margin-top:6px;" data-manageoff="${num}" ${game.isPlayed?"disabled":""}>Set roster-off manually</button>
+        </div>
+        <div>
+          <div class="section-label">Unavailable</div>
+          <div class="hint">${esc(unavailNames)}</div>
+        </div>
+        <div>
+          <div class="section-label">Bench-size override</div>
+          <input type="number" class="mono" id="rosterOffOverride-${num}" placeholder="auto" min="0"
+            value="${Number.isFinite(game.rosterOffOverride)?game.rosterOffOverride:''}" ${game.isPlayed?"disabled":""} style="max-width:100px;">
+        </div>
+      </div>
+      ${gapHtml}
+      <div class="section-label" style="margin-top:10px;">Fill-ins assigned to this game</div>
+      <div>${fillinChips||'<span class="hint">None yet.</span>'}</div>
+      <button class="btn btn-sm" data-assignfillin="${num}" style="margin-top:6px;" ${game.isPlayed?"disabled":""}>Assign a fill-in</button>
+
+      <div class="section-label" style="margin-top:14px;">Rotation grid</div>
+      ${renderRotationGrid(num)}
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--surface-2);"></span> On court</span>
+        <span><span class="swatch" style="background:var(--bg-alt);border:1px solid var(--border);"></span> Bench</span>
+        <span><span class="swatch" style="outline:2px solid var(--danger);"></span> Off-preference</span>
+        <span><span class="swatch" style="outline:2px dashed var(--warn);"></span> Fill-in</span>
+        <span><span class="swatch" style="outline:2px solid var(--accent);"></span> Locked</span>
+      </div>
+
+      <div class="btn-row" style="margin-top:14px;">
+        <button class="btn btn-sm ${game.isPlayed?'btn-danger':''}" data-toggleplayed="${num}">
+          ${game.isPlayed?"Unlock (mark not played)":"Mark game as played (lock)"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRotationGrid(num){
+  const game = getGame(num);
+  if(!game.schedule){
+    return `<div class="empty-state" style="padding:20px;"><div class="cta">Not generated yet. Run Generate season above.</div></div>`;
+  }
+  const rows = game.schedule.quarters.map((q,qi)=>{
+    const cells = POSITIONS.map(pos=>{
+      const pid = q.onCourt[pos];
+      const isFillIn = pid && STATE.fillIns.some(f=>f.id===pid);
+      const isOffPref = q.offPreference && q.offPreference[pos];
+      const lockKey = qi+"-"+pos;
+      const isLocked = game.lockedSlots && game.lockedSlots[lockKey];
+      const name = pid ? (byId(STATE.players,pid)||byId(STATE.fillIns,pid)||{}).name : "—";
+      const classes = ["grid-cell","cell-oncourt","cell-clickable"];
+      if(isFillIn) classes.push("cell-fillin");
+      if(isOffPref) classes.push("cell-offpref");
+      if(isLocked) classes.push("cell-locked");
+      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"><div class="pname">${esc(name)}</div></div></td>`;
+    }).join("");
+    const benchNames = (q.bench||[]).map(pid=>{
+      const isFillIn = STATE.fillIns.some(f=>f.id===pid);
+      const p = byId(STATE.players,pid)||byId(STATE.fillIns,pid);
+      return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:'?')}</span>`;
+    }).join("") || '<span class="hint">—</span>';
+    return `<tr><td class="mono">Q${qi+1}</td>${cells}<td>${benchNames}</td></tr>`;
+  }).join("");
+  return `<div class="table-scroll"><table>
+    <thead><tr><th></th>${POSITIONS.map(p=>`<th><span class="pos-badge pos-${p}">${p}</span></th>`).join("")}<th>Bench</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function wireGameCard(el, num){
+  const card = el.querySelector(`[data-game="${num}"]`);
+  if(!card) return;
+  const toggleBtn = card.querySelector(`[data-toggle="${num}"]`);
+  if(toggleBtn) toggleBtn.onclick=()=>{
+    scheduleUiState.openGame = scheduleUiState.openGame===num ? null : num;
+    renderGamesList(el);
+  };
+  if(scheduleUiState.openGame!==num) return;
+
+  const off = card.querySelector(`#rosterOffOverride-${num}`);
+  if(off) off.onchange=()=>{
+    const v = off.value.trim();
+    const game = getGame(num);
+    game.rosterOffOverride = v===""?null:clamp(parseInt(v,10),0,STATE.players.length);
+    game.rosteredOffIds = null; // clear manual selection lock when override count changes
+    game.rosterOffLockIds = null;
+    saveState(); toast("Roster-off override set. Regenerate to apply.");
+  };
+  const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
+  if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
+  const assignFillin = card.querySelector(`[data-assignfillin="${num}"]`);
+  if(assignFillin) assignFillin.onclick=()=>openAssignFillInDialog(num);
+  card.querySelectorAll("[data-rmfillin]").forEach(b=>b.onclick=()=>{
+    const game=getGame(num); game.fillInIds=(game.fillInIds||[]).filter(id=>id!==b.dataset.rmfillin);
+    saveState(); renderGamesList(el);
+  });
+  const togglePlayed = card.querySelector(`[data-toggleplayed="${num}"]`);
+  if(togglePlayed) togglePlayed.onclick=()=>{
+    const game = getGame(num);
+    if(!game.isPlayed && !game.schedule){ toast("Generate this game's schedule before marking it played."); return; }
+    game.isPlayed = !game.isPlayed;
+    saveState(); toast(game.isPlayed?`Game ${num} locked as played.`:`Game ${num} unlocked.`);
+    renderGamesList(el);
+  };
+  card.querySelectorAll("[data-slot]").forEach(cellEl=>{
+    cellEl.onclick=()=>{
+      const [g,qi,pos] = cellEl.dataset.slot.split("|");
+      openSlotEditDialog(Number(g), Number(qi), pos);
+    };
+  });
+}
+
+function openRosterOffDialog(num){
+  const game = getGame(num);
+  const plan = planGameSquad(num, emptyCumulative());
+  const availIds = plan.availableRegularIds;
+  const current = new Set(game.rosterOffLockIds || game.rosteredOffIds || []);
+  const m = openModal(`
+    <h3>Roster off — Game ${num}</h3>
+    <p class="modal-sub">Manually choose who's rostered off. Leave unset to let the engine auto-select for fairness.</p>
+    <div id="offList" style="max-height:280px;overflow-y:auto;"></div>
+    <div class="modal-actions">
+      <button class="btn" data-act="clear">Clear (auto)</button>
+      <button class="btn" data-act="cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="save">Save</button>
+    </div>
+  `, modal=>{
+    modal.querySelector("#offList").innerHTML = STATE.players.filter(p=>availIds.includes(p.id)).map(p=>`
+      <label class="checkbox-row"><input type="checkbox" value="${p.id}" ${current.has(p.id)?"checked":""}>
+        <span class="cb-label">${esc(p.name)}</span></label>`).join("");
+    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
+    modal.querySelector('[data-act="clear"]').onclick=()=>{
+      game.rosterOffLockIds=null; saveState(); closeModal(); toast("Cleared — engine will auto-select.");
+      scheduleUiState.openGame=num; renderMain();
+    };
+    modal.querySelector('[data-act="save"]').onclick=()=>{
+      const ids = Array.from(modal.querySelectorAll("#offList input:checked")).map(i=>i.value);
+      game.rosterOffLockIds = ids; saveState(); closeModal();
+      scheduleUiState.openGame=num; renderMain();
+    };
+  });
+}
+
+function openAssignFillInDialog(num){
+  if(!STATE.fillIns.length){ toast("Add a fill-in player first, in the Fill-ins tab."); return; }
+  const game = getGame(num);
+  const assigned = new Set(game.fillInIds||[]);
+  openModal(`
+    <h3>Assign fill-in — Game ${num}</h3>
+    <div id="finList" style="max-height:280px;overflow-y:auto;"></div>
+    <div class="modal-actions">
+      <button class="btn" data-act="cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="save">Save</button>
+    </div>
+  `, modal=>{
+    modal.querySelector("#finList").innerHTML = STATE.fillIns.map(f=>`
+      <label class="checkbox-row"><input type="checkbox" value="${f.id}" ${assigned.has(f.id)?"checked":""}>
+        <span class="cb-label">${esc(f.name)}</span>
+        <span class="cb-desc">${f.prefs.join(", ")||"no preferences set"}</span></label>`).join("");
+    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
+    modal.querySelector('[data-act="save"]').onclick=()=>{
+      game.fillInIds = Array.from(modal.querySelectorAll("#finList input:checked")).map(i=>i.value);
+      saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
+    };
+  });
+}
+
+function openSlotEditDialog(num, qi, pos){
+  const game = getGame(num);
+  if(game.isPlayed){ toast("This game is locked as played. Unlock it first to edit."); return; }
+  if(!game.schedule) return;
+  const squadIds = game.squadIds||[];
+  const options = squadIds.map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
+  const lockKey = qi+"-"+pos;
+  const isLocked = !!(game.lockedSlots && game.lockedSlots[lockKey]);
+  openModal(`
+    <h3>Game ${num} · Q${qi+1} · ${pos}</h3>
+    <p class="modal-sub">${POS_LABEL[pos]}</p>
+    <div class="field"><label>Assign player</label>
+      <select id="slotSelect">
+        <option value="">— unassigned —</option>
+        ${options.map(p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(pos)?' (off-preference)':''}</option>`).join("")}
+      </select>
+    </div>
+    <label class="checkbox-row"><input type="checkbox" id="slotLock" ${isLocked?"checked":""}>
+      <span class="cb-label">Lock this slot</span>
+      <span class="cb-desc">Rebalance won't change it</span></label>
+    <div class="modal-actions">
+      <button class="btn" data-act="cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="save">Save</button>
+    </div>
+  `, modal=>{
+    const sel = modal.querySelector("#slotSelect");
+    sel.value = game.schedule.quarters[qi].onCourt[pos]||"";
+    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
+    modal.querySelector('[data-act="save"]').onclick=()=>{
+      const pid = sel.value||null;
+      const lock = modal.querySelector("#slotLock").checked;
+      const q = game.schedule.quarters[qi];
+      // remove player from bench / other position this quarter if present
+      q.bench = (q.bench||[]).filter(id=>id!==pid);
+      POSITIONS.forEach(p2=>{ if(p2!==pos && q.onCourt[p2]===pid) q.onCourt[p2]=null; });
+      q.onCourt[pos]=pid;
+      const player = pid ? (byId(STATE.players,pid)||byId(STATE.fillIns,pid)) : null;
+      if(!q.offPreference) q.offPreference={};
+      q.offPreference[pos] = !!(player && player.prefs && !player.prefs.includes(pos));
+      game.lockedSlots = game.lockedSlots||{};
+      if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
+      saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
+    };
+  });
+}
+
+/* ============================================================
+   RENDER: FILL-INS TAB
+   ============================================================ */
+function renderFillIns(root){
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div><h2>Fill-in players (${STATE.fillIns.length})</h2><p>Guests for short-staffed games. Saved for reuse; excluded from season fairness.</p></div>
+        <button class="btn btn-primary btn-sm" id="addFillinBtn">+ Add fill-in</button>
+      </div>
+      <div id="fillinList"></div>
+    </div>
+  `;
+  const listEl = document.getElementById("fillinList");
+  if(!STATE.fillIns.length){
+    listEl.innerHTML = `<div class="empty-state"><div class="glyph">&#128100;</div><div>No fill-ins saved yet.</div>
+      <div class="cta">Add a guest player here, then assign them to specific games from the Schedule tab.</div></div>`;
+  } else {
+    listEl.innerHTML = STATE.fillIns.map(f=>{
+      const usedIn = gameNums().filter(n=>(getGame(n).fillInIds||[]).includes(f.id));
+      return `<div class="list-row">
+        <div style="flex:1;min-width:0;">
+          <div class="player-name">${esc(f.name)}</div>
+          <div class="player-meta">${f.prefs.map(pos=>`<span class="pos-badge pos-${pos}">${pos}</span>`).join(" ")||'<span class="hint">no preferences set</span>'}
+            ${usedIn.length?`<span class="pill pill-accent" style="margin-left:6px;">Used in ${usedIn.length} game(s)</span>`:""}</div>
+        </div>
+        <div class="btn-row" style="margin:0;">
+          <button class="btn btn-sm" data-editfi="${f.id}">Edit</button>
+          <button class="btn btn-sm btn-danger" data-delfi="${f.id}">Remove</button>
+        </div>
+      </div>`;
+    }).join("");
+    listEl.querySelectorAll("[data-editfi]").forEach(b=>b.onclick=()=>openFillInDialog(b.dataset.editfi));
+    listEl.querySelectorAll("[data-delfi]").forEach(b=>b.onclick=()=>{
+      confirmDialog("Remove fill-in", "Remove this fill-in and unassign them from any games?", ()=>{
+        STATE.fillIns = STATE.fillIns.filter(f=>f.id!==b.dataset.delfi);
+        gameNums().forEach(n=>{ const g=getGame(n); g.fillInIds=(g.fillInIds||[]).filter(id=>id!==b.dataset.delfi); });
+        saveState(); renderMain();
+      });
+    });
+  }
+  document.getElementById("addFillinBtn").onclick=()=>openFillInDialog(null);
+}
+
+/* Cancel-safe: the draft object lives only inside this closure/modal and is
+   never written into STATE until Save is clicked. Cancel (or the backdrop
+   click / re-open) simply discards it — see SS-8 / SS-9. */
+function openFillInDialog(fillInId){
+  const existing = fillInId ? byId(STATE.fillIns, fillInId) : null;
+  const draft = existing ? deepClone(existing) : {id:uid("fi"), name:"", prefs:[]};
+
+  const m = openModal(`
+    <h3>${existing?"Edit fill-in":"Add fill-in"}</h3>
+    <p class="modal-sub">Guest player, reusable across games. Not part of the permanent roster or season fairness.</p>
+    <div class="field"><label>Name</label><input type="text" id="fiName" value="${esc(draft.name)}" placeholder="e.g. Casey (guest)"></div>
+    <div class="field">
+      <label>Position preferences (optional, ordered)</label>
+      <div id="fiChips" style="min-height:30px;"></div>
+      <div class="btn-row" id="fiButtons"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" data-act="cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="save">${existing?"Save changes":"Add fill-in"}</button>
+    </div>
+  `, modal=>{
+    function paintChips(){
+      modal.querySelector("#fiChips").innerHTML = draft.prefs.length
+        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${pos}">${pos}</span>${POS_LABEL[pos]}<button data-rm="${pos}">&times;</button></span>`).join("")
+        : `<span class="hint">Flexible / no preference.</span>`;
+      modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs=draft.prefs.filter(p=>p!==b.dataset.rm); paintChips(); paintButtons(); });
+    }
+    function paintButtons(){
+      modal.querySelector("#fiButtons").innerHTML = POSITIONS.filter(p=>!draft.prefs.includes(p))
+        .map(pos=>`<button class="btn btn-sm" data-add="${pos}"><span class="pos-badge pos-${pos}">${pos}</span> ${POS_LABEL[pos]}</button>`).join("");
+      modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paintChips(); paintButtons(); });
+    }
+    paintChips(); paintButtons();
+    // Cancel: discard draft entirely, state untouched.
+    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
+    modal.querySelector('[data-act="save"]').onclick=()=>{
+      const name = modal.querySelector("#fiName").value.trim();
+      if(!name){ toast("Enter a name first."); return; }
+      draft.name = name;
+      if(existing) Object.assign(existing, draft);
+      else STATE.fillIns.push(draft);
+      saveState(); closeModal(); renderMain();
+    };
+  });
+}
+
+/* ============================================================
+   RENDER: REPORTS TAB
+   ============================================================ */
+function renderReports(root){
+  const summaries = computePlayerSummaries();
+  const offPref = computeOffPrefLog();
+  const offPrefRate = computeOffPrefRate();
+  const shortGames = gameNums().map(n=>({n,g:getGame(n)})).filter(x=>x.g.shortfall);
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h2>Player summary</h2><p>On-court / bench / missed games and position breakdown, including off-preference quarters.</p></div></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Player</th><th>Games</th><th>On-court Q</th><th>Bench Q</th><th>Missed</th>
+          ${POSITIONS.map(p=>`<th>${p}</th>`).join("")}<th>Off-pref Q</th></tr></thead>
+        <tbody>
+        ${summaries.length? summaries.map(s=>`
+          <tr><td><strong>${esc(s.name)}</strong></td><td class="mono">${s.gamesPlayedIn}</td>
+            <td class="mono">${s.onCourt}</td><td class="mono">${s.bench}</td><td class="mono">${s.missed}</td>
+            ${POSITIONS.map(pos=>`<td class="mono">${s.positions[pos]||0}${s.offPrefPositions[pos]?` <span class="pill pill-danger" style="padding:1px 6px;">${s.offPrefPositions[pos]} off-pref</span>`:""}</td>`).join("")}
+            <td class="mono">${s.offPrefTotal}</td></tr>
+        `).join("") : `<tr><td colspan="12" class="hint">No players yet.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h2>Off-preference report</h2><p>Every slot filled outside a player's stated preferences, and why.</p></div></div>
+      <div class="stat-grid" style="margin-bottom:14px;">
+        <div class="stat-box"><div class="num">${offPref.length}</div><div class="lbl">off-preference fills</div></div>
+        <div class="stat-box"><div class="num">${offPrefRate.totalSlots}</div><div class="lbl">total on-court slots</div></div>
+        <div class="stat-box"><div class="num">${offPrefRate.rate.toFixed(1)}%</div><div class="lbl">season rate</div></div>
+      </div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Game</th><th>Qtr</th><th>Player</th><th>Position</th><th>Why (specialists unavailable)</th></tr></thead>
+        <tbody>
+        ${offPref.length? offPref.map(o=>`
+          <tr><td class="mono">${o.game}</td><td class="mono">${o.quarter}</td><td>${esc(o.playerName)}</td>
+            <td><span class="pos-badge pos-${o.position}">${o.position}</span></td>
+            <td class="hint">${o.unavailableSpecialists.length?esc(o.unavailableSpecialists.join(", ")):"no specialists on the roster"}</td></tr>
+        `).join("") : `<tr><td colspan="5" class="hint">None yet — generate the season to populate this log.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h2>Short-staffed game notes</h2><p>Games where availability drops below a full squad.</p></div></div>
+      ${shortGames.length? shortGames.map(({n,g})=>{
+        const gaps = fillInGapSuggestions(n);
+        const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
+        return `<div class="game-card"><div class="game-card-head"><h4>Game ${n}</h4>
+          <span class="pill pill-danger">${g.minFillIns} min / ${g.recommendedFillIns} recommended fill-ins</span></div>
+          <p class="hint" style="margin:8px 0 4px;">Unavailable: ${esc(unavail)||"—"}</p>
+          ${gaps.length?`<p class="hint">Coverage gaps: ${gaps.join(", ")}</p>`:""}</div>`;
+      }).join("") : `<p class="hint">No short-staffed games currently.</p>`}
+    </div>
+  `;
+}
+
+/* ============================================================
+   RENDER: SETTINGS TAB
+   ============================================================ */
+function renderSettings(root){
+  const s = STATE.settings;
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h2>Preference vs. fairness</h2><p>How strongly the engine favors a player's stated preference rank over even rotation.</p></div></div>
+      <div class="field">
+        <label>Priority slider — fairness &#8596; strict preference</label>
+        <div class="slider-wrap">
+          <input type="range" id="prefSlider" min="0" max="10" step="1" value="${s.preferenceSlider}">
+          <span class="slider-val mono" id="sliderVal">${s.preferenceSlider}</span>
+        </div>
+        <p class="hint">Higher values never increase off-preference fills for the same data — at maximum, off-preference is used only where truly unavoidable.</p>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="allowOffPref" ${s.allowOffPreference?"checked":""}>
+        <span class="cb-label">Allow off-preference positions</span>
+        <span class="cb-desc">When off, a position with no eligible in-preference player raises an error instead of a fallback assignment</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="topTwoOnly" ${s.topTwoOnly?"checked":""}>
+        <span class="cb-label">Prefer top-2 positions only</span>
+        <span class="cb-desc">Off: balances a player's on-court time across their entire preference list, not just their top 2</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="strictMode" ${s.strictSpecialistMode?"checked":""}>
+        <span class="cb-label">Strict specialist pairing (reduces off-preference)</span>
+        <span class="cb-desc">Avoid rostering off / benching more than one specialist for the same scarce position at once — may reduce bench-time evenness</span>
+      </label>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Fairness priority order</h2><p>Relative weight — higher number matters more when trade-offs arise.</p></div></div>
+      ${["missed","onCourt","bench","positionPurity"].map(k=>{
+        const labels = {missed:"Games missed evenness",onCourt:"On-court time evenness",bench:"Bench time evenness",positionPurity:"Position preference purity"};
+        return `<div class="field"><label>${labels[k]}</label>
+          <div class="slider-wrap"><input type="range" data-weight="${k}" min="1" max="10" step="1" value="${s.fairnessWeights[k]}">
+          <span class="slider-val mono">${s.fairnessWeights[k]}</span></div></div>`;
+      }).join("")}
+      <p class="hint">These weights bias the roster-off and bench-rotation ordering; regenerate after changing them.</p>
+    </div>
+  `;
+  document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; };
+  document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
+  document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; saveState(); toast("Regenerate to apply."); };
+  document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; saveState(); toast("Regenerate to apply."); };
+  document.getElementById("strictMode").onchange=e=>{ s.strictSpecialistMode=e.target.checked; saveState(); toast("Regenerate to apply."); };
+  root.querySelectorAll("[data-weight]").forEach(inp=>{
+    inp.oninput=e=>{ e.target.nextElementSibling.textContent=e.target.value; };
+    inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
+  });
+}
+
+/* ============================================================
+   RENDER: DATA TAB  (CSV export/import, XLSX export, reset)
+   ============================================================ */
+function renderData(root){
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h2>Share / back up (CSV)</h2><p>Full round-trip of every field — players, preferences, availability, fill-ins, per-game roster-off values, locks, played status and the generated schedule.</p></div></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="exportCsvBtn">Export full CSV</button>
+        <button class="btn" id="importCsvFullBtn">Import full CSV</button>
+        <input type="file" id="csvFullInput" accept=".csv" hidden>
+      </div>
+      <p class="hint" style="margin-top:10px;">Export this file and send it to a co-coach — importing it on another device or browser continues editing exactly where you left off. This app has no server, so CSV is the only way to move data between devices.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Export report (.xlsx)</h2><p>Rotation grid, player summary, and short-staffed notes as spreadsheet tabs.</p></div></div>
+      <button class="btn btn-primary" id="exportXlsxBtn">Download .xlsx report</button>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Reset</h2><p>Clears everything stored in this browser.</p></div></div>
+      <button class="btn btn-danger" id="resetBtn">Clear all data</button>
+    </div>
+  `;
+  document.getElementById("exportCsvBtn").onclick=exportFullCsv;
+  document.getElementById("importCsvFullBtn").onclick=()=>document.getElementById("csvFullInput").click();
+  document.getElementById("csvFullInput").onchange=e=>{
+    const f=e.target.files[0]; if(!f) return;
+    const reader=new FileReader();
+    reader.onload=ev=>importFullCsv(ev.target.result);
+    reader.readAsText(f); e.target.value="";
+  };
+  document.getElementById("exportXlsxBtn").onclick=exportXlsx;
+  document.getElementById("resetBtn").onclick=()=>{
+    confirmDialog("Clear all data", "This permanently deletes every player, game, and setting stored in this browser. This cannot be undone.", ()=>{
+      STATE = defaultState(); saveState(); render(); toast("All data cleared.");
+    });
+  };
+}
+
+function downloadBlob(filename, blob){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },1000);
+}
+
+function exportFullCsv(){
+  const lines = [];
+  const row = (...fields)=>lines.push(fields.map(toCsvField).join(","));
+  row("#META"); row("version",1); row("exportedAt",todayIso());
+  row("#SEASON"); row("numGames",STATE.season.numGames); row("desiredBenchSize",STATE.season.desiredBenchSize);
+  row("#SETTINGS");
+  row("preferenceSlider",STATE.settings.preferenceSlider);
+  row("allowOffPreference",STATE.settings.allowOffPreference?1:0);
+  row("topTwoOnly",STATE.settings.topTwoOnly?1:0);
+  row("strictSpecialistMode",STATE.settings.strictSpecialistMode?1:0);
+  row("weight_missed",STATE.settings.fairnessWeights.missed);
+  row("weight_onCourt",STATE.settings.fairnessWeights.onCourt);
+  row("weight_bench",STATE.settings.fairnessWeights.bench);
+  row("weight_positionPurity",STATE.settings.fairnessWeights.positionPurity);
+  row("theme",STATE.theme);
+  row("#PLAYERS","id","name","prefs","unavailable");
+  STATE.players.forEach(p=>row(p.id,p.name,(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
+  row("#FILLINS","id","name","prefs");
+  STATE.fillIns.forEach(f=>row(f.id,f.name,(f.prefs||[]).join("|")));
+  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","fillInIds","lockedSlots","error");
+  gameNums().forEach(n=>{
+    const g = getGame(n);
+    const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
+    row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
+      (g.rosterOffLockIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"");
+  });
+  row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
+  gameNums().forEach(n=>{
+    const g = getGame(n);
+    if(!g.schedule) return;
+    g.schedule.quarters.forEach((q,qi)=>{
+      POSITIONS.forEach(pos=>{
+        if(q.onCourt[pos]) row(n,qi,pos,q.onCourt[pos], (q.offPreference&&q.offPreference[pos])?1:0);
+      });
+      (q.bench||[]).forEach(pid=>row(n,qi,"BENCH",pid,0));
+    });
+  });
+  const csv = lines.join("\r\n");
+  downloadBlob(`netball-roster-season-${STATE._lastGeneratedAt?"":"draft-"}${new Date().toISOString().slice(0,10)}.csv`, new Blob([csv],{type:"text/csv"}));
+  toast("CSV exported.");
+}
+
+function importFullCsv(text){
+  try{
+    const rows = parseCsv(text);
+    const sections = {};
+    let cur = null;
+    rows.forEach(r=>{
+      if(r[0] && r[0].startsWith("#")){ cur = r[0].slice(1); sections[cur]=sections[cur]||[]; return; }
+      if(cur) sections[cur].push(r);
+    });
+    if(!sections.PLAYERS && !sections.SEASON){ toast("This doesn't look like a season export CSV."); return; }
+
+    const ns = defaultState();
+    // META/SEASON/SETTINGS come as key/value pairs (skip header-less; each row is [key,value...])
+    const kv = (sectionRows)=>{ const o={}; (sectionRows||[]).forEach(r=>{ o[r[0]]=r[1]; }); return o; };
+    const season = kv(sections.SEASON);
+    if(season.numGames) ns.season.numGames = parseInt(season.numGames,10)||1;
+    if(season.desiredBenchSize!==undefined) ns.season.desiredBenchSize = parseInt(season.desiredBenchSize,10)||0;
+
+    const set = kv(sections.SETTINGS);
+    if(set.preferenceSlider!==undefined) ns.settings.preferenceSlider = Number(set.preferenceSlider);
+    if(set.allowOffPreference!==undefined) ns.settings.allowOffPreference = set.allowOffPreference==="1";
+    if(set.topTwoOnly!==undefined) ns.settings.topTwoOnly = set.topTwoOnly==="1";
+    if(set.strictSpecialistMode!==undefined) ns.settings.strictSpecialistMode = set.strictSpecialistMode==="1";
+    ["missed","onCourt","bench","positionPurity"].forEach(k=>{
+      const v = set["weight_"+k]; if(v!==undefined) ns.settings.fairnessWeights[k]=Number(v);
+    });
+    if(set.theme) ns.theme = set.theme;
+
+    ns.players = (sections.PLAYERS||[]).slice(1).filter(r=>r[0]).map(r=>({
+      id:r[0], name:r[1]||"", prefs:(r[2]||"").split("|").filter(Boolean),
+      unavailable:(r[3]||"").split("|").filter(Boolean).map(Number)
+    }));
+    ns.fillIns = (sections.FILLINS||[]).slice(1).filter(r=>r[0]).map(r=>({
+      id:r[0], name:r[1]||"", prefs:(r[2]||"").split("|").filter(Boolean)
+    }));
+
+    ns.games = {};
+    (sections.GAMES||[]).slice(1).filter(r=>r[0]).forEach(r=>{
+      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,fillInIds,lockedSlotsStr,errorStr] = r;
+      const g = newGameState();
+      g.isPlayed = isPlayed==="1";
+      g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
+      g.rosterOffLockIds = (rosterOffLockIds||"").split("|").filter(Boolean);
+      if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
+      g.fillInIds = (fillInIds||"").split("|").filter(Boolean);
+      g.lockedSlots = {};
+      (lockedSlotsStr||"").split("|").filter(Boolean).forEach(pair=>{
+        const eq = pair.indexOf("="); if(eq<0) return;
+        g.lockedSlots[pair.slice(0,eq)] = pair.slice(eq+1);
+      });
+      g.error = errorStr||null;
+      ns.games[String(num)] = g;
+    });
+
+    (sections.SCHEDULE||[]).slice(1).filter(r=>r[0]!==undefined && r[0]!=="").forEach(r=>{
+      const [num,qi,slot,playerId,offPref] = r;
+      const g = ns.games[String(num)] || (ns.games[String(num)]=newGameState());
+      if(!g.schedule) g.schedule = {quarters:[0,1,2,3].map(()=>({onCourt:{},bench:[],offPreference:{}}))};
+      const q = g.schedule.quarters[Number(qi)];
+      if(!q) return;
+      if(slot==="BENCH") q.bench.push(playerId);
+      else { q.onCourt[slot]=playerId; q.offPreference[slot]= offPref==="1"; }
+      g.generated = true;
+      g.squadIds = Array.from(new Set([...(g.squadIds||[]), playerId]));
+    });
+
+    STATE = ns;
+    // recompute derived display-only fields (roster-off/unavailable ids, shortfall flags) without touching schedule/locks
+    gameNums().forEach(n=>{
+      const g = getGame(n);
+      const plan = planGameSquad(n, emptyCumulative());
+      g.rosteredOffIds = g.rosterOffLockIds || plan.rosteredOffIds;
+      g.unavailableIds = plan.unavailableIds;
+      g.shortfall = plan.shortfall; g.minFillIns = plan.minFillIns; g.recommendedFillIns = plan.recommendedFillIns;
+      g.noBenchOnly = plan.noBenchOnly;
+      if(!g.squadIds || !g.squadIds.length) g.squadIds = plan.squad.map(p=>p.id);
+    });
+    saveState();
+    render();
+    toast(`Imported ${STATE.players.length} player(s), ${gameNums().length} game(s).`);
+  }catch(e){
+    console.error(e);
+    toast("Import failed — the file looks malformed or corrupted: "+e.message);
+  }
+}
+
+function exportXlsx(){
+  if(typeof XLSX==="undefined"){ toast("Spreadsheet library failed to load — check your connection."); return; }
+  const wb = XLSX.utils.book_new();
+
+  const gridRows = [["Game","Quarter",...POSITIONS,"Bench"]];
+  gameNums().forEach(n=>{
+    const g = getGame(n); if(!g.schedule) return;
+    g.schedule.quarters.forEach((q,qi)=>{
+      const posCells = POSITIONS.map(pos=>{
+        const pid=q.onCourt[pos]; const p = pid && (byId(STATE.players,pid)||byId(STATE.fillIns,pid));
+        if(!p) return "";
+        const offpref = q.offPreference&&q.offPreference[pos];
+        return p.name + (offpref?" (off-pref)":"");
+      });
+      const benchNames = (q.bench||[]).map(pid=>{ const p=byId(STATE.players,pid)||byId(STATE.fillIns,pid); return p?p.name:pid; }).join(", ");
+      gridRows.push([n,qi+1,...posCells,benchNames]);
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(gridRows), "Rotation Grid");
+
+  const summaries = computePlayerSummaries();
+  const sumRows = [["Player","Games Played","On-court Q","Bench Q","Missed", ...POSITIONS, "Off-pref Q"]];
+  summaries.forEach(s=> sumRows.push([s.name,s.gamesPlayedIn,s.onCourt,s.bench,s.missed, ...POSITIONS.map(p=>s.positions[p]||0), s.offPrefTotal]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sumRows), "Player Summary");
+
+  const noteRows = [["Game","Unavailable","Min Fill-ins","Recommended Fill-ins","Coverage Gaps"]];
+  gameNums().filter(n=>getGame(n).shortfall).forEach(n=>{
+    const g = getGame(n);
+    const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
+    noteRows.push([n, unavail, g.minFillIns, g.recommendedFillIns, fillInGapSuggestions(n).join(", ")]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), "Short-Staffed Notes");
+
+  const offRows = [["Game","Quarter","Player","Position","Unavailable Specialists"]];
+  computeOffPrefLog().forEach(o=> offRows.push([o.game,o.quarter,o.playerName,o.position,o.unavailableSpecialists.join(", ")]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(offRows), "Off-Preference Log");
+
+  XLSX.writeFile(wb, `netball-roster-${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast("Spreadsheet downloaded.");
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+document.addEventListener("DOMContentLoaded", function(){
+  ensureGamesExist();
+  render();
+});
+
+})();
+
+</script>
+</body>
+</html>
