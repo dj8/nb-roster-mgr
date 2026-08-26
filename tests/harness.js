@@ -64,14 +64,12 @@ class CapturingBlob {
 }
 
 function loadEngine(){
-  const htmlPath = path.join(__dirname, "..", "index.html");
-  const html = fs.readFileSync(htmlPath, "utf8");
-  const scriptMatches = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m=>m[1]);
-  const appScript = scriptMatches.find(s => s.includes('"use strict"'));
-  if(!appScript) throw new Error("Could not locate the app's inline script in index.html");
+  const hungarianSrc = fs.readFileSync(path.join(__dirname, "..", "hungarian.js"), "utf8");
+  const solverSrc = fs.readFileSync(path.join(__dirname, "..", "solver.js"), "utf8");
+  const appScript = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
 
   const closeIdx = appScript.lastIndexOf("})();");
-  if(closeIdx < 0) throw new Error("Could not locate IIFE closer in app script");
+  if(closeIdx < 0) throw new Error("Could not locate IIFE closer in app.js");
 
   const exportsBlock = `
 if(typeof module!=="undefined" && module.exports){
@@ -80,17 +78,14 @@ if(typeof module!=="undefined" && module.exports){
     _resetState: function(){ STATE = defaultState(); return STATE; },
     _setState: function(s){ STATE = s; return STATE; },
     runGeneration: runGeneration,
+    computeSeasonRosterOff: computeSeasonRosterOff,
     planGameSquad: planGameSquad,
-    assignQuarterPositions: assignQuarterPositions,
-    chooseBenchGroup: chooseBenchGroup,
-    selectRosterOff: selectRosterOff,
-    rosterOffCoveragePenalty: rosterOffCoveragePenalty,
-    rosterOffHasSevereGap: rosterOffHasSevereGap,
-    futureAbsenceCount: futureAbsenceCount,
+    planGameAvailability: planGameAvailability,
     computeCoverageWarnings: computeCoverageWarnings,
     computePlayerSummaries: computePlayerSummaries,
     computeOffPrefLog: computeOffPrefLog,
     computeOffPrefRate: computeOffPrefRate,
+    computeMissedGamesWarningForReports: computeMissedGamesWarningForReports,
     newGameState: newGameState,
     defaultState: defaultState,
     emptyCumulative: emptyCumulative,
@@ -126,10 +121,14 @@ if(typeof module!=="undefined" && module.exports){
   sandbox.window = sandbox;
   sandbox.global = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(patched, sandbox, { filename: "index.html-inline-script.js" });
+  vm.runInContext(hungarianSrc, sandbox, { filename: "hungarian.js" });
+  vm.runInContext(solverSrc, sandbox, { filename: "solver.js" });
+  vm.runInContext(patched, sandbox, { filename: "app.js" });
 
   const engine = sandbox.module.exports;
   engine.CapturingBlob = CapturingBlob;
+  engine.Hungarian = sandbox.Hungarian;
+  engine.RosterSolver = sandbox.RosterSolver;
   return engine;
 }
 

@@ -1,0 +1,12 @@
+{
+  "name": "nb-roster-mgr",
+  "private": true,
+  "description": "Netball season roster planner — static HTML/CSS/JS, no build step. This package.json exists only for dev tooling (unit tests, headless UI smoke tests), not for the app itself.",
+  "scripts": {
+    "test": "node tests/run.js",
+    "test:ui": "node tests/ui-smoke.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  }
+}

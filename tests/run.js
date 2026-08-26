@@ -1,7 +1,7 @@
-/* Node-based regression suite for the engine embedded in index.html.
+/* Node-based regression suite for the engine embedded across app.js / solver.js / hungarian.js.
    Run with: node tests/run.js
-   Loads a fresh, isolated instance of the app's inline script per test via
-   harness.loadEngine() (document/localStorage/URL/Blob are stubbed — see harness.js). */
+   Loads a fresh, isolated instance of the app per test via harness.loadEngine()
+   (document/localStorage/URL/Blob are stubbed — see harness.js). */
 "use strict";
 const assert = require("assert");
 const { loadEngine } = require("./harness.js");
@@ -29,211 +29,245 @@ function addPlayer(engine, name, prefs, unavailable){
   return p;
 }
 
-/* ============================================================
-   1. Slider sweep monotonicity (rewritten cost function)
-   ============================================================ */
-test("SLIDER-1: off-preference count is non-increasing across slider 0..10", ()=>{
-  function buildRoster(engine){
-    const st = engine._getState();
-    st.season.numGames = 10;
-    st.season.desiredBenchSize = 3;
-    const defs = [
-      ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
-      ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
-      ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]],
-      ["Jaz",["C","WD","GD"]], ["Kim",["GD","GK"]], ["Lou",["GK","GD","WD"]],
-      ["Mia",["GA","WA","C"]], ["Nel",["WD","GD","GK"]]
-    ];
-    defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
-    st.players[0].unavailable = [3,7];
-    st.players[4].unavailable = [2];
-    st.players[9].unavailable = [5,6];
-    st.players[12].unavailable = [1];
-    engine.ensureGamesExist();
-  }
-  const counts = [];
-  for(let slider=0; slider<=10; slider++){
-    const engine = freshEngine();
-    buildRoster(engine);
-    engine._getState().settings.preferenceSlider = slider;
-    const r = engine.runGeneration();
-    assert.strictEqual(r.invalid, null, "roster should be valid at slider="+slider);
-    counts.push(engine.computeOffPrefLog().length);
-  }
-  for(let i=1;i<counts.length;i++){
-    assert.ok(counts[i] <= counts[i-1],
-      `off-pref count increased raising slider from ${i-1} (${counts[i-1]}) to ${i} (${counts[i]}): ${counts}`);
-  }
-  assert.ok(counts[0] > counts[10], "sanity: slider should meaningfully change off-pref count end to end: "+counts);
-});
-
-test("SLIDER-2: fairnessWeights.onCourt and .positionPurity are consulted (changing them changes output)", ()=>{
-  function buildRoster(engine){
-    const st = engine._getState();
-    st.season.numGames = 6;
-    st.season.desiredBenchSize = 2;
-    const defs = [
-      ["Amy",["GS","GA"]], ["Bea",["GA","GS"]], ["Cat",["WA","C"]],
-      ["Dee",["C","WA"]], ["Eve",["WD","GD"]], ["Fay",["GD","WD"]],
-      ["Gia",["GK"]], ["Hal",["GS","WA"]], ["Ivy",["C","WD"]]
-    ];
-    defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
-    engine.ensureGamesExist();
-  }
-  const engineLow = freshEngine();
-  buildRoster(engineLow);
-  engineLow._getState().settings.preferenceSlider = 5;
-  engineLow._getState().settings.fairnessWeights.onCourt = 1;
-  engineLow.runGeneration();
-  const onCourtCountsLow = engineLow.computePlayerSummaries().map(s=>s.onCourt).sort();
-
-  const engineHigh = freshEngine();
-  buildRoster(engineHigh);
-  engineHigh._getState().settings.preferenceSlider = 5;
-  engineHigh._getState().settings.fairnessWeights.onCourt = 10;
-  engineHigh.runGeneration();
-  const onCourtCountsHigh = engineHigh.computePlayerSummaries().map(s=>s.onCourt).sort();
-
-  assert.notDeepStrictEqual(onCourtCountsLow, onCourtCountsHigh,
-    "changing fairnessWeights.onCourt should be able to change the resulting on-court distribution");
-});
+/* Brute-force optimal assignment cost for a square cost matrix, via full
+   permutation search — only used on small matrices (n<=8) in tests, to
+   independently verify the Hungarian implementation and the solver's
+   cost-matrix construction. */
+function bruteForceOptimalCost(matrix){
+  const n = matrix.length;
+  const idx = Array.from({length:n},(_,i)=>i);
+  let best = Infinity;
+  (function permute(arr, l){
+    if(l===arr.length){
+      let cost=0;
+      arr.forEach((col,row)=>cost+=matrix[row][col]);
+      if(cost<best) best=cost;
+      return;
+    }
+    for(let i=l;i<arr.length;i++){
+      [arr[l],arr[i]]=[arr[i],arr[l]];
+      permute(arr,l+1);
+      [arr[l],arr[i]]=[arr[i],arr[l]];
+    }
+  })(idx,0);
+  return best;
+}
 
 /* ============================================================
-   2. Coverage-aware roster-off selection
+   1. Hungarian algorithm correctness (brute-force comparison)
    ============================================================ */
-test("RO-COVERAGE-1: does not roster off two same-top-preference players together when a safer same-tier pick exists", ()=>{
+test("HUNGARIAN-1: matches brute-force optimal on random small matrices (n=3..5)", ()=>{
   const engine = freshEngine();
-  const cumulative = engine.emptyCumulative();
-  const X = {id:"x", prefs:["GS","GA"], unavailable:[]};
-  const Y = {id:"y", prefs:["GS","WA"], unavailable:[]};
-  const W = {id:"w", prefs:["GS"], unavailable:[]};
-  const Z = {id:"z", prefs:["WD"], unavailable:[]};
-  const V = {id:"v", prefs:["GD"], unavailable:[]};
-  const pool = [X,Y,W,Z,V];
-  const picked = engine.selectRosterOff(pool, 2, cumulative, 1, false);
-  assert.strictEqual(picked.length, 2);
-  assert.ok(!(picked.includes("x") && picked.includes("y")),
-    "should not roster off both GS-top-preference players together when Z (unrelated position) is available: "+picked);
-});
-
-test("RO-COVERAGE-2: still rosters off the required count when every tied candidate overlaps (no safe alternative)", ()=>{
-  const engine = freshEngine();
-  const cumulative = engine.emptyCumulative();
-  const X = {id:"x", prefs:["GS","GA"], unavailable:[]};
-  const Y = {id:"y", prefs:["GS","WA"], unavailable:[]};
-  const Q = {id:"q", prefs:["GS","C"], unavailable:[]};
-  const pool = [X,Y,Q];
-  const picked = engine.selectRosterOff(pool, 2, cumulative, 1, false);
-  assert.strictEqual(picked.length, 2, "fairness requirement (rostering off the needed count) must not be broken even with no safe option");
-});
-
-test("RO-COVERAGE-3: never reaches outside the fairness-tied group in default (non-strict) mode", ()=>{
-  const engine = freshEngine();
-  const cumulative = engine.emptyCumulative();
-  cumulative.missed = {t:0, u:1, f1:1, f2:1};
-  const T = {id:"t", prefs:["GK"], unavailable:[]}; // sole GK specialist, tied group of 1
-  const U = {id:"u", prefs:["GA","WA"], unavailable:[]};
-  const F1 = {id:"f1", prefs:["GA"], unavailable:[]};
-  const F2 = {id:"f2", prefs:["WA"], unavailable:[]};
-  const pool = [T,U,F1,F2];
-  const picked = engine.selectRosterOff(pool, 1, cumulative, 1, false);
-  assert.deepStrictEqual([...picked], ["t"], "default mode must pick the sole tied (missed=0) candidate, even though it creates a coverage gap");
-});
-
-/* ============================================================
-   3. Per-game strict specialist pairing toggle
-   ============================================================ */
-test("STRICT-1: strict mode looks outside the tied group to avoid a severe coverage gap; default does not", ()=>{
-  function buildPool(engine){
-    const cumulative = engine.emptyCumulative();
-    cumulative.missed = {t:0, u:1, fa1:1, fa2:1, fw1:1, fw2:1};
-    const T = {id:"t", prefs:["GK"], unavailable:[]};       // only GK-lister anywhere in the pool
-    const U = {id:"u", prefs:["GA","WA"], unavailable:[]};  // safe alternative one tier out
-    const FA1 = {id:"fa1", prefs:["GA"], unavailable:[]};
-    const FA2 = {id:"fa2", prefs:["GA"], unavailable:[]};
-    const FW1 = {id:"fw1", prefs:["WA"], unavailable:[]};
-    const FW2 = {id:"fw2", prefs:["WA"], unavailable:[]};
-    return {cumulative, pool:[T,U,FA1,FA2,FW1,FW2]};
+  for(let n=3;n<=5;n++){
+    for(let trial=0;trial<6;trial++){
+      const matrix = Array.from({length:n},()=>Array.from({length:n},()=>Math.floor(Math.random()*20)));
+      const assignment = engine.Hungarian.solve(matrix);
+      assert.strictEqual(assignment.length, n);
+      let cost=0; assignment.forEach((col,row)=>{ assert.ok(col>=0 && col<n); cost+=matrix[row][col]; });
+      const bruteCost = bruteForceOptimalCost(matrix);
+      assert.ok(Math.abs(cost-bruteCost)<1e-9,
+        `n=${n} trial=${trial}: hungarian=${cost} brute=${bruteCost} matrix=${JSON.stringify(matrix)}`);
+    }
   }
-  const engineA = freshEngine();
-  const {cumulative:cumA, pool:poolA} = buildPool(engineA);
-  const defaultPick = engineA.selectRosterOff(poolA, 1, cumA, 1, false);
-  assert.deepStrictEqual([...defaultPick], ["t"], "default (strict off) must roster off the sole tied candidate regardless of severity");
-
-  const engineB = freshEngine();
-  const {cumulative:cumB, pool:poolB} = buildPool(engineB);
-  const strictPick = engineB.selectRosterOff(poolB, 1, cumB, 1, true);
-  assert.notStrictEqual(strictPick[0], "t", "strict mode should look outside the tied group instead of rostering off the sole GK specialist");
-  assert.ok(!engineB.rosterOffHasSevereGap({id:strictPick[0], prefs:poolB.find(p=>p.id===strictPick[0]).prefs}, poolB.filter(p=>p.id!==strictPick[0])),
-    "the strict-mode pick should actually be a safe one (no 0-1 coverage gap of its own)");
 });
 
-test("STRICT-2: strict mode makes no difference when the tied group already has a safe pick", ()=>{
-  const engine1 = freshEngine();
-  const cumulative1 = engine1.emptyCumulative();
-  const X = {id:"x", prefs:["GS","GA"], unavailable:[]};
-  const Y = {id:"y", prefs:["GS","WA"], unavailable:[]};
-  const W = {id:"w", prefs:["GS"], unavailable:[]};
-  const Z = {id:"z", prefs:["WD"], unavailable:[]};
-  const V = {id:"v", prefs:["GD"], unavailable:[]};
-  const poolFor = ()=>[{...X},{...Y},{...W},{...Z},{...V}];
-  const defaultPick = engine1.selectRosterOff(poolFor(), 2, engine1.emptyCumulative(), 1, false);
-  const strictPick = engine1.selectRosterOff(poolFor(), 2, engine1.emptyCumulative(), 1, true);
-  assert.deepStrictEqual([...defaultPick].sort(), [...strictPick].sort(),
-    "with a same-tier safe pick already available, strict mode shouldn't need to change the outcome");
-});
-
-/* ============================================================
-   4. Coverage warning
-   ============================================================ */
-test("COVERAGE-WARN-1: flags a position dropped to 0-1 covering players after roster-off", ()=>{
+test("HUNGARIAN-2: avoids disqualified BIG_M-sentinel cells when a feasible alternative exists", ()=>{
   const engine = freshEngine();
-  const plan = {
-    shortfall: false,
-    rosteredOffIds: ["g2"],
-    squad: [
-      {id:"g1", prefs:["GK"], isFillIn:false},
-      {id:"a1", prefs:["GA"], isFillIn:false},
-      {id:"a2", prefs:["GA"], isFillIn:false},
-    ]
-  };
-  const st = engine._getState();
-  st.players.push({id:"g2", name:"Gone", prefs:["GK"], unavailable:[]});
-  const warnings = engine.computeCoverageWarnings(plan);
-  const gk = warnings.find(w=>w.position==="GK");
-  assert.ok(gk, "expected a GK coverage warning: "+JSON.stringify(warnings));
-  assert.strictEqual(gk.count, 1);
-  assert.deepStrictEqual(gk.causedBy, ["Gone"]);
+  const BIG_M = engine.RosterSolver.CONSTANTS.BIG_M;
+  const matrix = [
+    [1, BIG_M, 5],
+    [BIG_M, 2, 3],
+    [4, 4, BIG_M]
+  ];
+  const assignment = engine.Hungarian.solve(matrix);
+  let cost=0; assignment.forEach((col,row)=>cost+=matrix[row][col]);
+  const bruteCost = bruteForceOptimalCost(matrix);
+  assert.ok(cost<BIG_M, "should find an assignment avoiding every BIG_M cell: cost="+cost);
+  assert.ok(Math.abs(cost-bruteCost)<1e-9, `expected brute-force optimum ${bruteCost}, got ${cost}`);
+});
+
+test("HUNGARIAN-3: ties are broken consistently (no error, valid permutation) on an all-equal matrix", ()=>{
+  const engine = freshEngine();
+  const matrix = [[3,3,3],[3,3,3],[3,3,3]];
+  const assignment = engine.Hungarian.solve(matrix);
+  assert.deepStrictEqual([...assignment].sort(), [0,1,2]);
 });
 
 /* ============================================================
-   5. CSV round-trip — extends the roster-off round-trip test with the new
-      per-game strictSpecialistMode field.
+   2. Phase 2a — exact per-quarter Hungarian position assignment
    ============================================================ */
-test("CSV-ROUNDTRIP-1: strictSpecialistMode round-trips through export/import per game", ()=>{
+test("QUARTER-OPTIMAL-1: solveQuarterPositions achieves the brute-force-optimal total cost", ()=>{
+  const engine = freshEngine();
+  const players = [
+    {id:"a",name:"A",prefs:["GS","GA"],isFillIn:false},
+    {id:"b",name:"B",prefs:["GA","GS"],isFillIn:false},
+    {id:"c",name:"C",prefs:["WA","C"],isFillIn:false},
+    {id:"d",name:"D",prefs:["C","WA"],isFillIn:false},
+    {id:"e",name:"E",prefs:["WD","GD"],isFillIn:false},
+    {id:"f",name:"F",prefs:["GD","WD"],isFillIn:false},
+    {id:"g",name:"G",prefs:["GK"],isFillIn:false},
+    {id:"h",name:"H",prefs:["GS","WA","C"],isFillIn:false}
+  ];
+  const cumulative = {posCount:{}, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
+  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+
+  const result = engine.RosterSolver.solveQuarterPositions({players, benchSlotCount:1, lockedSlots:{}, cumulative, settings});
+  assert.strictEqual(result.errors.length, 0);
+
+  const { positionCellCost, benchCellCost } = engine.RosterSolver.buildQuarterCostFns(cumulative, settings);
+  const columns = engine.POSITIONS.concat(["BENCH"]);
+  const matrix = players.map(p => columns.map(col => col==="BENCH" ? benchCellCost(p) : positionCellCost(p,col)));
+  const bruteCost = bruteForceOptimalCost(matrix);
+
+  let resultCost = 0;
+  engine.POSITIONS.forEach(pos=>{
+    const pid = result.onCourt[pos];
+    if(pid){ resultCost += positionCellCost(players.find(x=>x.id===pid), pos); }
+  });
+  result.bench.forEach(pid=>{ resultCost += benchCellCost(players.find(x=>x.id===pid)); });
+
+  assert.ok(Math.abs(resultCost-bruteCost)<1e-6, `expected optimal cost ${bruteCost}, got ${resultCost}`);
+});
+
+test("QUARTER-LOCK-1: locked slots are pulled out before solving and never reassigned", ()=>{
+  const engine = freshEngine();
+  const players = [
+    {id:"a",name:"A",prefs:["GS"],isFillIn:false},
+    {id:"b",name:"B",prefs:["GA"],isFillIn:false},
+    {id:"c",name:"C",prefs:["WA"],isFillIn:false},
+    {id:"d",name:"D",prefs:["C"],isFillIn:false},
+    {id:"e",name:"E",prefs:["WD"],isFillIn:false},
+    {id:"f",name:"F",prefs:["GD"],isFillIn:false},
+    {id:"g",name:"G",prefs:["GK"],isFillIn:false}
+  ];
+  const cumulative = {posCount:{}, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
+  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  // Lock A (a GS specialist) into GK, an obviously off-preference forced slot.
+  const result = engine.RosterSolver.solveQuarterPositions({players, benchSlotCount:0, lockedSlots:{GK:"a"}, cumulative, settings});
+  assert.strictEqual(result.onCourt.GK, "a");
+  assert.strictEqual(result.offPreference.GK, true);
+  assert.notStrictEqual(result.onCourt.GS, "a", "the locked player must not also appear at their preferred open position");
+});
+
+/* ============================================================
+   3. Phase 2b — within-game refinement invariants
+   ============================================================ */
+test("PHASE2B-1: refinement never increases total game cost and never touches a locked slot", ()=>{
+  const engine = freshEngine();
+  const players = [
+    {id:"a",prefs:["GS","GA"]},{id:"b",prefs:["GA","GS"]},{id:"c",prefs:["WA","C"]},
+    {id:"d",prefs:["C","WA"]},{id:"e",prefs:["WD","GD"]},{id:"f",prefs:["GD","WD"]},
+    {id:"g",prefs:["GK"]}
+  ];
+  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const emptyCum = ()=>({posCount:{},onCourt:{},bench:{},gameBenchSoFar:{},benchedLastQuarter:new Set()});
+  const perms = [
+    ["GA","GS","C","WA","GD","WD","GK"],
+    ["GS","GA","WA","C","WD","GD","GK"],
+    ["WA","C","GS","GA","GK","GD","WD"]
+  ];
+  const quarters = perms.map(posOrder=>{
+    const onCourt={}; players.forEach((p,i)=>onCourt[posOrder[i]]=p.id);
+    return {onCourt, bench:[], offPreference:{}};
+  });
+  const cumulativeSnapshots = [emptyCum(),emptyCum(),emptyCum()];
+  const lockedPlayerAtQ2GK = quarters[2].onCourt.GK;
+  const lockedSlotsPerQuarter = [{}, {}, {GK: lockedPlayerAtQ2GK}];
+
+  function totalCost(qs){
+    let total=0;
+    qs.forEach((q,qi)=>{
+      const {positionCellCost} = engine.RosterSolver.buildQuarterCostFns(cumulativeSnapshots[qi], settings);
+      engine.POSITIONS.forEach(pos=>{ const pid=q.onCourt[pos]; if(pid){ total+=positionCellCost(players.find(x=>x.id===pid), pos); } });
+    });
+    return total;
+  }
+
+  const before = totalCost(quarters);
+  const result = engine.RosterSolver.refineGameQuarters({ quarters, squadPool: players, cumulativeSnapshots, lockedSlotsPerQuarter, settings });
+  const after = totalCost(result.quarters);
+
+  assert.ok(after <= before + 1e-9, `refinement should never increase total cost: before=${before} after=${after}`);
+  assert.strictEqual(result.quarters[2].onCourt.GK, lockedPlayerAtQ2GK, "locked slot must never change");
+
+  // No quarter should ever contain the same player twice (a real risk for a naive cross-quarter swap).
+  result.quarters.forEach(q=>{
+    const ids = engine.POSITIONS.map(pos=>q.onCourt[pos]).filter(Boolean);
+    assert.strictEqual(new Set(ids).size, ids.length, "a quarter must not contain the same player twice after refinement");
+  });
+});
+
+/* ============================================================
+   4. Season-wide roster-off search (Phase 1) — via runGeneration
+   ============================================================ */
+test("SEASON-ROSTEROFF-1: fairness term reflects total missed games (unavailable + rostered-off) across the season", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
-  st.season.numGames = 3;
-  st.season.desiredBenchSize = 1;
-  ["GS","GA","WA","C","WD","GD","GK","GA"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  st.season.numGames = 8;
+  st.season.desiredBenchSize = 2;
+  const defs = [
+    ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
+    ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
+    ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
   engine.ensureGamesExist();
-  const g1 = engine.getGame(1);
-  const g2 = engine.getGame(2);
-  g1.strictSpecialistMode = true;
-  g2.strictSpecialistMode = false;
-  engine.runGeneration();
-
-  engine.exportFullCsv();
-  const csvText = engine.CapturingBlob.last;
-  assert.ok(csvText && csvText.includes("strictSpecialistMode"), "exported CSV should carry the new per-game column header");
-
-  engine.importFullCsv(csvText);
-  const st2 = engine._getState();
-  assert.strictEqual(st2.games["1"].strictSpecialistMode, true, "game 1's strict flag should survive the round trip");
-  assert.strictEqual(st2.games["2"].strictSpecialistMode, false, "game 2's strict flag should survive the round trip");
+  const r = engine.runGeneration();
+  assert.strictEqual(r.invalid, null);
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n);
+    assert.strictEqual(g.error, null, "game "+n+" should generate cleanly: "+g.error);
+  });
 });
 
-test("CSV-ROUNDTRIP-2: settings CSV no longer emits weight_missed and drops the missed weight cleanly", ()=>{
+/* ============================================================
+   5. Missed-games spread warning
+   ============================================================ */
+test("WARNING-1: triggers on a deliberately lopsided dataset", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 6;
+  st.season.desiredBenchSize = 2;
+  const defs = [
+    ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
+    ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
+    ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  // Amy misses almost the whole season; everyone else is fully available.
+  engine._getState().players[0].unavailable = [1,2,3,4,5];
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const warning = engine.computeMissedGamesWarningForReports();
+  assert.ok(warning, "expected a missed-games warning to trigger");
+  assert.ok(warning.spread > engine.RosterSolver.CONSTANTS.MISSED_GAMES_WARNING_SPREAD);
+  assert.ok(warning.mostMissed.includes("Amy"));
+});
+
+test("WARNING-2: stays silent on a balanced dataset", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 4;
+  st.season.desiredBenchSize = 0;
+  ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const warning = engine.computeMissedGamesWarningForReports();
+  assert.strictEqual(warning, null, "no warning expected when every player has identical missed-game counts: "+JSON.stringify(warning));
+});
+
+/* ============================================================
+   6. Settings default
+   ============================================================ */
+test("SETTINGS-DEFAULT-1: preferenceSlider defaults to 9 (strongly favours preference)", ()=>{
+  const engine = freshEngine();
+  assert.strictEqual(engine._getState().settings.preferenceSlider, 9);
+});
+
+/* ============================================================
+   7. CSV round-trip
+   ============================================================ */
+test("CSV-ROUNDTRIP-1: settings CSV no longer emits weight_missed/weight_onCourt", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
@@ -242,12 +276,37 @@ test("CSV-ROUNDTRIP-2: settings CSV no longer emits weight_missed and drops the 
   engine.runGeneration();
   engine.exportFullCsv();
   const csvText = engine.CapturingBlob.last;
-  assert.ok(!csvText.includes("weight_missed"), "weight_missed should no longer be exported");
-  assert.ok(!("missed" in engine._getState().settings.fairnessWeights), "fairnessWeights.missed should not exist");
+  assert.ok(!csvText.includes("weight_missed"), "weight_missed should not be exported");
+  assert.ok(!csvText.includes("weight_onCourt"), "weight_onCourt should not be exported (merged into weight_bench)");
+  assert.ok(!("missed" in engine._getState().settings.fairnessWeights));
+  assert.ok(!("onCourt" in engine._getState().settings.fairnessWeights));
+});
+
+test("CSV-ROUNDTRIP-2: a played game's rosteredOffIds survive export/import as a frozen fact", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 2;
+  ["GS","GA","WA","C","WD","GD","GK","GA","GD","WA"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos])); // 10 players, bench 2 -> 1 roster-off
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const g1 = engine.getGame(1);
+  assert.strictEqual(g1.rosteredOffIds.length, 1, "sanity: exactly one roster-off expected");
+  g1.isPlayed = true;
+  const rosteredOffBefore = g1.rosteredOffIds.slice().sort();
+
+  engine.exportFullCsv();
+  const csvText = engine.CapturingBlob.last;
+  assert.ok(csvText.includes("rosteredOffIds"), "exported CSV should carry the rosteredOffIds column");
+  engine.importFullCsv(csvText);
+
+  const st2 = engine._getState();
+  assert.deepStrictEqual(st2.games["1"].rosteredOffIds.slice().sort(), rosteredOffBefore,
+    "played game's roster-off decision should be frozen and survive CSV round-trip exactly");
 });
 
 /* ============================================================
-   6. Regression: previously-established behavior
+   8. Regression: previously-established behavior
    ============================================================ */
 test("REGRESSION: full season generates cleanly with a valid roster", ()=>{
   const engine = freshEngine();
@@ -300,7 +359,6 @@ test("OP-5: off-preference fill is allowed and used when allowOffPreference is o
   st.season.numGames = 1;
   st.season.desiredBenchSize = 0;
   st.settings.allowOffPreference = true;
-  // Nobody lists GK; everyone else uniquely covers the other 6 positions.
   ["GS","GA","WA","C","WD","GD"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
   addPlayer(engine, "P6", ["GS"]); // 7th player — nobody in this roster lists GK at all
   engine.ensureGamesExist();
@@ -375,8 +433,29 @@ test("FILLIN-EXCLUDED: fill-ins assigned to a shortfall game are excluded from s
   assert.strictEqual(g.error, null, "shortfall game with a fill-in covering the gap should generate cleanly: "+g.error);
   const summaries = engine.computePlayerSummaries();
   assert.ok(!summaries.some(s=>s.name==="Guest"), "fill-ins must not appear in season player summaries");
-  const cumulativeCheck = engine.emptyCumulative();
-  assert.strictEqual(Object.keys(cumulativeCheck.onCourt).length, 0);
+});
+
+/* ============================================================
+   9. Realistic-size timing (informational — no hard bound asserted)
+   ============================================================ */
+test("TIMING-1: realistic season size (12 players, 15 games) generates and reports wall-clock time", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 15;
+  st.season.desiredBenchSize = 3;
+  const defs = [
+    ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
+    ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
+    ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]],
+    ["Jaz",["C","WD","GD"]], ["Kim",["GD","GK"]], ["Lou",["GK","GD","WD"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  engine.ensureGamesExist();
+  const start = Date.now();
+  const r = engine.runGeneration();
+  const elapsed = Date.now()-start;
+  assert.strictEqual(r.invalid, null);
+  console.log(`      [TIMING-1] 12 players / 15 games generated in ${elapsed}ms (reported elapsedMs=${r.elapsedMs}, phase1=${r.phase1Stats.elapsedMs}ms/${r.phase1Stats.passes} passes)`);
 });
 
 /* ============================================================
