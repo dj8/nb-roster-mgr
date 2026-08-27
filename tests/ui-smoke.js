@@ -113,6 +113,39 @@ async function shot(page, name){
   });
   check(!!afterLockValue, `locked slot still shows a lock indicator after rebalance (${afterLockValue})`);
 
+  // ---- Manual slot-edit swap: moving an on-court player must relocate the
+  // player they displaced (via the follow-up "now empty" dialog), never lose
+  // them or duplicate anyone across the quarter's 7 on-court slots ----
+  const q1Slots = await page.locator('#gameBody-1 [data-slot*="|0|"]').all();
+  const q1Before = [];
+  for(const cell of q1Slots){
+    const slot = await cell.getAttribute("data-slot");
+    const name = (await cell.locator(".pname").textContent()).trim();
+    q1Before.push({ pos: slot.split("|")[2], name });
+  }
+  const editPos = q1Before[1].pos; // a different slot than the one just locked/edited above
+  const otherEntry = q1Before.find(e=>e.pos!==editPos);
+  await page.locator(`#gameBody-1 [data-slot$="|0|${editPos}"]`).click();
+  await page.waitForSelector(".modal #slotSelect");
+  const targetOption = page.locator(".modal #slotSelect option").filter({ hasText: otherEntry.name });
+  const targetValue = await targetOption.first().getAttribute("value");
+  await page.selectOption(".modal #slotSelect", targetValue);
+  await page.click('.modal [data-act="save"]');
+  await page.waitForSelector(".modal #vacantSelect", {timeout:2000});
+  const vacancyHeading = (await page.locator(".modal h3").textContent());
+  check(/is now empty/i.test(vacancyHeading), `follow-up dialog appears for the vacated position (${vacancyHeading})`);
+  await page.click('.modal [data-act="save"]'); // default selection = the displaced player
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]');
+
+  const q1After = [];
+  for(const cell of await page.locator('#gameBody-1 [data-slot*="|0|"]').all()){
+    q1After.push((await cell.locator(".pname").textContent()).trim());
+  }
+  check(q1After.every(n=>n && n!=="—"), `no on-court slot is empty after the swap (${JSON.stringify(q1After)})`);
+  check(new Set(q1After).size===q1After.length, `no player appears twice on-court after the swap (${JSON.stringify(q1After)})`);
+  await shot(page, "04b-after-slot-swap.png");
+
   // ---- Settings: verify the new default and that the old toggle is gone ----
   await page.click('.tab-btn[data-tab="settings"]');
   const sliderVal = (await page.locator("#sliderVal").textContent()).trim();

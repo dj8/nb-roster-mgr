@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.5.0";
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -200,8 +200,8 @@ function planGameSquad(gameNum){
 }
 
 /* After roster-off, flag any position where 0 or 1 of the resulting squad's members list
-   it in their preferences — the coverage warning is informational regardless of whether
-   strict specialist pairing is on for this game. */
+   it in their preferences — purely informational, independent of the roster-off
+   fairness/coverage slider (Settings) that influenced the decision. */
 function computeCoverageWarnings(plan){
   if(plan.shortfall) return [];
   const warnings = [];
@@ -238,6 +238,24 @@ function bumpCum(cumulative, key, id, amt){
 }
 function posCountKey(id,pos){ return id+"::"+pos; }
 
+/* Add (sign=1) or remove (sign=-1) one quarter's on-court/bench outcome from
+   the season-persistent cumulative totals (posCount/onCourt/bench) that later
+   games' Phase 2a solves read. Used both for the initial forward fold and to
+   reconcile after Phase 2b changes a game's quarters post-hoc (see runGeneration). */
+function applyQuarterToCumulative(cumulative, q, sign){
+  POSITIONS.forEach(pos=>{
+    const pid = q.onCourt[pos]; if(!pid) return;
+    if(STATE.fillIns.some(f=>f.id===pid)) return;
+    const pck = posCountKey(pid,pos);
+    cumulative.posCount[pck] = (cumulative.posCount[pck]||0) + sign;
+    cumulative.onCourt[pid] = (cumulative.onCourt[pid]||0) + sign;
+  });
+  (q.bench||[]).forEach(pid=>{
+    if(STATE.fillIns.some(f=>f.id===pid)) return;
+    cumulative.bench[pid] = (cumulative.bench[pid]||0) + sign;
+  });
+}
+
 /* Apply a game's *actual* outcome (played or freshly generated) into cumulative totals */
 function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, schedule){
   unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
@@ -261,11 +279,11 @@ function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, sche
   });
 }
 
-function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squad){
+function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds){
   const player = byId(STATE.players,playerId) || byId(STATE.fillIns,playerId);
   const specialists = STATE.players.filter(p=>p.id!==playerId && p.prefs.includes(pos));
-  const squadIds = new Set(squad.map(p=>p.id));
-  const unavailableSpecialists = specialists.filter(p=>!squadIds.has(p.id)).map(p=>p.name);
+  const squadIdSet = new Set(squadIds);
+  const unavailableSpecialists = specialists.filter(p=>!squadIdSet.has(p.id)).map(p=>p.name);
   return {
     game:gameNum, quarter:quarterIdx+1, playerId, playerName: player?player.name:"?",
     position:pos, unavailableSpecialists
@@ -328,7 +346,6 @@ function runGeneration(){
   const startTime = Date.now();
   const phase1Stats = computeSeasonRosterOff();
 
-  const offPrefLog = [];
   const cumulative = emptyCumulative();
   const nums = gameNums();
 
@@ -387,18 +404,10 @@ function runGeneration(){
       }
 
       // fold this quarter immediately so later quarters in same game see updated counts
-      POSITIONS.forEach(pos=>{
-        const pid = result.onCourt[pos]; if(!pid) return;
-        const isFillIn = STATE.fillIns.some(f=>f.id===pid);
-        if(isFillIn) return;
-        const pck = posCountKey(pid,pos);
-        cumulative.posCount[pck]=(cumulative.posCount[pck]||0)+1;
-        cumulative.onCourt[pid]=(cumulative.onCourt[pid]||0)+1;
-      });
+      applyQuarterToCumulative(cumulative, {onCourt:result.onCourt, bench:result.bench}, 1);
       result.bench.forEach(pid=>{
         const isFillIn = STATE.fillIns.some(f=>f.id===pid);
         if(isFillIn) return;
-        cumulative.bench[pid]=(cumulative.bench[pid]||0)+1;
         gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1;
       });
       benchedLastQuarter = new Set(result.bench);
@@ -410,11 +419,12 @@ function runGeneration(){
       quarters, squadPool: plan.squad, cumulativeSnapshots, lockedSlotsPerQuarter, settings: STATE.settings
     });
 
-    refined.quarters.forEach((q,qi)=>{
-      POSITIONS.forEach(pos=>{
-        if(q.offPreference && q.offPreference[pos]) offPrefLog.push(buildOffPrefLog(num,qi,pos,q.onCourt[pos],plan.squad));
-      });
-    });
+    // Reconcile: cumulative above was folded from the pre-refinement quarters
+    // (needed at the time, to see the running totals quarter-to-quarter within
+    // this game); undo that and re-fold the actual, refined outcome so later
+    // games' Phase 2a solves — and season reports — see the same numbers.
+    quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
+    refined.quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, 1));
 
     plan.unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
     plan.rosteredOffIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
@@ -424,12 +434,11 @@ function runGeneration(){
     game.error = quarterError;
   });
 
-  STATE._offPrefLog = offPrefLog;
   STATE._lastGeneratedAt = todayIso();
   STATE._lastGenerationMs = Date.now()-startTime;
   console.log(`Season generation took ${STATE._lastGenerationMs}ms (Phase 1: ${phase1Stats.elapsedMs}ms across ${phase1Stats.passes} pass(es)).`);
   saveState();
-  return {invalid, offPrefLog, phase1Stats, elapsedMs: STATE._lastGenerationMs};
+  return {invalid, offPrefLog: computeOffPrefLog(), phase1Stats, elapsedMs: STATE._lastGenerationMs, cumulative};
 }
 
 /* Season-wide player summary stats (for reports) */
@@ -458,7 +467,24 @@ function computePlayerSummaries(){
   return Object.values(summary);
 }
 
-function computeOffPrefLog(){ return STATE._offPrefLog||[]; }
+/* Derived fresh from each game's stored schedule every time it's requested —
+   never cached — so manual slot edits and CSV imports (which change schedules
+   without going through runGeneration) can't leave this disagreeing with the
+   Player Summary report, which also reads live schedule data. */
+function computeOffPrefLog(){
+  const log = [];
+  gameNums().forEach(num=>{
+    const game = getGame(num);
+    if(!game.schedule) return;
+    const squadIds = game.squadIds||[];
+    game.schedule.quarters.forEach((q,qi)=>{
+      POSITIONS.forEach(pos=>{
+        if(q.offPreference && q.offPreference[pos]) log.push(buildOffPrefLog(num,qi,pos,q.onCourt[pos],squadIds));
+      });
+    });
+  });
+  return log;
+}
 function computeOffPrefRate(){
   const log = computeOffPrefLog();
   let totalSlots=0;
@@ -797,7 +823,7 @@ function statusPillsForGame(game, num){
   if(!game.generated && !game.isPlayed && !game.error) pills.push(`<span class="pill pill-muted">Not yet generated</span>`);
   (game.coverageWarnings||[]).forEach(w=>{
     const causedText = w.causedBy && w.causedBy.length ? ` — rostered off: ${w.causedBy.join(", ")}` : "";
-    const suggestion = `Consider enabling strict specialist pairing for this game, lowering the desired bench size, or adding a fill-in comfortable at ${w.position}.`;
+    const suggestion = `Consider moving the roster-off priority slider (Settings) toward "position coverage", lowering the desired bench size, or adding a fill-in comfortable at ${w.position}.`;
     pills.push(`<span class="pill pill-warn" title="${esc(suggestion)}">Low ${w.position} coverage: ${w.count} player(s)${esc(causedText)}</span>`);
   });
   return pills.join(" ");
@@ -846,9 +872,10 @@ function renderGameBody(num){
           <div class="hint">${esc(unavailNames)}</div>
         </div>
         <div>
-          <div class="section-label">Bench-size override</div>
+          <div class="section-label">Roster-off count override</div>
           <input type="number" class="mono" id="rosterOffOverride-${num}" placeholder="auto" min="0"
             value="${Number.isFinite(game.rosterOffOverride)?game.rosterOffOverride:''}" ${game.isPlayed?"disabled":""} style="max-width:100px;">
+          <div class="hint" style="margin-top:4px;">How many players to roster off this game (auto-derived from desired bench size unless set here).</div>
         </div>
       </div>
       ${gapHtml}
@@ -1005,6 +1032,27 @@ function openAssignFillInDialog(num){
   });
 }
 
+/* Recompute q.offPreference[pos] from whoever currently occupies it (or drop
+   the flag if the slot is empty), based on live player/fill-in preferences. */
+function refreshOffPreferenceFlag(q, pos){
+  const pid = q.onCourt[pos];
+  if(!q.offPreference) q.offPreference = {};
+  if(!pid){ delete q.offPreference[pos]; return; }
+  const player = byId(STATE.players,pid) || byId(STATE.fillIns,pid);
+  q.offPreference[pos] = !!(player && player.prefs && !player.prefs.includes(pos));
+}
+
+/* A locked slot that no longer holds the player it was locked to is stale
+   (forcing that id back in on rebalance would be wrong) — drop the lock. */
+function clearStaleLock(game, qi, pos, expectedPid){
+  const lockKey = qi+"-"+pos;
+  if(game.lockedSlots && game.lockedSlots[lockKey]===expectedPid) delete game.lockedSlots[lockKey];
+}
+
+function finishSlotEdit(num){
+  saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
+}
+
 function openSlotEditDialog(num, qi, pos){
   const game = getGame(num);
   if(game.isPlayed){ toast("This game is locked as played. Unlock it first to edit."); return; }
@@ -1013,6 +1061,9 @@ function openSlotEditDialog(num, qi, pos){
   const options = squadIds.map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
   const lockKey = qi+"-"+pos;
   const isLocked = !!(game.lockedSlots && game.lockedSlots[lockKey]);
+  const q = game.schedule.quarters[qi];
+  const oldPid = q.onCourt[pos]||null;
+
   openModal(`
     <h3>Game ${num} · Q${qi+1} · ${pos}</h3>
     <p class="modal-sub">${POS_LABEL[pos]}</p>
@@ -1031,22 +1082,107 @@ function openSlotEditDialog(num, qi, pos){
     </div>
   `, modal=>{
     const sel = modal.querySelector("#slotSelect");
-    sel.value = game.schedule.quarters[qi].onCourt[pos]||"";
+    sel.value = oldPid||"";
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
       const pid = sel.value||null;
       const lock = modal.querySelector("#slotLock").checked;
-      const q = game.schedule.quarters[qi];
-      // remove player from bench / other position this quarter if present
-      q.bench = (q.bench||[]).filter(id=>id!==pid);
-      POSITIONS.forEach(p2=>{ if(p2!==pos && q.onCourt[p2]===pid) q.onCourt[p2]=null; });
-      q.onCourt[pos]=pid;
-      const player = pid ? (byId(STATE.players,pid)||byId(STATE.fillIns,pid)) : null;
-      if(!q.offPreference) q.offPreference={};
-      q.offPreference[pos] = !!(player && player.prefs && !player.prefs.includes(pos));
       game.lockedSlots = game.lockedSlots||{};
+
+      if(pid===oldPid){
+        // No player change — just apply the lock toggle.
+        if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
+        finishSlotEdit(num);
+        return;
+      }
+
+      if(!pid){
+        // Explicitly leaving this slot unassigned: the previous occupant, if
+        // any, goes to the bench rather than vanishing from the quarter.
+        q.onCourt[pos] = null;
+        if(oldPid && !q.bench.includes(oldPid)) q.bench.push(oldPid);
+        refreshOffPreferenceFlag(q, pos);
+        if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
+        toast(`${POS_LABEL[pos]} left unassigned this quarter — remember to fill it before the game is played.`);
+        finishSlotEdit(num);
+        return;
+      }
+
+      if(q.bench.includes(pid)){
+        // Straight swap: the incoming player's bench seat is exactly what the
+        // displaced player needs, so no follow-up decision is required.
+        q.bench = q.bench.filter(id=>id!==pid);
+        if(oldPid) q.bench.push(oldPid);
+        q.onCourt[pos] = pid;
+        refreshOffPreferenceFlag(q, pos);
+        if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
+        finishSlotEdit(num);
+        return;
+      }
+
+      // Otherwise pid should be on-court at some other position Y this quarter
+      // — moving them here vacates Y, which needs an explicit decision: fill
+      // it with the player just displaced from `pos`, or bring someone up
+      // from the bench (see openFillVacancyDialog).
+      const otherPos = POSITIONS.find(p2=>p2!==pos && q.onCourt[p2]===pid);
+      q.onCourt[pos] = pid;
       if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
-      saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
+      if(!otherPos){
+        // Defensive: pid wasn't actually found on-court or bench this quarter
+        // (shouldn't happen for a squad member) — nothing to vacate, so just
+        // bench whoever was displaced, same as the unassigned case.
+        refreshOffPreferenceFlag(q, pos);
+        if(oldPid && !q.bench.includes(oldPid)) q.bench.push(oldPid);
+        finishSlotEdit(num);
+        return;
+      }
+      q.onCourt[otherPos] = null;
+      refreshOffPreferenceFlag(q, pos);
+      clearStaleLock(game, qi, otherPos, pid);
+      saveState();
+      openFillVacancyDialog(num, qi, otherPos, oldPid);
+    };
+  });
+}
+
+/* Follow-up to openSlotEditDialog: position `vacantPos` just lost its
+   occupant (they moved to fill a different slot). Ask who takes it — the
+   player displaced from that other slot (`displacedPid`), or someone from
+   the bench — so the quarter never silently ends up with a gap or a
+   duplicate player. */
+function openFillVacancyDialog(num, qi, vacantPos, displacedPid){
+  const game = getGame(num);
+  const q = game.schedule.quarters[qi];
+  const displacedPlayer = displacedPid ? (byId(STATE.players,displacedPid)||byId(STATE.fillIns,displacedPid)) : null;
+  const benchPlayers = (q.bench||[]).map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
+
+  const optionHtml = p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
+  openModal(`
+    <h3>Game ${num} · Q${qi+1} · ${vacantPos} is now empty</h3>
+    <p class="modal-sub">${POS_LABEL[vacantPos]} — who fills it?</p>
+    <div class="field"><label>Assign player</label>
+      <select id="vacantSelect">
+        <option value="">— leave unassigned —</option>
+        ${displacedPlayer?optionHtml(displacedPlayer):""}
+        ${benchPlayers.map(optionHtml).join("")}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" data-act="save">Save</button>
+    </div>
+  `, modal=>{
+    const sel = modal.querySelector("#vacantSelect");
+    sel.value = displacedPid||"";
+    modal.querySelector('[data-act="save"]').onclick=()=>{
+      const chosen = sel.value||null;
+      if(chosen){
+        q.bench = (q.bench||[]).filter(id=>id!==chosen);
+        q.onCourt[vacantPos] = chosen;
+      }
+      // Whoever was displaced and isn't the one filling this slot goes to the bench.
+      if(displacedPid && displacedPid!==chosen && !q.bench.includes(displacedPid)) q.bench.push(displacedPid);
+      refreshOffPreferenceFlag(q, vacantPos);
+      finishSlotEdit(num);
     };
   });
 }
@@ -1445,15 +1581,21 @@ function importFullCsv(text){
 
     (sections.SCHEDULE||[]).filter(r=>r[0]!==undefined && r[0]!=="").forEach(r=>{
       const [num,qi,slot,playerId,offPref] = r;
+      if(!playerId) return;
+      const qIdx = Number(qi);
+      if(!Number.isInteger(qIdx) || qIdx<0 || qIdx>3) return; // malformed quarter index
+      if(slot!=="BENCH" && !POSITIONS.includes(slot)) return; // malformed/unknown slot
       const g = ns.games[String(num)] || (ns.games[String(num)]=newGameState());
       if(!g.schedule) g.schedule = {quarters:[0,1,2,3].map(()=>({onCourt:{},bench:[],offPreference:{}}))};
-      const q = g.schedule.quarters[Number(qi)];
+      const q = g.schedule.quarters[qIdx];
       if(!q) return;
       if(slot==="BENCH") q.bench.push(playerId);
       else { q.onCourt[slot]=playerId; q.offPreference[slot]= offPref==="1"; }
       g.generated = true;
       g.squadIds = Array.from(new Set([...(g.squadIds||[]), playerId]));
     });
+
+    const warnings = sanitizeImportedState(ns);
 
     STATE = ns;
     // recompute derived display-only fields without touching schedule/locks. Played games'
@@ -1462,11 +1604,100 @@ function importFullCsv(text){
     computeSeasonRosterOff();
     saveState();
     render();
-    toast(`Imported ${STATE.players.length} player(s), ${gameNums().length} game(s).`);
+    if(warnings.length){
+      console.warn("CSV import auto-corrected "+warnings.length+" issue(s):", warnings);
+      toast(`Imported ${STATE.players.length} player(s), ${gameNums().length} game(s) — ${warnings.length} issue(s) auto-corrected (see console).`);
+    } else {
+      toast(`Imported ${STATE.players.length} player(s), ${gameNums().length} game(s).`);
+    }
   }catch(e){
     console.error(e);
     toast("Import failed — the file looks malformed or corrupted: "+e.message);
   }
+}
+
+/* Defensive pass over a freshly-parsed import: a hand-edited or corrupted CSV
+   can reference unknown/duplicate player ids, out-of-range season params, or
+   put the same player in two slots of one quarter — none of which the parser
+   above rejects outright, since a malformed row is more often a typo than a
+   reason to discard the whole file. This drops/clamps just the bad parts and
+   returns a list of what it corrected, rather than leaving dangling ids that
+   would surface later as blank names or a duplicate on-court player. */
+function sanitizeImportedState(ns){
+  const warnings = [];
+
+  const numGames = clamp(Number.isFinite(ns.season.numGames)?ns.season.numGames:11, 1, 60);
+  if(numGames!==ns.season.numGames){ warnings.push(`Number of games clamped to ${numGames}.`); ns.season.numGames = numGames; }
+  const benchSize = clamp(Number.isFinite(ns.season.desiredBenchSize)?ns.season.desiredBenchSize:2, 0, 20);
+  if(benchSize!==ns.season.desiredBenchSize){ warnings.push(`Desired bench size clamped to ${benchSize}.`); ns.season.desiredBenchSize = benchSize; }
+
+  const seenPlayerIds = new Set();
+  ns.players = ns.players.filter(p=>{
+    if(!p.id || !p.name || seenPlayerIds.has(p.id)){
+      warnings.push(`Dropped an invalid/duplicate player row (${p.name||p.id||"unnamed"}).`);
+      return false;
+    }
+    seenPlayerIds.add(p.id);
+    return true;
+  });
+  const seenFillInIds = new Set();
+  ns.fillIns = ns.fillIns.filter(f=>{
+    if(!f.id || !f.name || seenFillInIds.has(f.id) || seenPlayerIds.has(f.id)){
+      warnings.push(`Dropped an invalid/duplicate fill-in row (${f.name||f.id||"unnamed"}).`);
+      return false;
+    }
+    seenFillInIds.add(f.id);
+    return true;
+  });
+  const validIds = new Set([...seenPlayerIds, ...seenFillInIds]);
+
+  Object.keys(ns.games).forEach(key=>{
+    const g = ns.games[key];
+    if(g.rosterOffLockIds){
+      const before = g.rosterOffLockIds.length;
+      g.rosterOffLockIds = g.rosterOffLockIds.filter(id=>seenPlayerIds.has(id));
+      if(g.rosterOffLockIds.length!==before) warnings.push(`Game ${key}: dropped unknown player id(s) from a manual roster-off lock.`);
+      if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
+    }
+    const rosteredOffBefore = (g.rosteredOffIds||[]).length;
+    g.rosteredOffIds = (g.rosteredOffIds||[]).filter(id=>seenPlayerIds.has(id));
+    if(g.rosteredOffIds.length!==rosteredOffBefore) warnings.push(`Game ${key}: dropped unknown player id(s) from the recorded roster-off list.`);
+    const fillInBefore = (g.fillInIds||[]).length;
+    g.fillInIds = (g.fillInIds||[]).filter(id=>seenFillInIds.has(id));
+    if(g.fillInIds.length!==fillInBefore) warnings.push(`Game ${key}: dropped unknown fill-in id(s).`);
+    Object.keys(g.lockedSlots||{}).forEach(slotKey=>{
+      if(!validIds.has(g.lockedSlots[slotKey])){
+        delete g.lockedSlots[slotKey];
+        warnings.push(`Game ${key}: dropped a locked slot referencing an unknown player.`);
+      }
+    });
+    if(g.schedule){
+      g.schedule.quarters.forEach((q,qi)=>{
+        const usedThisQuarter = new Set();
+        POSITIONS.forEach(pos=>{
+          const pid = q.onCourt[pos];
+          if(!pid) return;
+          if(!validIds.has(pid) || usedThisQuarter.has(pid)){
+            warnings.push(`Game ${key} Q${qi+1}: removed ${!validIds.has(pid)?"an unknown":"a duplicate"} player from ${pos}.`);
+            delete q.onCourt[pos];
+            if(q.offPreference) delete q.offPreference[pos];
+          } else {
+            usedThisQuarter.add(pid);
+          }
+        });
+        const benchBefore = (q.bench||[]).length;
+        q.bench = (q.bench||[]).filter(pid=>{
+          if(!validIds.has(pid) || usedThisQuarter.has(pid)) return false;
+          usedThisQuarter.add(pid);
+          return true;
+        });
+        if(q.bench.length!==benchBefore) warnings.push(`Game ${key} Q${qi+1}: removed an unknown/duplicate bench player.`);
+      });
+      g.squadIds = (g.squadIds||[]).filter(id=>validIds.has(id));
+    }
+  });
+
+  return warnings;
 }
 
 function exportXlsx(){

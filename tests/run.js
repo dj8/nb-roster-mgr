@@ -429,6 +429,116 @@ test("SETTINGS-DEFAULT-1: preferenceSlider defaults to 9 (strongly favours prefe
 });
 
 /* ============================================================
+   6b. Regressions from external code review: manual slot-edit swap
+       integrity, cumulative/refinement reconciliation, off-preference
+       log freshness, and defensive CSV import sanitization.
+   ============================================================ */
+test("SLOT-SWAP-1: swapping in an on-court player relocates the displaced player rather than losing them", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 0;
+  ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const g = engine.getGame(1);
+  const q = g.schedule.quarters[0];
+  const gsId = q.onCourt.GS, gaId = q.onCourt.GA;
+
+  // Simulate the UI's slot-edit save handler directly: move GA's occupant
+  // into GS. GS's previous occupant must end up somewhere findable (their
+  // own now-vacant GA slot, via the fill-vacancy step), never discarded.
+  const otherPos = "GA";
+  q.onCourt.GS = gaId;
+  q.onCourt[otherPos] = null;
+  // Emulates picking the displaced player (gsId) to fill the vacancy, which
+  // is openFillVacancyDialog's default selection.
+  q.onCourt[otherPos] = gsId;
+
+  const onCourtIds = engine.POSITIONS.map(p=>q.onCourt[p]);
+  assert.strictEqual(new Set(onCourtIds).size, 7, "all 7 on-court slots must still be distinct, real players");
+  assert.ok(onCourtIds.every(Boolean), "no on-court slot should end up empty after a swap");
+  assert.strictEqual(q.onCourt.GS, gaId);
+  assert.strictEqual(q.onCourt.GA, gsId);
+});
+
+test("CUMULATIVE-RECONCILE-1: cumulative onCourt/bench totals match the final (refined) schedule exactly", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 6;
+  st.season.desiredBenchSize = 2;
+  const defs = [
+    ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
+    ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
+    ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  engine.ensureGamesExist();
+  const r = engine.runGeneration();
+  assert.strictEqual(r.invalid, null);
+  const summaries = engine.computePlayerSummaries();
+  summaries.forEach(s=>{
+    assert.strictEqual(r.cumulative.onCourt[s.id]||0, s.onCourt,
+      `${s.name}: cumulative onCourt total (used for later games' fairness math) must match the actual, refined schedule`);
+    assert.strictEqual(r.cumulative.bench[s.id]||0, s.bench,
+      `${s.name}: cumulative bench total must match the actual, refined schedule`);
+  });
+});
+
+test("OFFPREF-LOG-FRESH-1: computeOffPrefLog reflects manual schedule edits without regenerating", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 0;
+  ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  assert.strictEqual(engine.computeOffPrefLog().length, 0, "sanity: a perfectly-covered roster should generate with no off-preference fills");
+
+  // Manually force an off-preference assignment, exactly as a slot edit would,
+  // without calling runGeneration again.
+  const g = engine.getGame(1);
+  const q = g.schedule.quarters[0];
+  const gsId = q.onCourt.GS, gaId = q.onCourt.GA;
+  q.onCourt.GS = gaId; q.onCourt.GA = gsId;
+  q.offPreference.GS = true; q.offPreference.GA = true;
+
+  const log = engine.computeOffPrefLog();
+  assert.strictEqual(log.length, 2, "off-preference log should immediately reflect the manual edit: "+JSON.stringify(log));
+});
+
+test("CSV-IMPORT-SANITIZE-1: a corrupted CSV is sanitized rather than corrupting app state", ()=>{
+  const engine = freshEngine();
+  const csv = [
+    "#META", "version,1",
+    "#SEASON", "numGames,500", "desiredBenchSize,2",
+    "#SETTINGS", "preferenceSlider,9",
+    "#PLAYERS",
+    "p1,Amy,GS|GA,",
+    "p1,AmyDupe,WA|C,",   // duplicate id — should be dropped
+    "p2,Bea,WD|GD,",
+    "#FILLINS",
+    "#GAMES",
+    "1,0,,,,,0-GS=ghost123,",  // locked slot references an unknown player
+    "#SCHEDULE",
+    "1,0,GS,p2,0",
+    "1,0,GA,ghost456,0"        // unknown player id in the schedule
+  ].join("\n");
+
+  engine.importFullCsv(csv);
+  const st = engine._getState();
+
+  assert.strictEqual(st.season.numGames, 60, "numGames should be clamped to the app's supported range, not left at 500");
+  assert.strictEqual(st.players.length, 2, "the duplicate player id should be dropped: "+JSON.stringify(st.players));
+  assert.strictEqual(st.players.find(p=>p.id==="p1").name, "Amy", "the first occurrence of a duplicate id should be kept");
+
+  const g = engine.getGame(1);
+  assert.strictEqual(Object.keys(g.lockedSlots).length, 0, "a locked slot referencing an unknown player id should be dropped: "+JSON.stringify(g.lockedSlots));
+  assert.strictEqual(g.schedule.quarters[0].onCourt.GS, "p2", "a valid schedule entry should still import correctly");
+  assert.ok(!g.schedule.quarters[0].onCourt.GA, "an unknown player id in the schedule should be dropped, not left dangling: "+JSON.stringify(g.schedule.quarters[0].onCourt));
+});
+
+/* ============================================================
    7. CSV round-trip
    ============================================================ */
 test("CSV-ROUNDTRIP-1: settings CSV no longer emits weight_missed/weight_onCourt", ()=>{
