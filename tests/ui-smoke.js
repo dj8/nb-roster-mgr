@@ -79,6 +79,20 @@ async function shot(page, name){
   check((await page.locator(".list-row").count())===PLAYERS.length, `all ${PLAYERS.length} players added via the UI`);
   await shot(page, "02-players-added.png");
 
+  // ---- DM-2: adding a duplicate name is blocked, not silently overwritten ----
+  await page.click("#addPlayerBtn");
+  await page.waitForSelector(".modal #pfName");
+  await page.fill("#pfName", PLAYERS[0][0]); // exact duplicate of an existing player's name
+  const dupWarnVisible = await page.locator(".modal #dupWarn").isVisible();
+  await page.click('.modal [data-act="save"]');
+  const dupStillOpen = await page.locator(".modal-backdrop").count();
+  check(dupWarnVisible, "the duplicate-name warning is shown while typing an existing name");
+  check(dupStillOpen>0, "saving a duplicate name is blocked — the dialog stays open rather than silently overwriting");
+  check((await page.locator(".list-row").count())===PLAYERS.length,
+    `duplicate-name save attempt does not change the player count (still ${PLAYERS.length})`);
+  await page.click('.modal [data-act="cancel"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+
   await page.fill("#numGames","10"); await page.press("#numGames","Tab");
   await page.fill("#benchSize","2"); await page.press("#benchSize","Tab");
 
@@ -238,6 +252,31 @@ async function shot(page, name){
   await page.click('.tab-btn[data-tab="fillins"]');
   const fillinsText = await page.locator("body").textContent();
   check(/One-off/.test(fillinsText), "the Fill-ins tab marks a one-off fill-in distinctly");
+
+  // ---- SS-8/SS-9: the "Add fill-in" dialog's Cancel button must fully
+  // discard entered data, and reopening afterward must be fresh, not
+  // pre-filled with the cancelled entry. ----
+  const fillinCountBefore = await page.locator("#fillinList .list-row").count();
+  await page.click('#addFillinBtn');
+  await page.waitForSelector('.modal #fiName');
+  await page.fill('#fiName', 'CancelledGuest');
+  await page.click('#fiButtons button[data-add="WD"]');
+  await page.click('.modal [data-act="cancel"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  const fillinCountAfterCancel = await page.locator("#fillinList .list-row").count();
+  check(fillinCountAfterCancel===fillinCountBefore,
+    `Cancel on the Add-fill-in dialog creates no fill-in (before=${fillinCountBefore}, after=${fillinCountAfterCancel})`);
+  check(!(await page.locator("body").textContent()).includes('CancelledGuest'),
+    "the cancelled fill-in's name does not appear anywhere on the page");
+
+  await page.click('#addFillinBtn');
+  await page.waitForSelector('.modal #fiName');
+  const reopenedName = await page.locator('.modal #fiName').inputValue();
+  const reopenedChipsText = await page.locator('.modal #fiChips').textContent();
+  check(reopenedName==="", `reopening the dialog after Cancel starts with an empty name field (got "${reopenedName}")`);
+  check(!reopenedChipsText.includes('WD'), "reopening the dialog after Cancel starts with no preferences pre-filled");
+  await page.click('.modal [data-act="cancel"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
 
   await page.click('.tab-btn[data-tab="schedule"]');
   await page.click('[data-toggle="2"]');
