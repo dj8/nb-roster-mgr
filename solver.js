@@ -4,7 +4,7 @@
    and within-game local-search refinement (Phase 2b).
    Pure: no DOM, no localStorage, no reference to app-level STATE.
    Every function takes explicit plain-data input and returns
-   plain data. Depends on hungarian.js (must load first).
+   plain data. Depends on hungarian.js (must load first). 
    ============================================================ */
 (function(root){
 "use strict";

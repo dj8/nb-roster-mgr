@@ -1,7 +1,7 @@
 /* Headless-browser smoke test for the real UI (not the Node-vm engine harness
    used by tests/run.js). Serves the repo statically and drives it with
    Playwright + headless Chromium, exercising the golden path a coach would
-   actually click through.
+   actually click through. 
    Run with: npm run test:ui   (requires `npx playwright install chromium` once) */
 "use strict";
 const http = require("http");

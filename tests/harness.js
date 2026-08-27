@@ -1,7 +1,7 @@
 /* Loads the app's inline engine script from index.html into a Node vm sandbox with
    stubbed document/localStorage/URL/Blob, and appends a module.exports block inside the
    IIFE so internal engine functions are reachable for testing (never shipped — index.html
-   itself has no module.exports). */
+   itself has no module.exports).  */
 "use strict";
 const fs = require("fs");
 const path = require("path");

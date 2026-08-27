@@ -2,7 +2,7 @@
 
 ## Revision notes
 
-This supersedes the original requirements spec. It's a full rewrite, not a diff — read it standalone. The changes since v1 fall into four groups, each reflected throughout the document below:
+This supersedes the original requirements spec. It's a full rewrite, not a diff, read it standalone. The changes since v1 fall into four groups, each reflected throughout the document below:
 
 1. **Priority order changed.** Preference-honouring and optimal position placement — per game _and_ across the whole season — is now the dominant objective. Missed-games evenness is a real, weighted, season-wide goal pursued on a best-effort basis, not a strict rule that overrides everything else. See §4.
 2. **The assignment algorithm was redesigned.** Per-quarter position assignment is now an exact solve (Hungarian / minimum-cost bipartite matching), not a heuristic. Roster-off allocation is now a genuine season-wide search, not a sequential per-game pick. See §5.

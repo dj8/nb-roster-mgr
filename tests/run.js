@@ -1,5 +1,5 @@
 /* Node-based regression suite for the engine embedded across app.js / solver.js / hungarian.js.
-   Run with: node tests/run.js
+   Run with: node tests/run.js 
    Loads a fresh, isolated instance of the app per test via harness.loadEngine()
    (document/localStorage/URL/Blob are stubbed — see harness.js). */
 "use strict";

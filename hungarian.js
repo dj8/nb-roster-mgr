@@ -1,7 +1,7 @@
 /* ============================================================
    Kuhn-Munkres (Hungarian) algorithm — exact O(n^3) minimum-cost
    bipartite assignment on a square cost matrix.
-   Pure, no DOM / no app state. Loaded before solver.js.
+   Pure, no DOM / no app state.  Loaded before solver.js.
    ============================================================ */
 (function(root){
 "use strict";

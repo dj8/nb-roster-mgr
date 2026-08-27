@@ -118,7 +118,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
 .pref-chip button:hover{color:var(--danger);}
 .pref-rank{font-family:var(--font-mono);font-size:10px;color:var(--text-faint);}
 
-/* ---------- Tables / lists ---------- */
+/* ---------- Tables / lists  ---------- */
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-faint);
   padding:8px 8px;border-bottom:1px solid var(--border);font-weight:700;white-space:nowrap;}

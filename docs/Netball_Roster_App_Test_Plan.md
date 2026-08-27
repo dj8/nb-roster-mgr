@@ -1,6 +1,8 @@
 # Netball Season Roster App - Authoritative Test Plan
 
-Mapped to `Netball_Roster_App_Requirements.md`. This plan covers the application’s original behavior and the redesigned roster-generation algorithm: season-wide roster-off allocation (Phase 1), exact Hungarian per-quarter assignment (Phase 2a), and within-game refinement (Phase 2b). Each case references the relevant specification area where applicable. Test IDs are stable references for implementation, bug reports, and regression runs.
+Mapped to `Netball_Roster_App_Requirements.md`. 
+
+This plan covers the application’s original behavior and the redesigned roster-generation algorithm: season-wide roster-off allocation (Phase 1), exact Hungarian per-quarter assignment (Phase 2a), and within-game refinement (Phase 2b). Each case references the relevant specification area where applicable. Test IDs are stable references for implementation, bug reports, and regression runs.
 
 Unless a case says otherwise, regenerate from identical saved input when comparing settings or solver output. Automated tests should use deterministic seeds or fixtures so failures are reproducible.
 
