@@ -790,6 +790,11 @@ function openPlayerDialog(playerId){
       const name = modal.querySelector("#pfName").value.trim();
       if(!name){ toast("Enter a name first."); return; }
       if(isDup(name)){ toast("That name is already on the roster."); return; }
+      // A regular squad player with zero stated preferences has no real
+      // position identity for the solver to work with — unlike a fill-in
+      // (§6 explicitly allows a flexible/no-preference guest), a permanent
+      // roster player should list at least one position.
+      if(!draft.prefs.length){ toast("Add at least one position preference."); return; }
       draft.name = name;
       draft.unavailable = modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)).filter(n=>Number.isFinite(n)&&n>0);
       if(existing){ Object.assign(existing, draft); }

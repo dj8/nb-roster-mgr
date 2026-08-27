@@ -440,18 +440,44 @@ function buildQuarterCostFns(cumulative, settings){
   const benchWeight = clampSetting(weights.bench, 1, 10, 2);
   const purityWeight = clampSetting(weights.positionPurity, 1, 10, 1);
 
+  /* Always rank against the player's *full* stated list — §5.2 defines
+     off-preference as "outside the stated preference list", not "outside the
+     top 2". Slicing to the top 2 here (as this used to do) made a player's
+     3rd+ preference indistinguishable from a position they never listed at
+     all: both hit the `idx<0` branch below, so with allowOffPreference off,
+     a position only ever preferred as someone's 3rd choice could be reported
+     as having *no* eligible in-preference player, even though it manifestly
+     does. §4 rule 5 makes "prefer top 2" a position-*variety* scope — a soft
+     nudge toward a player's top 2 — not a hard eligibility cutoff. */
   function prefRank(p,pos){
-    const list = topTwo ? p.prefs.slice(0,2) : p.prefs;
-    return list.indexOf(pos);
+    return p.prefs.indexOf(pos);
   }
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
     if(idx>=0) return idx;
-    return allowOff ? p.prefs.length : null;
+    // Off-preference cost is "one worse than their whole list". For a player
+    // with zero stated preferences, `p.prefs.length` is 0 — the same as a
+    // rank-0 specialist's cost — which made an empty preference list the
+    // single cheapest possible candidate at every position, beating every
+    // real specialist. Floor at 1 so it's never better than a genuine rank-0
+    // in-preference pick, while staying "one worse than the whole list" for
+    // any player who actually listed at least one position.
+    return allowOff ? Math.max(1, p.prefs.length) : null;
   }
-  function purityTerm(p,pos){
+  /* Bounded bonus/penalty terms layered onto an in-preference rank: purity
+     (spread across a player's own list) and, when "prefer top 2 only" is on,
+     a small nudge away from a 3rd+-ranked position. Both are soft signals
+     that break ties among in-preference candidates — they must never combine
+     to reach a full rank-step (1), or they could make a worse-ranked in-
+     preference candidate cost more than the off-preference sentinel for a
+     player who only listed one more position than that rank, inverting the
+     preference-slider's monotonicity guarantee. */
+  function purityAndVarietyTerm(p,pos){
     const posCount = (cumulative.posCount && cumulative.posCount[p.id+"::"+pos]) || 0;
-    return Math.min(0.95, 0.15*purityWeight*Math.log2(1+posCount));
+    const purity = 0.15*purityWeight*Math.log2(1+posCount);
+    const idx = prefRank(p,pos);
+    const scopeBump = (topTwo && idx>=2) ? 0.3 : 0;
+    return Math.min(0.9, purity+scopeBump);
   }
   function balanceCost(p){
     return ((cumulative.onCourt && cumulative.onCourt[p.id])||0) * benchWeight;
@@ -459,7 +485,7 @@ function buildQuarterCostFns(cumulative, settings){
   function positionCellCost(p,pos){
     const pc = preferenceCost(p,pos);
     if(pc===null) return BIG_M;
-    const prefSide = pc + purityTerm(p,pos);
+    const prefSide = pc + purityAndVarietyTerm(p,pos);
     const balanceSide = balanceCost(p);
     return sliderNorm*prefSide + (1-sliderNorm)*balanceSide;
   }

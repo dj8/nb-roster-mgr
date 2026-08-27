@@ -744,6 +744,57 @@ test("OP-9: toggling allowOffPreference off raises an error instead of an off-pr
   assert.ok(g.error && /GK/.test(g.error), "expected a no-eligible-player error mentioning GK: "+g.error);
 });
 
+test("TOPTWO-1 (H2 regression): topTwoOnly is a soft nudge, not a hard eligibility cutoff", ()=>{
+  // Previously: prefRank sliced to prefs.slice(0,2) before looking up a
+  // position, so a position listed only as a player's 3rd+ preference was
+  // indistinguishable from one never listed at all. With allowOffPreference
+  // off, that meant "prefer top 2" could turn a position that genuinely has
+  // in-preference coverage (just not in anyone's top 2) into a false
+  // NO_ELIGIBLE_PLAYER error. §4 rule 5 defines top-2 as a variety *scope*
+  // over the player's stated list, never a stricter eligibility rule than
+  // §5.2's off-preference toggle.
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 0;
+  st.settings.allowOffPreference = false;
+  // GK is listed by two players, but only ever as their 3rd preference.
+  const defs = [
+    ["Amy",["GS","GA","GK"]], ["Bea",["GA","GS"]], ["Cat",["WA","C"]],
+    ["Dee",["C","WA"]], ["Eve",["WD","GD"]], ["Fay",["GD","WD"]], ["Gia",["WA","GD","GK"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  engine.ensureGamesExist();
+
+  st.settings.topTwoOnly = false;
+  engine.runGeneration();
+  assert.strictEqual(engine.getGame(1).error, null, "sanity: without topTwoOnly, GK has in-preference coverage and should generate cleanly: "+engine.getGame(1).error);
+
+  st.settings.topTwoOnly = true;
+  engine.runGeneration();
+  assert.strictEqual(engine.getGame(1).error, null,
+    "topTwoOnly must not disqualify a position that a player genuinely lists (just not in their top 2): "+engine.getGame(1).error);
+});
+
+test("EMPTYPREFS-1 (H3 regression): a preference-less candidate is never cheaper than a real specialist", ()=>{
+  // Previously: the off-preference cost was p.prefs.length, which is 0 for a
+  // player/fill-in with no stated preferences at all — tying the very best
+  // in-preference candidate (rank 0, cost 0) and beating every other real
+  // rank. A fill-in with no preferences set (§6 explicitly allows this) could
+  // therefore out-compete every specialist on the roster at every position.
+  const engine = freshEngine();
+  const cumulative = {posCount:{}, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
+  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const { positionCellCost } = engine.RosterSolver.buildQuarterCostFns(cumulative, settings);
+  const specialist = {id:"a", prefs:["GK","GD"]};
+  const noPrefs = {id:"b", prefs:[]};
+  const rank1 = {id:"c", prefs:["GD","GK"]};
+  assert.ok(positionCellCost(noPrefs,"GK") > positionCellCost(specialist,"GK"),
+    "a no-preference candidate must cost more than the top-ranked specialist at the same position");
+  assert.ok(positionCellCost(noPrefs,"GK") >= positionCellCost(rank1,"GK"),
+    "a no-preference candidate must not undercut a real rank-1 in-preference candidate");
+});
+
 test("ED-6: a played game's schedule is frozen across regeneration even when settings/roster change", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
