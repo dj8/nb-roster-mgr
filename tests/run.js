@@ -248,6 +248,41 @@ test("PHASE1-SEED-WEIGHTED: the greedy seed itself (not just refinement) respond
     "coverage-aware (weight 4, today's default) seed avoids pairing the two GS specialists together: "+JSON.stringify(coverageAware.rosterOffByGame));
 });
 
+test("STRICT-PAIRING-1 (M3): a game's own strict_specialist_pairing flag overrides a coverage-blind season-wide weight, for that game alone", ()=>{
+  // §5.5: distinct from the season-wide coverage weight (§5.4) — a coach can
+  // flag one specific "problem game" (e.g. a night where two same-position
+  // specialists are otherwise tied for fairness) without changing the
+  // season-wide balance for every other game. Game 1 (X/Y/Z/W) has the flag
+  // on; game 2 uses an entirely disjoint set of players (A/B/C/D) so its own
+  // tie-break is unaffected by whatever running-missed-count cascade game 1's
+  // choice creates (both games still share one sequential season-wide seed,
+  // same as always — only the coverage *weight* used for each game's own
+  // scoring is per-game). Season-wide weight is coverage=0 (fully
+  // coverage-blind), so any coverage-aware behavior seen here can only come
+  // from the per-game flag.
+  const engine = freshEngine();
+  const players = [
+    {id:"X", prefs:["GS"], unavailableCount:0},
+    {id:"Y", prefs:["GS"], unavailableCount:0},
+    {id:"Z", prefs:["WD"], unavailableCount:0},
+    {id:"W", prefs:["WD"], unavailableCount:0},
+    {id:"A", prefs:["GS"], unavailableCount:0},
+    {id:"B", prefs:["GS"], unavailableCount:0},
+    {id:"C", prefs:["WD"], unavailableCount:0},
+    {id:"D", prefs:["WD"], unavailableCount:0}
+  ];
+  const games = [
+    { num:1, availableIds:["X","Y","Z","W"], rosterOffCount:2, fixedOffIds:null, strictSpecialistPairing:true },
+    { num:2, availableIds:["A","B","C","D"], rosterOffCount:2, fixedOffIds:null, strictSpecialistPairing:false }
+  ];
+  const r = engine.RosterSolver.solveSeasonRosterOff({ players, games, weights:{fairness:1,coverage:0}, timeBudgetMs:-1 });
+
+  assert.deepStrictEqual([...r.rosterOffByGame[1]].sort(), ["X","Z"],
+    "the strict-pairing game must avoid rostering off both GS specialists together, even with the season-wide coverage weight at 0: "+JSON.stringify(r.rosterOffByGame));
+  assert.deepStrictEqual([...r.rosterOffByGame[2]].sort(), ["A","B"],
+    "the non-strict game must keep the plain coverage-blind (tied, stable-order) pick, unaffected by game 1's flag: "+JSON.stringify(r.rosterOffByGame));
+});
+
 test("PHASE1-TOGGLE-1: allowOffPreference visibly changes Phase 1's roster-off choice", ()=>{
   const engine = freshEngine();
   // Every position but GK has 2 coverers (so removing any one of A1/A2/B1/B2/
@@ -349,6 +384,39 @@ test("REPORTED-BUG: 11 players / 11 games / 2 off per game reaches exactly 2 mis
         `rosterOffWeight=${rosterOffWeight}, allowOffPreference=${allowOffPreference}: ${s.name} should have exactly 2 missed games, got ${s.missed}`);
     });
   });
+});
+
+test("PHASE1-DETERMINISTIC-1 (M6): identical input reproduces identical roster-off output under the default time budget", ()=>{
+  // Phase 1's restart loop is wall-clock bounded (Date.now()<deadline), so in
+  // principle a slower machine could complete fewer restart attempts than a
+  // faster one under the same nominal budget and settle on a different
+  // candidate. In practice, on a realistic-scale roster (this fixture — the
+  // same one REG-1 uses), the very first seed already reaches a near-zero
+  // objective and the restart loop never even executes an iteration, so the
+  // result is fully deterministic regardless of machine speed. This is
+  // verified directly (not assumed) across independent runs, comparing by
+  // player *name* rather than id — `uid()` embeds Math.random()/Date.now(),
+  // so raw ids legitimately differ run to run even when the actual roster-off
+  // *choice* is identical.
+  const defs = [
+    ["Liv",["GA","GS"]], ["Poppy",["GS","GA","WA","C","WD"]], ["Mabel",["WA","GA","C","GS","WD"]],
+    ["Izzy",["WA","WD"]], ["Layla",["WA","WD"]], ["Ella",["C","GA","WA"]], ["Zara",["C","WA","WD"]],
+    ["Maddie",["WD","WA"]], ["Abby",["GD","WD","GK"]], ["Avalon",["GD","GK"]], ["Savanah",["GK","GD"]]
+  ];
+  const results = [];
+  for(let run=0; run<5; run++){
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 11;
+    st.season.desiredBenchSize = 2;
+    defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+    engine.ensureGamesExist();
+    engine.runGeneration();
+    const nameOf = id => st.players.find(p=>p.id===id).name;
+    results.push(JSON.stringify(engine.gameNums().map(n=>(engine.getGame(n).rosteredOffIds||[]).map(nameOf).sort())));
+  }
+  assert.ok(results.every(r=>r===results[0]),
+    "5 independent runs on identical input should produce identical roster-off choices under the default time budget: "+JSON.stringify(results));
 });
 
 test("THIN-POSITION-1: sole preferrer is never rostered off uncovered when allowOffPreference is off, and the Reports note names them", ()=>{
@@ -666,6 +734,94 @@ test("CSV-ROUNDTRIP-2: a played game's rosteredOffIds survive export/import as a
     "played game's roster-off decision should be frozen and survive CSV round-trip exactly");
 });
 
+test("CSV-ROUNDTRIP-3 (M5 regression): an unplayed game's exact rosteredOffIds survive import even when Phase 1 would pick differently", ()=>{
+  // Previously: importFullCsv unconditionally called computeSeasonRosterOff(),
+  // which re-ran Phase 1 fresh and overwrote every unplayed game's
+  // rosteredOffIds with a brand-new solve — it only ever *looked* like a
+  // round-trip because the solver is deterministic on identical input. Here
+  // the CSV is hand-edited to a roster-off selection Phase 1 would never
+  // produce on its own (a different *count* than the natural derivation, not
+  // just different players), so preservation can only be verified by the
+  // import path actually trusting the file rather than recomputing.
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 2;
+  ["GS","GA","WA","C","WD","GD","GK","GA","GD","WA"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos])); // 10 players, bench 2 -> natural roster-off = 1
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  assert.strictEqual(engine.getGame(1).rosteredOffIds.length, 1, "sanity: natural roster-off for this squad is exactly 1 player");
+
+  engine.exportFullCsv();
+  const lines = engine.CapturingBlob.last.split("\r\n");
+  const gamesIdx = lines.findIndex(l=>l.startsWith("#GAMES"));
+  const ids = engine._getState().players.map(p=>p.id);
+  const forcedPair = [ids[2], ids[3]].sort().join("|"); // force 2 players off, not the natural 1
+  for(let i=gamesIdx+1;i<lines.length;i++){
+    if(lines[i].startsWith("#")) break;
+    const cols = lines[i].split(",");
+    if(cols[0]==="1"){ cols[4] = forcedPair; lines[i]=cols.join(","); break; }
+  }
+  engine.importFullCsv(lines.join("\r\n"));
+
+  assert.strictEqual(engine.getGame(1).rosteredOffIds.slice().sort().join("|"), forcedPair,
+    "the imported (hand-edited) roster-off selection must be preserved exactly, not silently recomputed by a fresh Phase 1 solve");
+
+  // A subsequent real Generate/Rebalance must still be free to change it —
+  // preservation is a one-time import behavior, not an implicit permanent lock.
+  engine.runGeneration();
+  assert.strictEqual(engine.getGame(1).rosteredOffIds.length, 1,
+    "a later Generate/Rebalance must still recompute freely and is not stuck honoring the imported value as a lock");
+});
+
+test("FILLIN-SAVED-ROUNDTRIP-1 (M4 regression): a one-off fill-in's saved:false flag survives CSV export/import", ()=>{
+  // §6: saving a fill-in for reuse must be an explicit, opt-in choice, not an
+  // automatic side effect of creating one — and that choice has to persist,
+  // the same way rostered-off values do (§9's CSV round-trip requirement),
+  // or a one-off would silently turn into a reusable fill-in on next import.
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.fillIns.push({id: engine.uid("fi"), name:"Guest One-off", prefs:["GK"], saved:false});
+  st.fillIns.push({id: engine.uid("fi"), name:"Guest Reusable", prefs:["GS"], saved:true});
+  engine.exportFullCsv();
+  const csvText = engine.CapturingBlob.last;
+  assert.ok(csvText.includes("saved"), "exported CSV should carry the fill-in saved column");
+  engine.importFullCsv(csvText);
+  const st2 = engine._getState();
+  const oneOff = st2.fillIns.find(f=>f.name==="Guest One-off");
+  const reusable = st2.fillIns.find(f=>f.name==="Guest Reusable");
+  assert.strictEqual(oneOff.saved, false, "a one-off fill-in must not flip to saved:true on import");
+  assert.strictEqual(reusable.saved, true, "a reusable fill-in must stay saved:true on import");
+});
+
+test("STRICT-PAIRING-APP-1 (M3): the per-game toggle reaches computeSeasonRosterOff and survives CSV round-trip", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 2;
+  // Same shape as the solver-level STRICT-PAIRING-1 test: two GS specialists,
+  // two WD specialists, coverage-blind season-wide weight (0) so any
+  // coverage-aware pick can only come from the per-game flag.
+  [["X",["GS"]],["Y",["GS"]],["Z",["WD"]],["W",["WD"]]].forEach(([name,prefs])=>addPlayer(engine,name,prefs));
+  st.settings.rosterOffWeight = 0;
+  engine.ensureGamesExist();
+  engine.getGame(1).strictSpecialistPairing = true;
+  engine.computeSeasonRosterOff();
+  const nameOf = id => st.players.find(p=>p.id===id).name;
+  const offNames = (engine.getGame(1).rosteredOffIds||[]).map(nameOf).sort();
+  assert.notDeepStrictEqual(offNames, ["X","Y"],
+    "with strict pairing on for this game, both GS specialists should not be rostered off together: "+JSON.stringify(offNames));
+  assert.notDeepStrictEqual(offNames, ["Z","W"],
+    "with strict pairing on for this game, both WD specialists should not be rostered off together: "+JSON.stringify(offNames));
+
+  engine.exportFullCsv();
+  const csvText = engine.CapturingBlob.last;
+  assert.ok(csvText.includes("strictSpecialistPairing"), "exported CSV should carry the strict-pairing column");
+  engine.importFullCsv(csvText);
+  assert.strictEqual(engine.getGame(1).strictSpecialistPairing, true,
+    "the per-game strict-pairing flag must survive CSV export/import");
+});
+
 /* ============================================================
    8. Regression: previously-established behavior
    ============================================================ */
@@ -793,6 +949,116 @@ test("EMPTYPREFS-1 (H3 regression): a preference-less candidate is never cheaper
     "a no-preference candidate must cost more than the top-ranked specialist at the same position");
   assert.ok(positionCellCost(noPrefs,"GK") >= positionCellCost(rank1,"GK"),
     "a no-preference candidate must not undercut a real rank-1 in-preference candidate");
+});
+
+/* ============================================================
+   M1/M2/H1 regression: the cost-scale rework that made the position-purity
+   and bench-weight settings actually responsive, and closed off a concrete
+   monotonicity leak (bench weight could increase off-preference fills even
+   at the preference slider's literal maximum).
+   ============================================================ */
+function buildRealisticRosterFixture(engine){
+  const st = engine._getState();
+  st.season.numGames = 11;
+  st.season.desiredBenchSize = 2;
+  const defs = [
+    ["Liv",["GA","GS"]], ["Poppy",["GS","GA","WA","C","WD"]], ["Mabel",["WA","GA","C","GS","WD"]],
+    ["Izzy",["WA","WD"]], ["Layla",["WA","WD"]], ["Ella",["C","GA","WA"]], ["Zara",["C","WA","WD"]],
+    ["Maddie",["WD","WA"]], ["Abby",["GD","WD","GK"]], ["Avalon",["GD","GK"]], ["Savanah",["GK","GD"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  engine.ensureGamesExist();
+  return defs;
+}
+
+test("PURITY-SWEEP-1 (M1 regression): raising position-purity weight measurably spreads play across a player's list", ()=>{
+  // Previously: the purity bonus was capped at a flat 0.95, saturating (via
+  // its log2 growth) after as little as one quarter played at a position —
+  // so raising the weight from 1 to 10 had almost no further effect, and it
+  // could never overcome even a single preference-rank step regardless of
+  // weight, making "spread play across their whole preference list" (§11)
+  // false at the labelled high end.
+  const engine = freshEngine();
+  const defs = buildRealisticRosterFixture(engine);
+  function avgShareOnTopPreference(purityWeight){
+    engine._getState().settings.fairnessWeights.positionPurity = purityWeight;
+    engine.runGeneration();
+    const summaries = engine.computePlayerSummaries();
+    const shares = summaries.map(s=>{
+      const prefs = defs.find(d=>d[0]===s.name)[1];
+      return s.onCourt ? (s.positions[prefs[0]]||0)/s.onCourt : 0;
+    });
+    return shares.reduce((a,b)=>a+b,0)/shares.length;
+  }
+  const low = avgShareOnTopPreference(1);
+  const high = avgShareOnTopPreference(10);
+  assert.ok(high < low - 0.1,
+    `raising position-purity from 1 to 10 should meaningfully reduce the share of quarters spent on a player's #1 preference: low=${low.toFixed(3)} high=${high.toFixed(3)}`);
+});
+
+test("BENCH-SWEEP-1 (M2 regression): raising bench weight measurably evens out bench/on-court spread", ()=>{
+  const engine = freshEngine();
+  buildRealisticRosterFixture(engine);
+  function spreadAt(benchWeight){
+    engine._getState().settings.fairnessWeights.bench = benchWeight;
+    engine.runGeneration();
+    const bench = engine.computePlayerSummaries().map(s=>s.bench);
+    return Math.max(...bench)-Math.min(...bench);
+  }
+  const low = spreadAt(1);
+  const high = spreadAt(10);
+  assert.ok(high <= low,
+    `raising bench weight should never widen bench-quarter spread: weight=1 spread=${low}, weight=10 spread=${high}`);
+});
+
+test("BENCH-MAXSLIDER-1 (M2 regression): bench weight cannot affect off-preference fills at the preference slider's literal maximum", ()=>{
+  // Previously: benchCellCost wasn't scaled by the preference slider at all,
+  // so at slider=10 — where §5.1 promises "off-preference fills only occur
+  // when no in-preference candidate is eligible at all" — raising bench
+  // weight could still change who landed on bench vs on court and, via that,
+  // increase the season's off-preference fill count. Confirmed directly: at
+  // slider=10, benchCellCost's season-rate term must scale to exactly zero
+  // regardless of benchWeight.
+  const engine = freshEngine();
+  buildRealisticRosterFixture(engine);
+  engine._getState().settings.preferenceSlider = 10;
+  const counts = [1,5,10].map(w=>{
+    engine._getState().settings.fairnessWeights.bench = w;
+    engine.runGeneration();
+    return engine.computeOffPrefLog().length;
+  });
+  assert.ok(counts.every(c=>c===counts[0]),
+    `off-preference count must be identical across bench weights at slider=10: ${JSON.stringify(counts)}`);
+});
+
+test("SLIDER-SWEEP-REALISTIC-1 (H1): off-preference count is monotonically non-increasing on a roster with good position depth", ()=>{
+  // §5.1's monotonicity guarantee is tested here against a roster with
+  // "reasonable depth at every position" (§5.4's own framing for when this
+  // stuff is well-behaved) — the REG-1 fixture, not an adversarial/thin one.
+  // A fully general proof across arbitrarily thin rosters isn't attempted:
+  // that non-monotonicity turned out to be genuine path-dependence across a
+  // sequential, cumulative-state multi-quarter/multi-game solve (confirmed
+  // by testing two different balance-damping curves, one of which made a
+  // fuzzed adversarial sweep measurably *worse* — ruling out "tune the curve
+  // more" as a fix), not a locally-fixable cost-formula defect.
+  const engine = freshEngine();
+  buildRealisticRosterFixture(engine);
+  const counts = [];
+  for(let s=0;s<=10;s++){
+    engine._getState().settings.preferenceSlider = s;
+    engine.runGeneration();
+    counts.push(engine.computeOffPrefLog().length);
+  }
+  for(let i=1;i<counts.length;i++){
+    assert.ok(counts[i] <= counts[i-1],
+      `off-preference count should not increase from slider=${i-1} (${counts[i-1]}) to slider=${i} (${counts[i]}): ${JSON.stringify(counts)}`);
+  }
+  // Guard against a reversion to the old, saturated cost model, which was so
+  // inert across most of the range that "monotonic" was trivially true only
+  // because the counts barely moved at all (e.g. flat at 24 for sliders
+  // 1-9). A real fix should show the slider actually doing something.
+  assert.ok(counts[1] - counts[10] > 5,
+    `expected the slider to meaningfully reduce off-preference fills from slider=1 (${counts[1]}) to slider=10 (${counts[10]}), not stay essentially flat: ${JSON.stringify(counts)}`);
 });
 
 test("ED-6: a played game's schedule is frozen across regeneration even when settings/roster change", ()=>{

@@ -23,7 +23,10 @@ const MISSED_GAMES_WARNING_SPREAD = 2;  // reports-tab warning threshold (max-mi
 const PHASE2B_TIME_BUDGET_MS = 500;     // per-game refinement budget
 const BIG_M = 1e9;                      // disqualified-cell sentinel (finite, keeps Hungarian arithmetic sane)
 const THIN_POSITION_PREFERRER_THRESHOLD = 1; // positions with this many (or fewer) preferrers can't be rested without risking zero coverage
+const BENCH_SCALE_BOOST = 10;           // compensates bench cost for the (1-sliderNorm) attenuation below, so it keeps its old (pre-normalization) magnitude at the default slider (9)
 const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed seed -> deterministic, reproducible restarts (no Math.random)
+const STRICT_SPECIALIST_COVERAGE_BOOST = 3; // §5.5 per-game toggle: how much more heavily THIS game's coverage penalty counts, on top of the season-wide weight, when its own strict_specialist_pairing flag is on
+const STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT = PHASE1_COVERAGE_WEIGHT; // floor, not just a multiplier — a multiplicative boost alone does nothing when the season-wide slider is at 0 (fully coverage-blind), and the per-game toggle must still work at that extreme
 const PHASE1_STAGNANT_ATTEMPTS_LIMIT = 25; // stop restarting after this many non-improving attempts in a row
 
 /* Deterministic PRNG (mulberry32) — used only to reorder games between restart
@@ -151,6 +154,16 @@ function solveSeasonRosterOff(input){
     decidableGames.forEach(g=>{ (current[g.num]||[]).forEach(id=>{ if(missed[id]!=null) missed[id]++; }); });
     return missed;
   }
+  /* §5.5: a game with its own strict_specialist_pairing flag on counts its
+     OWN coverage penalty more heavily than the season-wide coverageWeight
+     alone would — a small, bounded, per-game deviation from strict fairness
+     ordering, used to protect that one game's position coverage without
+     changing the season-wide balance for every other game (which keeps
+     using the plain coverageWeight, untouched). */
+  function effectiveCoverageWeight(g){
+    if(!g.strictSpecialistPairing) return coverageWeight;
+    return Math.max(coverageWeight*STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT);
+  }
   function totalObjectiveOf(current){
     const missed = totalMissedMapOf(current);
     const fairnessTerm = fairnessWeight*variance(Object.values(missed));
@@ -161,9 +174,9 @@ function solveSeasonRosterOff(input){
       const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
       const squadAfter = pool.filter(p=>!offSet.has(p.id));
       const offPlayers = pool.filter(p=>offSet.has(p.id));
-      coverageTerm += gameCoveragePenalty(squadAfter, offPlayers);
+      coverageTerm += effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter, offPlayers);
     });
-    return fairnessTerm + coverageWeight*coverageTerm;
+    return fairnessTerm + coverageTerm;
   }
 
   /* ---- greedy seed: fairness-first, coverage-aware tie-break ---- */
@@ -182,7 +195,7 @@ function solveSeasonRosterOff(input){
           const missed = runningMissed[cand.id]||0;
           const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
           const off = picked.concat([cand]);
-          const score = missed*1000 + coverageWeight*gameCoveragePenalty(squadAfter, off);
+          const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter, off);
           if(score<bestSafeScore){ bestSafeScore=score; bestSafe=cand; }
           const disqualified = !allowOffPreference && hasZeroCoverage(squadAfter);
           if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
@@ -434,6 +447,16 @@ function computeRosterOffAchievabilityNotes(players){
 function buildQuarterCostFns(cumulative, settings){
   const slider = clampSetting(settings.preferenceSlider, 0, 10, 9);
   const sliderNorm = slider/10;
+  // The balance/bench side's weight, symmetric with sliderNorm's weight on
+  // the preference side. (A steeper, e.g. squared, falloff was tried here to
+  // try to further quiet residual wobble in the 7-10 "mostly preference"
+  // region — it measurably made the fuzzed monotonicity sweep below *worse*,
+  // not better, which is itself informative: the remaining non-monotonicity
+  // isn't "balance noise occasionally outvotes a marginal preference
+  // decision" so much as path-dependence across a sequential, cumulative-
+  // state multi-quarter/multi-game solve, which a per-cell weighting curve
+  // can't reach. Kept linear, the simpler and empirically-no-worse option.)
+  const balanceDamping = (1-sliderNorm);
   const allowOff = !!settings.allowOffPreference;
   const topTwo = !!settings.topTwoOnly;
   const weights = settings.fairnessWeights||{};
@@ -464,36 +487,81 @@ function buildQuarterCostFns(cumulative, settings){
     // any player who actually listed at least one position.
     return allowOff ? Math.max(1, p.prefs.length) : null;
   }
-  /* Bounded bonus/penalty terms layered onto an in-preference rank: purity
-     (spread across a player's own list) and, when "prefer top 2 only" is on,
-     a small nudge away from a 3rd+-ranked position. Both are soft signals
-     that break ties among in-preference candidates — they must never combine
-     to reach a full rank-step (1), or they could make a worse-ranked in-
-     preference candidate cost more than the off-preference sentinel for a
-     player who only listed one more position than that rank, inverting the
-     preference-slider's monotonicity guarantee. */
+  /* Bonus/penalty layered onto an in-preference rank: purity (nudge away from
+     a position already played a lot) and, when "prefer top 2 only" is on, a
+     small extra nudge away from a 3rd+-ranked position. Capped relative to
+     THIS candidate's own gap to their off-preference cost
+     (prefs.length - idx), not a flat constant — a flat cap under 1 (as this
+     used to be) saturates almost immediately (posCount=1 already maxes it
+     out at typical purity weights), so raising the weight further had no
+     visible effect: it could never even overcome a single preference-rank
+     step, meaning a player's #1 choice could never lose to their #2 no
+     matter how many times they'd already played it. Scaling the cap to the
+     player's own list keeps the one property that actually matters — an
+     in-preference candidate never costs more than their own off-preference
+     fallback — while giving a low-ranked (especially rank-0) position much
+     more room to lose ground as it gets played out, so "spread across the
+     whole list" (§11) is something the weight can actually do. */
   function purityAndVarietyTerm(p,pos){
+    const idx = prefRank(p,pos);
+    if(idx<0) return 0; // no purity/variety signal for an off-preference cell
     const posCount = (cumulative.posCount && cumulative.posCount[p.id+"::"+pos]) || 0;
     const purity = 0.15*purityWeight*Math.log2(1+posCount);
-    const idx = prefRank(p,pos);
     const scopeBump = (topTwo && idx>=2) ? 0.3 : 0;
-    return Math.min(0.9, purity+scopeBump);
+    const safeCap = Math.max(0, (p.prefs.length-idx) - 0.05);
+    return Math.min(purity+scopeBump, safeCap);
+  }
+  /* How many of this player's squad-quarters (on-court + bench) have already
+     been decided this season, per the cumulative snapshot this quarter's
+     solve is working from. Turns onCourt/bench totals into RATES rather than
+     raw, ever-growing counts: a player who's played half of an 11-game season
+     should look about as "overplayed" (or not) as one three games into a
+     20-game season, not have their raw count keep climbing all season in a
+     way that quietly outweighs preference cost later on regardless of the
+     preference slider — which is what an unbounded count multiplied by an
+     unbounded weight did before, and was the main reason bench/balance
+     weight changes could shift off-preference fill counts in ways their own
+     slider labels didn't predict. */
+  function quartersSoFar(p){
+    return ((cumulative.onCourt&&cumulative.onCourt[p.id])||0) + ((cumulative.bench&&cumulative.bench[p.id])||0);
   }
   function balanceCost(p){
-    return ((cumulative.onCourt && cumulative.onCourt[p.id])||0) * benchWeight;
+    const played = quartersSoFar(p);
+    const onCourtRate = played>0 ? ((cumulative.onCourt&&cumulative.onCourt[p.id])||0)/played : 0;
+    return onCourtRate*benchWeight;
   }
   function positionCellCost(p,pos){
     const pc = preferenceCost(p,pos);
     if(pc===null) return BIG_M;
     const prefSide = pc + purityAndVarietyTerm(p,pos);
     const balanceSide = balanceCost(p);
-    return sliderNorm*prefSide + (1-sliderNorm)*balanceSide;
+    return sliderNorm*prefSide + balanceDamping*balanceSide;
   }
+  /* Bench-slot cost, scaled by the SAME balanceDamping factor as balanceCost
+     above, and boosted back up by BENCH_SCALE_BOOST so it keeps a comparable
+     magnitude to before at the default slider (9). Previously this wasn't
+     scaled by the slider at all, so raising the preference slider toward
+     "strict preference" could still leave bench-rotation pressure competing
+     with — and occasionally beating — preference cost when deciding who gets
+     a court slot vs a bench slot, which is how bench weight could increase
+     off-preference fills even at the slider's literal maximum (10), directly
+     contradicting §5.1 ("at the high end ... off-preference fills only occur
+     when no in-preference candidate is eligible at all"). Scaling it the same
+     way as balanceCost makes it exactly 0 at slider=10, and negligible well
+     before that — bench rotation still meaningfully differentiates
+     candidates across the lower/middle range, including the default, while
+     guaranteeing it can't be the reason an in-preference candidate loses out
+     once the coach has asked for mostly-strict preference.
+     back-to-back-bench avoidance (§4 rule 6, within-game polish) is left
+     unscaled: it's a small, preference-neutral tie-break, not part of the
+     preference-vs-fairness trade-off the slider governs. */
   function benchCellCost(p){
-    const season = (cumulative.bench && cumulative.bench[p.id])||0;
+    const played = quartersSoFar(p);
+    const benchRate = played>0 ? ((cumulative.bench&&cumulative.bench[p.id])||0)/played : 0;
     const thisGame = (cumulative.gameBenchSoFar && cumulative.gameBenchSoFar[p.id])||0;
-    const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has && cumulative.benchedLastQuarter.has(p.id)) ? 5 : 0;
-    return season*10*benchWeight + thisGame*3 + backToBack;
+    const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has && cumulative.benchedLastQuarter.has(p.id)) ? 2 : 0;
+    const scaledSeasonSide = balanceDamping*BENCH_SCALE_BOOST*(benchRate*benchWeight + thisGame*0.3);
+    return scaledSeasonSide + backToBack;
   }
   return { positionCellCost, benchCellCost, isDisqualified:(p,pos)=>preferenceCost(p,pos)===null };
 }
@@ -680,7 +748,8 @@ const RosterSolver = {
   CONSTANTS: {
     PHASE1_FAIRNESS_WEIGHT, PHASE1_COVERAGE_WEIGHT, PHASE1_TIME_BUDGET_MS, PHASE1_MAX_PASSES,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, COVERAGE_OVERLAP_WEIGHT,
-    MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD
+    MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
+    BENCH_SCALE_BOOST, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT
   },
   variance,
   clampSetting,

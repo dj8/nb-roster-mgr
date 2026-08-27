@@ -44,6 +44,7 @@ function newGameState(){
     isPlayed:false,
     rosterOffOverride:null,     // number|null - overrides derived roster_off_count
     rosterOffLockIds:null,      // array of playerIds|null - manual explicit roster-off selection (locked)
+    strictSpecialistPairing:false, // §5.5 - this game's roster-off pick may deviate from strict fairness ordering to protect position coverage, without changing the season-wide balance for other games
     fillInIds:[],               // fill-ins assigned to this game
     lockedSlots:{},             // "q-pos" -> playerId (manual lock, survives rebalance)
     schedule:null,              // computed: {quarters:[{onCourt:{pos:playerId|fillinId},bench:[ids],offPreference:{pos:true}}]}
@@ -354,7 +355,16 @@ function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds){
    facts + the resulting rosteredOffIds/coverageWarnings onto every game.
    Does not touch schedules. Used by runGeneration (before Phase 2) and by
    importFullCsv (to re-derive these display fields after loading a CSV). */
-function computeSeasonRosterOff(){
+/* `preserveExisting`: used only right after a fresh CSV import (§9 requires
+   per-game roster-off values to round-trip exactly, not just converge to the
+   same count) — a non-played, non-locked game that already has a non-empty
+   `rosteredOffIds` loaded from the file is fed into this Phase 1 call as a
+   *fixed* game (same mechanism as a played/locked game), so it comes back out
+   unchanged and every other, still-genuinely-undecided game's missed-count
+   and coverage math is computed against what's actually fixed. This is not a
+   lock: it only affects this one call — the next real Generate/Rebalance
+   (called without the flag) is free to change it, exactly as §8 intends. */
+function computeSeasonRosterOff(preserveExisting){
   const nums = gameNums();
   const availByNum = {};
   nums.forEach(num=>{ availByNum[num] = planGameAvailability(num); });
@@ -365,11 +375,16 @@ function computeSeasonRosterOff(){
   }));
   const seasonGames = nums.map(num=>{
     const a = availByNum[num];
+    const game = getGame(num);
+    const preserveThisGame = preserveExisting && a.fixedOffIds==null && !a.shortfall
+      && Array.isArray(game.rosteredOffIds) && game.rosteredOffIds.length>0;
+    const fixedOffIds = preserveThisGame ? game.rosteredOffIds.slice() : a.fixedOffIds;
     return {
       num,
       availableIds: a.availableRegularIds,
-      rosterOffCount: a.fixedOffIds!=null ? a.fixedOffIds.length : a.rosterOffCount,
-      fixedOffIds: a.fixedOffIds
+      rosterOffCount: fixedOffIds!=null ? fixedOffIds.length : a.rosterOffCount,
+      fixedOffIds,
+      strictSpecialistPairing: !!game.strictSpecialistPairing
     };
   });
   const phase1 = RosterSolver.solveSeasonRosterOff({
@@ -878,9 +893,30 @@ function renderSchedule(root){
     </div>
     <div id="gamesList"></div>
   `;
-  document.getElementById("genBtn").onclick=()=>{ const r=runGeneration(); toast(`Season generated in ${r.elapsedMs}ms.`); renderSchedule(root); };
-  document.getElementById("rebalBtn").onclick=()=>{ const r=runGeneration(); toast(`Remaining games rebalanced in ${r.elapsedMs}ms.`); renderSchedule(root); };
+  document.getElementById("genBtn").onclick=()=>runGenerationWithBusyState("Season generated");
+  document.getElementById("rebalBtn").onclick=()=>runGenerationWithBusyState("Remaining games rebalanced");
   renderGamesList(document.getElementById("gamesList"));
+
+  /* runGeneration() is fully synchronous — it can take up to several seconds
+     (§9) with no yield points, so the browser can't repaint mid-run. Disabling
+     both buttons and swapping in a "Generating…" label first, then deferring
+     the actual (blocking) call one tick via setTimeout, lets that state
+     actually paint before the freeze — otherwise the UI looks identical
+     right up until it unfreezes, indistinguishable from a genuine hang, and
+     a confused coach clicking again just queues a redundant (not harmful,
+     since JS is single-threaded and each run completes fully before the
+     next starts, but wasteful) re-run. */
+  function runGenerationWithBusyState(pastTenseLabel){
+    const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
+    const originalGenText = genBtn.textContent, originalRebalText = rebalBtn.textContent;
+    genBtn.disabled = true; rebalBtn.disabled = true;
+    genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
+    setTimeout(()=>{
+      const r = runGeneration();
+      toast(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
+      renderSchedule(root);
+    }, 0);
+  }
 }
 
 function renderGamesList(el){
@@ -954,6 +990,11 @@ function renderGameBody(num){
         </div>
       </div>
       ${gapHtml}
+      <label class="checkbox-row" style="margin-top:10px;">
+        <input type="checkbox" id="strictPairing-${num}" ${game.strictSpecialistPairing?"checked":""} ${game.isPlayed?"disabled":""}>
+        <span class="cb-label">Strict specialist pairing (this game only)</span>
+        <span class="cb-desc">On: allows a small, bounded deviation from strict roster-off fairness for this game specifically, if it meaningfully protects position coverage — the season-wide balance for every other game is unaffected (§5.5)</span>
+      </label>
       <div class="section-label" style="margin-top:10px;">Fill-ins assigned to this game</div>
       <div>${fillinChips||'<span class="hint">None yet.</span>'}</div>
       <button class="btn btn-sm" data-assignfillin="${num}" style="margin-top:6px;" ${game.isPlayed?"disabled":""}>Assign a fill-in</button>
@@ -1030,6 +1071,11 @@ function wireGameCard(el, num){
   };
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
+  const strictPairing = card.querySelector(`#strictPairing-${num}`);
+  if(strictPairing) strictPairing.onchange=e=>{
+    getGame(num).strictSpecialistPairing = e.target.checked;
+    saveState(); toast("Regenerate to apply.");
+  };
   const assignFillin = card.querySelector(`[data-assignfillin="${num}"]`);
   if(assignFillin) assignFillin.onclick=()=>openAssignFillInDialog(num);
   card.querySelectorAll("[data-rmfillin]").forEach(b=>b.onclick=()=>{
@@ -1084,25 +1130,42 @@ function openRosterOffDialog(num){
 }
 
 function openAssignFillInDialog(num){
-  if(!STATE.fillIns.length){ toast("Add a fill-in player first, in the Fill-ins tab."); return; }
   const game = getGame(num);
   const assigned = new Set(game.fillInIds||[]);
-  openModal(`
+  // A one-off fill-in (§6: "saved for reuse" left unchecked at creation) is
+  // scoped to whichever game it was created for — it shouldn't be offered
+  // here as a candidate for a *different* game, even though it still lives
+  // in STATE.fillIns. Already-assigned-to-this-game candidates are shown
+  // regardless (including a one-off created for this same game).
+  const candidates = STATE.fillIns.filter(f=>f.saved!==false || assigned.has(f.id));
+
+  function paint(modal){
+    modal.querySelector("#finList").innerHTML = candidates.length ? candidates.map(f=>`
+      <label class="checkbox-row"><input type="checkbox" value="${f.id}" ${assigned.has(f.id)?"checked":""}>
+        <span class="cb-label">${esc(f.name)}</span>
+        <span class="cb-desc">${f.prefs.map(esc).join(", ")||"no preferences set"}</span></label>`).join("")
+      : `<p class="hint">No saved fill-ins yet — add one below.</p>`;
+  }
+
+  const modal = openModal(`
     <h3>Assign fill-in — Game ${num}</h3>
     <div id="finList" style="max-height:280px;overflow-y:auto;"></div>
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn btn-sm" id="newFillinBtn">+ New fill-in</button>
+    </div>
     <div class="modal-actions">
       <button class="btn" data-act="cancel">Cancel</button>
       <button class="btn btn-primary" data-act="save">Save</button>
     </div>
-  `, modal=>{
-    modal.querySelector("#finList").innerHTML = STATE.fillIns.map(f=>`
-      <label class="checkbox-row"><input type="checkbox" value="${f.id}" ${assigned.has(f.id)?"checked":""}>
-        <span class="cb-label">${esc(f.name)}</span>
-        <span class="cb-desc">${f.prefs.map(esc).join(", ")||"no preferences set"}</span></label>`).join("");
-    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
-    modal.querySelector('[data-act="save"]').onclick=()=>{
-      game.fillInIds = Array.from(modal.querySelectorAll("#finList input:checked")).map(i=>i.value);
+  `, m=>{
+    paint(m);
+    m.querySelector('[data-act="cancel"]').onclick=closeModal;
+    m.querySelector('[data-act="save"]').onclick=()=>{
+      game.fillInIds = Array.from(m.querySelectorAll("#finList input:checked")).map(i=>i.value);
       saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
+    };
+    m.querySelector("#newFillinBtn").onclick=()=>{
+      openFillInDialog(null, num, ()=>{ openAssignFillInDialog(num); });
     };
   });
 }
@@ -1312,11 +1375,13 @@ function renderFillIns(root){
   } else {
     listEl.innerHTML = STATE.fillIns.map(f=>{
       const usedIn = gameNums().filter(n=>(getGame(n).fillInIds||[]).includes(f.id));
+      const oneOff = f.saved===false;
       return `<div class="list-row">
         <div style="flex:1;min-width:0;">
           <div class="player-name">${esc(f.name)}</div>
           <div class="player-meta">${f.prefs.map(pos=>`<span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>`).join(" ")||'<span class="hint">no preferences set</span>'}
-            ${usedIn.length?`<span class="pill pill-accent" style="margin-left:6px;">Used in ${usedIn.length} game(s)</span>`:""}</div>
+            ${oneOff?`<span class="pill pill-warn" style="margin-left:6px;">One-off${usedIn.length?` — game ${usedIn.join(", ")}`:""}</span>`
+              :usedIn.length?`<span class="pill pill-accent" style="margin-left:6px;">Used in ${usedIn.length} game(s)</span>`:""}</div>
         </div>
         <div class="btn-row" style="margin:0;">
           <button class="btn btn-sm" data-editfi="${f.id}">Edit</button>
@@ -1339,19 +1404,29 @@ function renderFillIns(root){
 /* Cancel-safe: the draft object lives only inside this closure/modal and is
    never written into STATE until Save is clicked. Cancel (or the backdrop
    click / re-open) simply discards it — see SS-8 / SS-9. */
-function openFillInDialog(fillInId){
+/* `contextGameNum`, when given, is the game this fill-in dialog was opened
+   from (via the "+ New fill-in" option inside Assign-a-fill-in, §6's "scoped
+   to a single game by default" flow) — a genuine one-off created there is
+   auto-assigned to that game so the coach doesn't also have to check it in
+   the assign list; `onSaved` lets the caller refresh its own view afterward. */
+function openFillInDialog(fillInId, contextGameNum, onSaved){
   const existing = fillInId ? byId(STATE.fillIns, fillInId) : null;
-  const draft = existing ? deepClone(existing) : {id:uid("fi"), name:"", prefs:[]};
+  const draft = existing ? deepClone(existing) : {id:uid("fi"), name:"", prefs:[], saved:true};
+  if(draft.saved==null) draft.saved = true; // pre-existing fill-ins from before this field existed
 
   const m = openModal(`
     <h3>${existing?"Edit fill-in":"Add fill-in"}</h3>
-    <p class="modal-sub">Guest player, reusable across games. Not part of the permanent roster or season fairness.</p>
+    <p class="modal-sub">Guest player. Not part of the permanent roster or season fairness.</p>
     <div class="field"><label>Name</label><input type="text" id="fiName" value="${esc(draft.name)}" placeholder="e.g. Casey (guest)"></div>
     <div class="field">
       <label>Position preferences (optional, ordered)</label>
       <div id="fiChips" style="min-height:30px;"></div>
       <div class="btn-row" id="fiButtons"></div>
     </div>
+    ${existing ? "" : `
+    <label class="checkbox-row"><input type="checkbox" id="fiSaved" ${draft.saved?"checked":""}>
+      <span class="cb-label">Save this fill-in for reuse in future games</span>
+      <span class="cb-desc">Off: a genuine one-off — used ${contextGameNum?`only for game ${contextGameNum}`:"just once"} and not offered when assigning fill-ins to other games (§6)</span></label>`}
     <div class="modal-actions">
       <button class="btn" data-act="cancel">Cancel</button>
       <button class="btn btn-primary" data-act="save">${existing?"Save changes":"Add fill-in"}</button>
@@ -1375,9 +1450,18 @@ function openFillInDialog(fillInId){
       const name = modal.querySelector("#fiName").value.trim();
       if(!name){ toast("Enter a name first."); return; }
       draft.name = name;
+      const savedCheckbox = modal.querySelector("#fiSaved");
+      if(savedCheckbox) draft.saved = savedCheckbox.checked;
+      let isNew = false;
       if(existing) Object.assign(existing, draft);
-      else STATE.fillIns.push(draft);
-      saveState(); closeModal(); renderMain();
+      else { STATE.fillIns.push(draft); isNew = true; }
+      if(isNew && !draft.saved && contextGameNum!=null){
+        const game = getGame(contextGameNum);
+        game.fillInIds = game.fillInIds||[];
+        if(!game.fillInIds.includes(draft.id)) game.fillInIds.push(draft.id);
+      }
+      saveState(); closeModal();
+      if(onSaved) onSaved(draft); else renderMain();
     };
   });
 }
@@ -1604,14 +1688,15 @@ function exportFullCsv(){
   row("theme",STATE.theme);
   row("#PLAYERS","id","name","prefs","unavailable");
   STATE.players.forEach(p=>row(p.id,p.name,(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
-  row("#FILLINS","id","name","prefs");
-  STATE.fillIns.forEach(f=>row(f.id,f.name,(f.prefs||[]).join("|")));
-  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error");
+  row("#FILLINS","id","name","prefs","saved");
+  STATE.fillIns.forEach(f=>row(f.id,f.name,(f.prefs||[]).join("|"),f.saved===false?0:1));
+  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing");
   gameNums().forEach(n=>{
     const g = getGame(n);
     const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
     row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
-      (g.rosterOffLockIds||[]).join("|"), (g.rosteredOffIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"");
+      (g.rosterOffLockIds||[]).join("|"), (g.rosteredOffIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"",
+      g.strictSpecialistPairing?1:0);
   });
   row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
   gameNums().forEach(n=>{
@@ -1662,14 +1747,16 @@ function importFullCsv(text){
       unavailable:(r[3]||"").split("|").filter(Boolean).map(Number)
     }));
     ns.fillIns = (sections.FILLINS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:r[1]||"", prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean))
+      id:r[0], name:r[1]||"", prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
+      saved: r[3]===undefined ? true : r[3]!=="0"
     }));
 
     ns.games = {};
     (sections.GAMES||[]).filter(r=>r[0]).forEach(r=>{
-      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr] = r;
+      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr] = r;
       const g = newGameState();
       g.isPlayed = isPlayed==="1";
+      g.strictSpecialistPairing = strictPairingStr==="1";
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
       g.rosterOffLockIds = (rosterOffLockIds||"").split("|").filter(Boolean);
       if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
@@ -1714,9 +1801,11 @@ function importFullCsv(text){
     STATE = ns;
     try{
       // recompute derived display-only fields without touching schedule/locks. Played games'
-      // rosteredIds were loaded directly from the CSV above and are treated as a frozen fact;
-      // everything else is re-derived (a fresh Phase 1 solve for roster-off, same as generation).
-      computeSeasonRosterOff();
+      // rosteredOffIds were loaded directly from the CSV above and are treated as a frozen fact;
+      // an unplayed game's imported rosteredOffIds is preserved too (§9's exact round-trip
+      // requirement) rather than immediately overwritten by a fresh Phase 1 solve — the next
+      // real Generate/Rebalance is still free to change it, same as always.
+      computeSeasonRosterOff(true);
     }catch(err){
       STATE = previousState;
       throw err;

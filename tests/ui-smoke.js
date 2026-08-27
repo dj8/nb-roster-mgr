@@ -85,7 +85,18 @@ async function shot(page, name){
   // ---- Schedule: generate, check for errors, inspect a game's rotation grid ----
   await page.click('.tab-btn[data-tab="schedule"]');
   await page.click("#genBtn");
+  // runGeneration() is fully synchronous and deferred via setTimeout(...,0), so
+  // immediately after the click (before that timeout's callback has run) the
+  // button should already show the busy state — this is the one window where
+  // it's observable before the (typically sub-10ms, for this tiny roster) run
+  // completes and renderSchedule() puts the buttons back to normal.
+  const genBtnTextWhileBusy = await page.locator("#genBtn").textContent();
+  const genBtnDisabledWhileBusy = await page.locator("#genBtn").isDisabled();
+  check(/generating/i.test(genBtnTextWhileBusy) && genBtnDisabledWhileBusy,
+    `Generate button shows a disabled busy state immediately after clicking (text="${genBtnTextWhileBusy}", disabled=${genBtnDisabledWhileBusy})`);
   await page.waitForTimeout(50);
+  check((await page.locator("#genBtn").textContent())==="Generate season",
+    "Generate button returns to its normal label once generation finishes");
   let errorPills = await page.locator(".pill-danger").allTextContents();
   check(errorPills.length===0, `no error pills after generation (found: ${JSON.stringify(errorPills)})`);
   await shot(page, "03-schedule-generated.png");
@@ -193,6 +204,52 @@ async function shot(page, name){
   check(JSON.stringify(q3AfterBackdrop)===JSON.stringify(q3Before),
     `Dismissing the follow-up dialog via a backdrop click leaves the quarter completely unchanged (before=${JSON.stringify(q3Before)}, after=${JSON.stringify(q3AfterBackdrop)})`);
 
+  // ---- Strict specialist pairing (§5.5): toggle the per-game checkbox and
+  // confirm it persists across a collapse/reopen of the game card. ----
+  const strictBoxSel = '#gameBody-1 #strictPairing-1';
+  await page.waitForSelector(strictBoxSel);
+  check(!(await page.isChecked(strictBoxSel)), "strict specialist pairing defaults to off for a new game");
+  await page.check(strictBoxSel);
+  await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]');
+  check(await page.isChecked(strictBoxSel), "strict specialist pairing checkbox stays checked after collapse/reopen");
+
+  // ---- Fill-ins: create a one-off (unsaved) fill-in scoped to game 1, via
+  // the "+ New fill-in" flow inside Assign-a-fill-in (§6), then confirm it
+  // does NOT show up as a candidate when assigning fill-ins to a different
+  // game (M4: the save-vs-one-off choice must actually be enforced, not
+  // just accepted as input). ----
+  await page.click('[data-assignfillin="1"]');
+  await page.waitForSelector('.modal #newFillinBtn');
+  await page.click('#newFillinBtn');
+  await page.waitForSelector('.modal #fiName');
+  await page.fill('#fiName', 'OneOffGuest');
+  await page.click('#prefButtons button[data-add="GK"]').catch(()=>{});
+  await page.uncheck('.modal #fiSaved');
+  await page.click('.modal [data-act="save"]');
+  await page.waitForSelector('#finList', {timeout:2000});
+  const oneOffChecked = await page.locator('#finList input[type="checkbox"]').evaluateAll(
+    (boxes, name) => boxes.some(b => b.closest('label').textContent.includes(name) && b.checked),
+    'OneOffGuest'
+  );
+  check(oneOffChecked, "a new one-off fill-in is auto-assigned (checked) in the game it was created for");
+  await page.click('.modal [data-act="save"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+
+  await page.click('.tab-btn[data-tab="fillins"]');
+  const fillinsText = await page.locator("body").textContent();
+  check(/One-off/.test(fillinsText), "the Fill-ins tab marks a one-off fill-in distinctly");
+
+  await page.click('.tab-btn[data-tab="schedule"]');
+  await page.click('[data-toggle="2"]');
+  await page.waitForSelector('#gameBody-2');
+  await page.click('[data-assignfillin="2"]');
+  await page.waitForSelector('.modal #finList');
+  const leaksToOtherGame = await page.locator('#finList').textContent();
+  check(!leaksToOtherGame.includes('OneOffGuest'), "a one-off fill-in scoped to game 1 does not appear as a candidate for game 2");
+  await page.click('.modal [data-act="cancel"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  await page.click('[data-toggle="2"]');
+
   // ---- Settings: verify the new default and that the old toggle is gone ----
   await page.click('.tab-btn[data-tab="settings"]');
   const sliderVal = (await page.locator("#sliderVal").textContent()).trim();
@@ -221,6 +278,19 @@ async function shot(page, name){
   await page.click("#themeToggle");
   const themeAfter = await page.getAttribute("html","data-theme");
   check(themeBefore!==themeAfter, `theme toggles on click (before=${themeBefore}, after=${themeAfter})`);
+
+  // ---- XLSX export (M8: XLSX is now vendored locally, not loaded from a
+  // CDN — this both proves the vendored file actually works and exercises
+  // the export path at all, which had no coverage before) ----
+  await page.click('.tab-btn[data-tab="data"]');
+  const [xlsxDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click("#exportXlsxBtn")
+  ]);
+  const xlsxPath = path.join(SCREENSHOT_DIR, "export.xlsx");
+  await xlsxDownload.saveAs(xlsxPath);
+  const xlsxStat = fs.statSync(xlsxPath);
+  check(xlsxStat.size > 1000, `XLSX export downloads a non-trivial file (${xlsxStat.size} bytes)`);
 
   // ---- CSV export -> reset -> import round trip ----
   await page.click('.tab-btn[data-tab="data"]');
