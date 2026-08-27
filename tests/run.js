@@ -221,6 +221,170 @@ test("SEASON-ROSTEROFF-1: fairness term reflects total missed games (unavailable
 });
 
 /* ============================================================
+   4b. Roster-off weight slider, the seed's coverage-weight fix, and the
+       hard "allow off-preference off" constraint in solveSeasonRosterOff
+   ============================================================ */
+test("PHASE1-SEED-WEIGHTED: the greedy seed itself (not just refinement) responds to coverageWeight", ()=>{
+  // Hand-traced: pool [X,Y,Z,W], rosterOffCount=2, all missed=0 (tied).
+  // X,Y both prefer GS (rank0); Z,W both prefer WD (rank0). timeBudgetMs:-1 disables
+  // refinement entirely (the outer loop's first budget check trips immediately), so
+  // whatever comes out is purely the seed's choice — this is what would have stayed
+  // frozen at coverageWeight=4's answer regardless of weight, before the seed fix.
+  const engine = freshEngine();
+  const players = [
+    {id:"X", prefs:["GS"], unavailableCount:0},
+    {id:"Y", prefs:["GS"], unavailableCount:0},
+    {id:"Z", prefs:["WD"], unavailableCount:0},
+    {id:"W", prefs:["WD"], unavailableCount:0}
+  ];
+  const games = [{ num:1, availableIds:["X","Y","Z","W"], rosterOffCount:2, fixedOffIds:null }];
+
+  const coverageBlind = engine.RosterSolver.solveSeasonRosterOff({ players, games, weights:{fairness:1,coverage:0}, timeBudgetMs:-1 });
+  const coverageAware = engine.RosterSolver.solveSeasonRosterOff({ players, games, weights:{fairness:1,coverage:4}, timeBudgetMs:-1 });
+
+  assert.deepStrictEqual([...coverageBlind.rosterOffByGame[1]].sort(), ["X","Y"],
+    "coverage-blind (weight 0) seed ties break by stable order, picking the first two candidates: "+JSON.stringify(coverageBlind.rosterOffByGame));
+  assert.deepStrictEqual([...coverageAware.rosterOffByGame[1]].sort(), ["X","Z"],
+    "coverage-aware (weight 4, today's default) seed avoids pairing the two GS specialists together: "+JSON.stringify(coverageAware.rosterOffByGame));
+});
+
+test("PHASE1-TOGGLE-1: allowOffPreference visibly changes Phase 1's roster-off choice", ()=>{
+  const engine = freshEngine();
+  // Every position but GK has 2 coverers (so removing any one of A1/A2/B1/B2/
+  // C1/C2 never zeroes a position) and Q is the *sole* GK preferrer, so
+  // removing Q is the only candidate that ever creates a zero-coverage state.
+  const players = [
+    {id:"Q", prefs:["GK"], unavailableCount:0},
+    {id:"A1", prefs:["GS","GA"], unavailableCount:0},
+    {id:"A2", prefs:["GS","GA"], unavailableCount:0},
+    {id:"B1", prefs:["WD","WA"], unavailableCount:0},
+    {id:"B2", prefs:["WD","WA"], unavailableCount:0},
+    {id:"C1", prefs:["C","GD"], unavailableCount:0},
+    {id:"C2", prefs:["C","GD"], unavailableCount:0}
+  ];
+  const games = [{ num:1, availableIds:["Q","A1","A2","B1","B2","C1","C2"], rosterOffCount:1, fixedOffIds:null }];
+
+  // Note: solver values live in a separate vm realm (see harness.js), so array
+  // literals here compare via .slice()/spread (same-realm) rather than
+  // assert.deepStrictEqual directly against a cross-realm array.
+  const allowed = engine.RosterSolver.solveSeasonRosterOff({ players, games, weights:{fairness:1,coverage:0}, allowOffPreference:true, timeBudgetMs:-1 });
+  assert.deepStrictEqual([...allowed.rosterOffByGame[1]], ["Q"],
+    "with the toggle on and coverage weight zeroed, Q (the sole GK) can still be picked: "+JSON.stringify(allowed.rosterOffByGame));
+
+  const disallowed = engine.RosterSolver.solveSeasonRosterOff({ players, games, weights:{fairness:1,coverage:0}, allowOffPreference:false, timeBudgetMs:-1 });
+  assert.notDeepStrictEqual([...disallowed.rosterOffByGame[1]], ["Q"],
+    "with the toggle off, Q must never be rostered off since it would leave GK uncovered: "+JSON.stringify(disallowed.rosterOffByGame));
+});
+
+test("ROSTEROFF-SLIDER-SWEEP: missed-games variance is monotonically non-decreasing as rosterOffWeight rises from 0 (fairness) to 10 (coverage)", ()=>{
+  function buildRoster(engine){
+    const st = engine._getState();
+    st.season.numGames = 8;
+    st.season.desiredBenchSize = 2;
+    const defs = [
+      ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
+      ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD"]],
+      ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]],
+      ["Jaz",["C","WD","GD"]], ["Kim",["GD","GK"]], ["Lou",["GD","WD"]]
+    ];
+    defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+    const st2 = engine._getState();
+    st2.players[0].unavailable = [3,7];
+    st2.players[4].unavailable = [2];
+    st2.players[9].unavailable = [5,6];
+    engine.ensureGamesExist();
+  }
+  const variances = [];
+  for(let w=0; w<=10; w++){
+    const engine = freshEngine();
+    buildRoster(engine);
+    engine._getState().settings.rosterOffWeight = w;
+    const r = engine.runGeneration();
+    assert.strictEqual(r.invalid, null);
+    const missed = engine.computePlayerSummaries().map(s=>s.missed);
+    variances.push(engine.RosterSolver.variance(missed));
+  }
+  for(let i=1;i<variances.length;i++){
+    assert.ok(variances[i] >= variances[i-1] - 1e-9,
+      `variance should be non-decreasing as rosterOffWeight rises from ${i-1} (${variances[i-1]}) to ${i} (${variances[i]}): ${JSON.stringify(variances)}`);
+  }
+});
+
+test("REPORTED-BUG: 11 players / 11 games / 2 off per game reaches exactly 2 missed each", ()=>{
+  function buildReportedBugRoster(engine){
+    const st = engine._getState();
+    st.season.numGames = 11;
+    st.season.desiredBenchSize = 2;
+    const defs = [
+      ["Liv",["GA","GS"]],
+      ["Poppy",["GS","GA","WA","C","WD"]],
+      ["Mabel",["WA","GA","C","GS","WD"]],
+      ["Izzy",["WA","WD"]],
+      ["Layla",["WA","WD"]],
+      ["Ella",["C","GA","WA"]],
+      ["Zara",["C","WA","WD"]],
+      ["Maddie",["WD","WA"]],
+      ["Abby",["GD","WD","GK"]],
+      ["Avalon",["GD","GK"]],
+      ["Savanah",["GK","GD"]]
+    ];
+    defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+    engine.ensureGamesExist();
+  }
+  [
+    {rosterOffWeight:0, allowOffPreference:true},
+    {rosterOffWeight:0, allowOffPreference:false},
+    {rosterOffWeight:10, allowOffPreference:true},
+    {rosterOffWeight:10, allowOffPreference:false}
+  ].forEach(({rosterOffWeight, allowOffPreference})=>{
+    const engine = freshEngine();
+    buildReportedBugRoster(engine);
+    engine._getState().settings.rosterOffWeight = rosterOffWeight;
+    engine._getState().settings.allowOffPreference = allowOffPreference;
+    const r = engine.runGeneration();
+    assert.strictEqual(r.invalid, null);
+    const summaries = engine.computePlayerSummaries();
+    summaries.forEach(s=>{
+      assert.strictEqual(s.missed, 2,
+        `rosterOffWeight=${rosterOffWeight}, allowOffPreference=${allowOffPreference}: ${s.name} should have exactly 2 missed games, got ${s.missed}`);
+    });
+  });
+});
+
+test("THIN-POSITION-1: sole preferrer is never rostered off uncovered when allowOffPreference is off, and the Reports note names them", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 6;
+  st.season.desiredBenchSize = 2;
+  st.settings.allowOffPreference = false;
+  const defs = [
+    ["Quinn",["GK"]],
+    ["A1",["GS"]], ["A2",["GS"]],
+    ["B1",["WD"]], ["B2",["WD"]],
+    ["C1",["WA"]], ["C2",["WA"]],
+    ["D1",["C"]], ["D2",["C"]],
+    ["E1",["GA"]], ["E2",["GA"]],
+    ["F1",["GD"]], ["F2",["GD"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  engine.ensureGamesExist();
+  const quinnId = engine._getState().players[0].id;
+
+  const r = engine.runGeneration();
+  assert.strictEqual(r.invalid, null);
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n);
+    assert.ok(!(g.rosteredOffIds||[]).includes(quinnId),
+      `game ${n} must never roster off the sole GK preferrer when off-preference is disallowed: ${JSON.stringify(g.rosteredOffIds)}`);
+  });
+
+  const notes = engine.computeRosterOffAchievabilityNotesForReports();
+  const gkNote = notes.find(n=>n.position==="GK");
+  assert.ok(gkNote, "expected a roster-off achievability note for the thin GK position: "+JSON.stringify(notes));
+  assert.ok(gkNote.players.includes("Quinn"), "note should name the sole GK preferrer: "+JSON.stringify(gkNote));
+});
+
+/* ============================================================
    5. Missed-games spread warning
    ============================================================ */
 test("WARNING-1: triggers on a deliberately lopsided dataset", ()=>{

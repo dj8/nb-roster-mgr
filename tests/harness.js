@@ -86,6 +86,7 @@ if(typeof module!=="undefined" && module.exports){
     computeOffPrefLog: computeOffPrefLog,
     computeOffPrefRate: computeOffPrefRate,
     computeMissedGamesWarningForReports: computeMissedGamesWarningForReports,
+    computeRosterOffAchievabilityNotesForReports: computeRosterOffAchievabilityNotesForReports,
     newGameState: newGameState,
     defaultState: defaultState,
     emptyCumulative: emptyCumulative,

@@ -22,6 +22,30 @@ const COVERAGE_OVERLAP_WEIGHT = 10;     // two players rostered off together who
 const MISSED_GAMES_WARNING_SPREAD = 2;  // reports-tab warning threshold (max-min missed games)
 const PHASE2B_TIME_BUDGET_MS = 500;     // per-game refinement budget
 const BIG_M = 1e9;                      // disqualified-cell sentinel (finite, keeps Hungarian arithmetic sane)
+const THIN_POSITION_PREFERRER_THRESHOLD = 1; // positions with this many (or fewer) preferrers can't be rested without risking zero coverage
+const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed seed -> deterministic, reproducible restarts (no Math.random)
+const PHASE1_STAGNANT_ATTEMPTS_LIMIT = 25; // stop restarting after this many non-improving attempts in a row
+
+/* Deterministic PRNG (mulberry32) — used only to reorder games between restart
+   attempts, never to decide who's rostered off. Fixed seed keeps every run
+   (and every test) reproducible. */
+function mulberry32(seed){
+  let a = seed;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function shuffled(arr, rng){
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j = Math.floor(rng()*(i+1));
+    const tmp=a[i]; a[i]=a[j]; a[j]=tmp;
+  }
+  return a;
+}
 
 function variance(nums){
   if(!nums.length) return 0;
@@ -30,10 +54,17 @@ function variance(nums){
 }
 
 /* Rank-weighted per-position coverage-gap penalty for one game's final
-   roster-off outcome, plus a pairwise overlap penalty between players
-   rostered off together who share preferred positions (rank-weighted on
-   both sides) — the mechanism that stops the search from stripping a
-   position's depth in one move. */
+   roster-off outcome: for each position, look at who's actually left
+   covering it once every rostered-off player for this game has been
+   removed, and penalize heavily at 0 remaining, moderately at 1 remaining.
+   This alone already captures "did rostering these specific people off
+   together strip a position's depth" correctly, however many of them
+   share that position — no separate pairwise term is needed on top (an
+   earlier version added one, but it fired on *any* shared preference
+   regardless of remaining depth elsewhere, which over-penalized rosters
+   with broadly overlapping preference lists — see COVERAGE_OVERLAP_WEIGHT,
+   now unused but left as a named constant in case a rank-weighted
+   tie-break signal is wanted again later). */
 function gameCoveragePenalty(squadAfterOff, offPlayers){
   let penalty = 0;
   POSITIONS.forEach(pos=>{
@@ -44,16 +75,29 @@ function gameCoveragePenalty(squadAfterOff, offPlayers){
       penalty += COVERAGE_GAP_ONE_PENALTY * (1+rank);
     }
   });
-  for(let i=0;i<offPlayers.length;i++){
-    for(let j=i+1;j<offPlayers.length;j++){
-      const a=offPlayers[i], b=offPlayers[j];
-      a.prefs.forEach((pos,rankA)=>{
-        const rankB = b.prefs.indexOf(pos);
-        if(rankB>=0) penalty += COVERAGE_OVERLAP_WEIGHT*(1/(rankA+1)+1/(rankB+1));
-      });
-    }
-  }
   return penalty;
+}
+
+/* True if, after removing `offPlayers` from `pool`, some position would be left
+   with zero in-preference covering players. Used to enforce a *hard* rule when
+   "allow off-preference" is off — a zero-coverage position isn't just
+   undesirable then, it's disallowed (Phase 2 will hard-error on it), so Phase 1
+   must never hand it a configuration like that. */
+function hasZeroCoverage(squadAfter){
+  return POSITIONS.some(pos=>!squadAfter.some(p=>p.prefs.includes(pos)));
+}
+
+/* Map the single 0-10 "roster-off fairness <-> position coverage" slider onto
+   Phase 1's {fairness, coverage} weights. Fairness weight is held constant;
+   coverage weight scales from 0 (slider=0, coverage-blind — pure fairness) up
+   to PHASE1_COVERAGE_WEIGHT (slider=10, reproducing the original hardcoded
+   default ratio, which is what shipped previously and stays the default). */
+function deriveRosterOffWeights(rosterOffWeight){
+  const clamped = Math.max(0, Math.min(10, Number(rosterOffWeight)));
+  return {
+    fairness: PHASE1_FAIRNESS_WEIGHT,
+    coverage: (clamped/10) * PHASE1_COVERAGE_WEIGHT
+  };
 }
 
 /* ============================================================
@@ -64,16 +108,21 @@ function gameCoveragePenalty(squadAfterOff, offPlayers){
                   fixedOffIds !== null means this game's roster-off is not decided here
                   (played / shortfall / manually locked) — it still counts toward fairness.
    input.weights: {fairness, coverage} (optional overrides)
+   input.allowOffPreference: boolean (default true) — when false, a candidate
+                  combination that would leave any position at zero in-preference
+                  coverage is disqualified outright, not merely penalized.
    input.timeBudgetMs
-   -> { rosterOffByGame: {num:[ids]}, stats:{passes, elapsedMs, finalCost} }
+   -> { rosterOffByGame: {num:[ids]}, stats:{passes, elapsedMs, finalCost, timedOut, attempts} }
 */
 function solveSeasonRosterOff(input){
   const players = input.players||[];
   const games = input.games||[];
   const fairnessWeight = (input.weights && input.weights.fairness!=null) ? input.weights.fairness : PHASE1_FAIRNESS_WEIGHT;
   const coverageWeight = (input.weights && input.weights.coverage!=null) ? input.weights.coverage : PHASE1_COVERAGE_WEIGHT;
+  const allowOffPreference = input.allowOffPreference !== false;
   const timeBudgetMs = input.timeBudgetMs!=null ? input.timeBudgetMs : PHASE1_TIME_BUDGET_MS;
   const start = Date.now();
+  const deadline = start + timeBudgetMs;
 
   const playerById = {};
   players.forEach(p=>{ playerById[p.id]=p; });
@@ -81,43 +130,18 @@ function solveSeasonRosterOff(input){
   const decidableGames = games.filter(g=>g.fixedOffIds==null && g.rosterOffCount>0);
   const fixedGames = games.filter(g=>g.fixedOffIds!=null);
 
-  const current = {}; // gameNum -> [ids] (decidable games only)
+  const fixedMissedBase = {};
+  players.forEach(p=>{ fixedMissedBase[p.id] = p.unavailableCount||0; });
+  fixedGames.forEach(g=>{ (g.fixedOffIds||[]).forEach(id=>{ if(fixedMissedBase[id]!=null) fixedMissedBase[id]++; }); });
 
-  /* ---- greedy seed: fairness-first, coverage-aware tie-break ---- */
-  const runningMissed = {};
-  players.forEach(p=>{ runningMissed[p.id] = p.unavailableCount||0; });
-  fixedGames.forEach(g=>{ (g.fixedOffIds||[]).forEach(id=>{ if(runningMissed[id]!=null) runningMissed[id]++; }); });
-
-  decidableGames.forEach(g=>{
-    const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
-    const picked = [];
-    const remaining = pool.slice();
-    for(let k=0;k<g.rosterOffCount && remaining.length;k++){
-      let best=null, bestScore=Infinity;
-      remaining.forEach(cand=>{
-        const missed = runningMissed[cand.id]||0;
-        const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
-        const off = picked.concat([cand]);
-        const score = missed*1000 + gameCoveragePenalty(squadAfter, off);
-        if(score<bestScore){ bestScore=score; best=cand; }
-      });
-      picked.push(best);
-      remaining.splice(remaining.indexOf(best),1);
-    }
-    current[g.num] = picked.map(p=>p.id);
-    picked.forEach(p=>{ runningMissed[p.id]=(runningMissed[p.id]||0)+1; });
-  });
-
-  /* ---- shared objective ---- */
-  function totalMissedMap(){
+  function totalMissedMapOf(current){
     const missed = {};
-    players.forEach(p=>{ missed[p.id]=p.unavailableCount||0; });
-    fixedGames.forEach(g=>{ (g.fixedOffIds||[]).forEach(id=>{ if(missed[id]!=null) missed[id]++; }); });
+    players.forEach(p=>{ missed[p.id]=fixedMissedBase[p.id]||0; });
     decidableGames.forEach(g=>{ (current[g.num]||[]).forEach(id=>{ if(missed[id]!=null) missed[id]++; }); });
     return missed;
   }
-  function totalObjective(){
-    const missed = totalMissedMap();
+  function totalObjectiveOf(current){
+    const missed = totalMissedMapOf(current);
     const fairnessTerm = fairnessWeight*variance(Object.values(missed));
     let coverageTerm = 0;
     games.forEach(g=>{
@@ -131,51 +155,244 @@ function solveSeasonRosterOff(input){
     return fairnessTerm + coverageWeight*coverageTerm;
   }
 
-  let bestObjective = totalObjective();
-  let passes = 0;
-  let timedOut = false;
-
-  outer:
-  while(passes<PHASE1_MAX_PASSES){
-    if(Date.now()-start>timeBudgetMs){ timedOut=true; break; }
-    let improvedAny = false;
-    for(const g of decidableGames){
-      if(Date.now()-start>timeBudgetMs){ timedOut=true; break outer; }
+  /* ---- greedy seed: fairness-first, coverage-aware tie-break ---- */
+  function buildSeed(gameOrder){
+    const current = {};
+    const runningMissed = {};
+    players.forEach(p=>{ runningMissed[p.id] = fixedMissedBase[p.id]||0; });
+    gameOrder.forEach(g=>{
       const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
-      const offSet = new Set(current[g.num]);
-      for(let oi=0; oi<pool.length; oi++){
-        const offP = pool[oi];
-        if(!offSet.has(offP.id)) continue;
-        for(let ni=0; ni<pool.length; ni++){
-          const onP = pool[ni];
-          if(offSet.has(onP.id)) continue;
-          // try swapping offP (currently off) <-> onP (currently on)
-          current[g.num] = current[g.num].map(id=>id===offP.id?onP.id:id);
-          const newObjective = totalObjective();
-          if(newObjective < bestObjective-1e-9){
-            bestObjective = newObjective;
-            offSet.delete(offP.id); offSet.add(onP.id);
-            improvedAny = true;
-            break; // offP is no longer off; move to next oi candidate
-          } else {
-            current[g.num] = current[g.num].map(id=>id===onP.id?offP.id:id); // revert
+      const picked = [];
+      const remaining = pool.slice();
+      for(let k=0;k<g.rosterOffCount && remaining.length;k++){
+        let best=null, bestScore=Infinity;
+        let bestSafe=null, bestSafeScore=Infinity; // fallback if every candidate is disqualified (structurally forced)
+        remaining.forEach(cand=>{
+          const missed = runningMissed[cand.id]||0;
+          const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
+          const off = picked.concat([cand]);
+          const score = missed*1000 + coverageWeight*gameCoveragePenalty(squadAfter, off);
+          if(score<bestSafeScore){ bestSafeScore=score; bestSafe=cand; }
+          const disqualified = !allowOffPreference && hasZeroCoverage(squadAfter);
+          if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
+        });
+        const chosen = best!==null ? best : bestSafe;
+        picked.push(chosen);
+        remaining.splice(remaining.indexOf(chosen),1);
+      }
+      current[g.num] = picked.map(p=>p.id);
+      picked.forEach(p=>{ runningMissed[p.id]=(runningMissed[p.id]||0)+1; });
+    });
+    return current;
+  }
+
+  /* ---- local-search refinement: single-game swaps + paired cross-game
+     exchanges, until no move improves or the shared deadline is hit ---- */
+  function refine(current, gameOrder){
+    let bestObjective = totalObjectiveOf(current);
+    let passes = 0;
+    let timedOut = false;
+
+    outer:
+    while(passes<PHASE1_MAX_PASSES){
+      if(Date.now()>deadline){ timedOut=true; break; }
+      let improvedAny = false;
+
+      // Move 1: single-game swap (offP <-> onP within the same game).
+      for(const g of gameOrder){
+        if(Date.now()>deadline){ timedOut=true; break outer; }
+        const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
+        const offSet = new Set(current[g.num]);
+        for(let oi=0; oi<pool.length; oi++){
+          const offP = pool[oi];
+          if(!offSet.has(offP.id)) continue;
+          for(let ni=0; ni<pool.length; ni++){
+            const onP = pool[ni];
+            if(offSet.has(onP.id)) continue;
+            const candidateOffIds = current[g.num].map(id=>id===offP.id?onP.id:id);
+            const candidateOffSet = new Set(candidateOffIds);
+            const squadAfterSwap = pool.filter(p=>!candidateOffSet.has(p.id));
+            if(!allowOffPreference && hasZeroCoverage(squadAfterSwap)) continue; // hard rule: never swap into a zero-coverage state
+            current[g.num] = candidateOffIds;
+            const newObjective = totalObjectiveOf(current);
+            if(newObjective < bestObjective-1e-9){
+              bestObjective = newObjective;
+              offSet.delete(offP.id); offSet.add(onP.id);
+              improvedAny = true;
+              break; // offP is no longer off; move to next oi candidate
+            } else {
+              current[g.num] = current[g.num].map(id=>id===onP.id?offP.id:id); // revert
+            }
           }
         }
       }
+
+      // Move 2: paired cross-game exchange — swap *which* of two games player A
+      // is rested in with player B's, when A is off in g1/on in g2 and B is off
+      // in g2/on in g1. This leaves both A's and B's total missed-game count
+      // unchanged (each is still off in exactly one of the two games), so it's
+      // a pure coverage-penalty move — and it's what lets the search escape a
+      // local optimum where fairness is already perfectly even but the two
+      // single-game swaps that would get there each individually look like a
+      // fairness regression on their own (and get rejected), even though doing
+      // both together is fairness-neutral.
+      for(let gi=0; gi<gameOrder.length; gi++){
+        for(let gj=gi+1; gj<gameOrder.length; gj++){
+          if(Date.now()>deadline){ timedOut=true; break outer; }
+          const g1 = gameOrder[gi], g2 = gameOrder[gj];
+          const pool1 = g1.availableIds.map(id=>playerById[id]).filter(Boolean);
+          const pool2 = g2.availableIds.map(id=>playerById[id]).filter(Boolean);
+          const off1 = new Set(current[g1.num]);
+          const off2 = new Set(current[g2.num]);
+          for(const A of pool1){
+            if(!off1.has(A.id)) continue; // A off in g1
+            if(off2.has(A.id) || !pool2.some(p=>p.id===A.id)) continue; // must be on-court (available, not off) in g2
+            for(const B of pool2){
+              if(!off2.has(B.id) || B.id===A.id) continue; // B off in g2
+              if(off1.has(B.id) || !pool1.some(p=>p.id===B.id)) continue; // must be on-court (available, not off) in g1
+              const newOff1 = new Set(off1); newOff1.delete(A.id); newOff1.add(B.id);
+              const newOff2 = new Set(off2); newOff2.delete(B.id); newOff2.add(A.id);
+              const blocked = !allowOffPreference && (
+                hasZeroCoverage(pool1.filter(p=>!newOff1.has(p.id))) ||
+                hasZeroCoverage(pool2.filter(p=>!newOff2.has(p.id)))
+              );
+              current[g1.num] = current[g1.num].map(id=>id===A.id?B.id:id);
+              current[g2.num] = current[g2.num].map(id=>id===B.id?A.id:id);
+              const newObjective = blocked ? Infinity : totalObjectiveOf(current);
+              if(newObjective < bestObjective-1e-9){
+                bestObjective = newObjective;
+                off1.delete(A.id); off1.add(B.id);
+                off2.delete(B.id); off2.add(A.id);
+                improvedAny = true;
+                break; // A is no longer off in g1; move to next A candidate
+              } else {
+                current[g1.num] = current[g1.num].map(id=>id===B.id?A.id:id); // revert
+                current[g2.num] = current[g2.num].map(id=>id===A.id?B.id:id);
+              }
+            }
+          }
+        }
+      }
+
+      // Move 3: two-hop chained exchange, targeting the current most- and
+      // least-missed players (H, L). H hands off their off-slot in gameA to
+      // an intermediary X (who's on-court there); X's *own* off-slot in some
+      // other gameB then gets handed to L. X's total is unchanged (they lose
+      // one off-game and gain another), so the fairness gain is isolated to
+      // H (-1) and L (+1) only. This is what closes gaps neither a single-
+      // game swap nor a same-pair cross-game exchange can reach alone, since
+      // each half looks like a regression in isolation but chaining through
+      // X cancels X's own count exactly.
+      if(Date.now()>deadline){ timedOut=true; break outer; }
+      {
+        const missedNow = totalMissedMapOf(current);
+        const eligibleIds = new Set();
+        gameOrder.forEach(g=>g.availableIds.forEach(id=>eligibleIds.add(id)));
+        let H=null, L=null;
+        eligibleIds.forEach(id=>{
+          const m = missedNow[id]; if(m==null) return;
+          if(H===null || m>missedNow[H]) H=id;
+          if(L===null || m<missedNow[L]) L=id;
+        });
+        if(H!=null && L!=null && H!==L && missedNow[H]>missedNow[L]){
+          chainSearch:
+          for(const gA of gameOrder){
+            const poolA = gA.availableIds.map(id=>playerById[id]).filter(Boolean);
+            const offA = new Set(current[gA.num]);
+            if(!offA.has(H)) continue; // H must be off in gA
+            for(const X of poolA){
+              if(offA.has(X.id) || X.id===H || X.id===L) continue; // X must be on in gA
+              for(const gB of gameOrder){
+                if(gB===gA) continue;
+                const poolB = gB.availableIds.map(id=>playerById[id]).filter(Boolean);
+                const offB = new Set(current[gB.num]);
+                if(!offB.has(X.id)) continue; // X must be off in gB
+                if(offB.has(L) || !poolB.some(p=>p.id===L)) continue; // L must be on in gB
+                const newOffA = new Set(offA); newOffA.delete(H); newOffA.add(X.id);
+                const newOffB = new Set(offB); newOffB.delete(X.id); newOffB.add(L);
+                const blocked = !allowOffPreference && (
+                  hasZeroCoverage(poolA.filter(p=>!newOffA.has(p.id))) ||
+                  hasZeroCoverage(poolB.filter(p=>!newOffB.has(p.id)))
+                );
+                if(blocked) continue;
+                current[gA.num] = current[gA.num].map(id=>id===H?X.id:id);
+                current[gB.num] = current[gB.num].map(id=>id===X.id?L:id);
+                const newObjective = totalObjectiveOf(current);
+                if(newObjective < bestObjective-1e-9){
+                  bestObjective = newObjective;
+                  improvedAny = true;
+                  break chainSearch;
+                } else {
+                  current[gA.num] = current[gA.num].map(id=>id===X.id?H:id); // revert
+                  current[gB.num] = current[gB.num].map(id=>id===L?X.id:id);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      passes++;
+      if(!improvedAny) break;
     }
-    passes++;
-    if(!improvedAny) break;
+    return { current, bestObjective, passes, timedOut };
+  }
+
+  /* ---- attempt 0: original deterministic game order (exact prior behavior —
+     in particular, a non-positive timeBudgetMs still yields a pure, deterministic
+     seed with zero refinement passes, same as before this restart mechanism
+     existed). Further attempts reorder games via a fixed-seed PRNG (never
+     Math.random, so results stay reproducible) purely to give the greedy seed
+     a different construction order — single-swap and paired-exchange local
+     search alone can get stuck in a coverage-penalty local optimum that a
+     differently-ordered seed sidesteps entirely (this is what the reported
+     11-player/11-game/2-off-per-game case needed). Stops early once a
+     near-perfect objective is reached or restarts stop improving. ---- */
+  let best = refine(buildSeed(decidableGames), decidableGames);
+  let attempts = 1;
+  const rng = mulberry32(PHASE1_RESTART_SEED);
+  let stagnant = 0;
+  while(Date.now()<deadline && decidableGames.length>1 && best.bestObjective>1e-9 && stagnant<PHASE1_STAGNANT_ATTEMPTS_LIMIT){
+    const order = shuffled(decidableGames, rng);
+    const attempt = refine(buildSeed(order), order);
+    attempts++;
+    if(attempt.bestObjective < best.bestObjective-1e-9){ best = attempt; stagnant = 0; }
+    else { stagnant++; }
   }
 
   const rosterOffByGame = {};
   fixedGames.forEach(g=>{ rosterOffByGame[g.num] = (g.fixedOffIds||[]).slice(); });
-  decidableGames.forEach(g=>{ rosterOffByGame[g.num] = (current[g.num]||[]).slice(); });
+  decidableGames.forEach(g=>{ rosterOffByGame[g.num] = (best.current[g.num]||[]).slice(); });
   games.forEach(g=>{ if(!rosterOffByGame[g.num]) rosterOffByGame[g.num]=[]; });
 
   return {
     rosterOffByGame,
-    stats: { passes, elapsedMs: Date.now()-start, finalCost: bestObjective, timedOut }
+    stats: { passes: best.passes, elapsedMs: Date.now()-start, finalCost: best.bestObjective, timedOut: best.timedOut, attempts }
   };
+}
+
+/* ============================================================
+   Roster-off achievability: positions so thin (few preferrers) that
+   perfectly even missed-games counts can be structurally out of reach.
+   Season/settings-independent — purely about roster composition, since
+   this is a real constraint whenever "allow off-preference" is off (and,
+   even when it's on, a strong practical pull in the same direction).
+   ============================================================ */
+function computeRosterOffAchievabilityNotes(players){
+  const notes = [];
+  POSITIONS.forEach(pos=>{
+    const preferrers = (players||[]).filter(p=>p.prefs && p.prefs.includes(pos));
+    if(preferrers.length>0 && preferrers.length<=THIN_POSITION_PREFERRER_THRESHOLD){
+      const names = preferrers.map(p=>p.name);
+      const single = names.length===1;
+      notes.push({
+        position: pos,
+        players: names,
+        message: `${names.join(" and ")} ${single?"is the only player":"are the only players"} who prefer${single?"s":""} ${pos}. Resting ${single?"them":"both"} would leave ${pos} uncovered, so the roster-off split may never come out perfectly even — expect ${single?"them":"them"} to end up with fewer missed games than the rest of the roster.`
+      });
+    }
+  });
+  return notes;
 }
 
 /* ============================================================
@@ -419,15 +636,18 @@ const RosterSolver = {
   CONSTANTS: {
     PHASE1_FAIRNESS_WEIGHT, PHASE1_COVERAGE_WEIGHT, PHASE1_TIME_BUDGET_MS, PHASE1_MAX_PASSES,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, COVERAGE_OVERLAP_WEIGHT,
-    MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M
+    MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD
   },
   variance,
   gameCoveragePenalty,
+  hasZeroCoverage,
+  deriveRosterOffWeights,
   solveSeasonRosterOff,
   buildQuarterCostFns,
   solveQuarterPositions,
   refineGameQuarters,
-  computeMissedGamesWarning
+  computeMissedGamesWarning,
+  computeRosterOffAchievabilityNotes
 };
 
 if(typeof module!=="undefined" && module.exports){ module.exports = RosterSolver; }

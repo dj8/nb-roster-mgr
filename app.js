@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.4.0";
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -33,6 +33,7 @@ function defaultState(){
       preferenceSlider:9,        // 0..10 — defaults to strongly favouring preference (see Settings tab)
       allowOffPreference:true,
       topTwoOnly:false,          // §4 rule 4 toggle
+      rosterOffWeight:10,        // 0..10 — roster-off fairness <-> position coverage; 10 reproduces the original hardcoded default ratio
       fairnessWeights:{bench:2, positionPurity:1} // relative priority order, higher = more important
     },
     activeTab:"setup"
@@ -293,7 +294,11 @@ function computeSeasonRosterOff(){
       fixedOffIds: a.fixedOffIds
     };
   });
-  const phase1 = RosterSolver.solveSeasonRosterOff({ players: seasonPlayers, games: seasonGames });
+  const phase1 = RosterSolver.solveSeasonRosterOff({
+    players: seasonPlayers, games: seasonGames,
+    weights: RosterSolver.deriveRosterOffWeights(STATE.settings.rosterOffWeight),
+    allowOffPreference: !!STATE.settings.allowOffPreference
+  });
 
   nums.forEach(num=>{
     const game = getGame(num);
@@ -466,6 +471,12 @@ function computeOffPrefRate(){
 function computeMissedGamesWarningForReports(){
   const list = computePlayerSummaries().map(s=>({id:s.id, name:s.name, missed:s.missed}));
   return RosterSolver.computeMissedGamesWarning(list);
+}
+
+/* Roster-composition-based note: positions so thin that perfectly even
+   missed-games counts are structurally out of reach, independent of settings. */
+function computeRosterOffAchievabilityNotesForReports(){
+  return RosterSolver.computeRosterOffAchievabilityNotes(STATE.players.map(p=>({name:p.name, prefs:p.prefs})));
 }
 
 /* ============================================================
@@ -1139,6 +1150,7 @@ function renderReports(root){
   const offPrefRate = computeOffPrefRate();
   const shortGames = gameNums().map(n=>({n,g:getGame(n)})).filter(x=>x.g.shortfall);
   const missedWarning = computeMissedGamesWarningForReports();
+  const achievabilityNotes = computeRosterOffAchievabilityNotesForReports();
 
   root.innerHTML = `
     ${missedWarning? `
@@ -1148,6 +1160,11 @@ function renderReports(root){
         Missed-games spread is ${missedWarning.spread} (most: ${esc(missedWarning.mostMissed.join(", "))} at ${missedWarning.max};
         least: ${esc(missedWarning.leastMissed.join(", "))} at ${missedWarning.min}). ${esc(missedWarning.suggestion)}
       </div>
+    </div>` : ""}
+    ${achievabilityNotes.length? `
+    <div class="card">
+      <div class="card-head"><div><h2>Roster-off evenness: structural limits</h2><p>Based on how thin certain positions are on this roster — not a settings effect.</p></div></div>
+      ${achievabilityNotes.map(n=>`<div class="pill pill-warn" style="display:block;margin-bottom:6px;">${esc(n.message)}</div>`).join("")}
     </div>` : ""}
     <div class="card">
       <div class="card-head"><div><h2>Player summary</h2><p>On-court / bench / missed games and position breakdown, including off-preference quarters.</p></div></div>
@@ -1201,17 +1218,44 @@ function renderReports(root){
 /* ============================================================
    RENDER: SETTINGS TAB
    ============================================================ */
+/* Reusable labelled-slider markup: a range input + numeric readout + a small
+   pair of end labels describing what each direction actually does. Used for
+   every priority/weight slider on this tab so they're visually and
+   structurally consistent. */
+function labelledSliderHtml({id, dataWeight, min, max, step, value, valueId, leftLabel, rightLabel}){
+  const idAttr = id ? ` id="${id}"` : "";
+  const dataAttr = dataWeight ? ` data-weight="${dataWeight}"` : "";
+  const valIdAttr = valueId ? ` id="${valueId}"` : "";
+  return `
+    <div class="slider-wrap">
+      <input type="range"${idAttr}${dataAttr} min="${min}" max="${max}" step="${step}" value="${value}">
+      <span class="slider-val mono"${valIdAttr}>${value}</span>
+    </div>
+    <div class="slider-endlabels"><span>${esc(leftLabel)}</span><span>${esc(rightLabel)}</span></div>
+  `;
+}
+
 function renderSettings(root){
   const s = STATE.settings;
+  const weightLabels = {
+    bench: {
+      title:"Playing-time evenness (on-court & bench)",
+      left:"Ignore season-long playing time",
+      right:"Actively even out playing time"
+    },
+    positionPurity: {
+      title:"Position preference purity",
+      left:"Repeat a player's favourite position",
+      right:"Spread play across their whole preference list"
+    }
+  };
   root.innerHTML = `
     <div class="card">
       <div class="card-head"><div><h2>Preference vs. fairness</h2><p>How strongly the engine favors a player's stated preference rank over even rotation. Defaults to strongly favouring preference — placing players in their preferred positions, every game and across the season, is the dominant objective.</p></div></div>
       <div class="field">
         <label>Priority slider — fairness &#8596; strict preference</label>
-        <div class="slider-wrap">
-          <input type="range" id="prefSlider" min="0" max="10" step="1" value="${s.preferenceSlider}">
-          <span class="slider-val mono" id="sliderVal">${s.preferenceSlider}</span>
-        </div>
+        ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
+          leftLabel:"Playing-time fairness & variety", rightLabel:"Strict preference honouring"})}
         <p class="hint">Higher values never increase off-preference fills for the same data — at maximum, off-preference is used only where truly unavoidable. Lower it to weight playing-time fairness and position variety more heavily against preference.</p>
       </div>
       <label class="checkbox-row">
@@ -1227,18 +1271,29 @@ function renderSettings(root){
       <p class="hint">The app aims to keep rostered-off games even given known unavailability, and will warn you on the Reports tab if that spread gets large — it won't sacrifice preference quality just to force perfect evenness.</p>
     </div>
     <div class="card">
+      <div class="card-head"><div><h2>Roster-off fairness vs. position coverage</h2><p>How strongly the season-wide roster-off search favours perfectly even missed-games counts versus protecting thin positions from losing coverage.</p></div></div>
+      <div class="field">
+        <label>Priority slider — roster-off fairness &#8596; position coverage</label>
+        ${labelledSliderHtml({id:"rosterOffSlider", min:0, max:10, step:1, value:s.rosterOffWeight, valueId:"rosterOffSliderVal",
+          leftLabel:"Roster-off fairness", rightLabel:"Position coverage"})}
+        <p class="hint">With a roster that has good depth at every position, these two goals rarely conflict and this slider will have little visible effect — it mainly matters for positions only a few players prefer.</p>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-head"><div><h2>Fairness priority order</h2><p>Relative weight — higher number matters more when trade-offs arise.</p></div></div>
       ${["bench","positionPurity"].map(k=>{
-        const labels = {bench:"Playing-time evenness (on-court & bench)",positionPurity:"Position preference purity"};
-        return `<div class="field"><label>${labels[k]}</label>
-          <div class="slider-wrap"><input type="range" data-weight="${k}" min="1" max="10" step="1" value="${s.fairnessWeights[k]}">
-          <span class="slider-val mono">${s.fairnessWeights[k]}</span></div></div>`;
+        const l = weightLabels[k];
+        return `<div class="field"><label>${l.title}</label>
+          ${labelledSliderHtml({dataWeight:k, min:1, max:10, step:1, value:s.fairnessWeights[k], leftLabel:l.left, rightLabel:l.right})}
+        </div>`;
       }).join("")}
       <p class="hint">These weights bias the preference/balance trade-off and bench-rotation ordering; regenerate after changing them.</p>
     </div>
   `;
   document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; };
   document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
+  document.getElementById("rosterOffSlider").oninput=e=>{ document.getElementById("rosterOffSliderVal").textContent=e.target.value; };
+  document.getElementById("rosterOffSlider").onchange=e=>{ s.rosterOffWeight=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
   document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; saveState(); toast("Regenerate to apply."); };
   document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; saveState(); toast("Regenerate to apply."); };
   root.querySelectorAll("[data-weight]").forEach(inp=>{
@@ -1302,6 +1357,7 @@ function exportFullCsv(){
   row("preferenceSlider",STATE.settings.preferenceSlider);
   row("allowOffPreference",STATE.settings.allowOffPreference?1:0);
   row("topTwoOnly",STATE.settings.topTwoOnly?1:0);
+  row("rosterOffWeight",STATE.settings.rosterOffWeight);
   row("weight_bench",STATE.settings.fairnessWeights.bench);
   row("weight_positionPurity",STATE.settings.fairnessWeights.positionPurity);
   row("theme",STATE.theme);
@@ -1354,6 +1410,7 @@ function importFullCsv(text){
     if(set.preferenceSlider!==undefined) ns.settings.preferenceSlider = Number(set.preferenceSlider);
     if(set.allowOffPreference!==undefined) ns.settings.allowOffPreference = set.allowOffPreference==="1";
     if(set.topTwoOnly!==undefined) ns.settings.topTwoOnly = set.topTwoOnly==="1";
+    if(set.rosterOffWeight!==undefined) ns.settings.rosterOffWeight = Number(set.rosterOffWeight);
     ["bench","positionPurity"].forEach(k=>{
       const v = set["weight_"+k]; if(v!==undefined) ns.settings.fairnessWeights[k]=Number(v);
     });
