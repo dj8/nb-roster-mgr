@@ -146,6 +146,53 @@ async function shot(page, name){
   check(new Set(q1After).size===q1After.length, `no player appears twice on-court after the swap (${JSON.stringify(q1After)})`);
   await shot(page, "04b-after-slot-swap.png");
 
+  // ---- H5 regression: dismissing the follow-up "now empty" dialog (via its
+  // Cancel button, or via the backdrop) must fully discard the whole edit —
+  // no gap, no lost player, nothing partially saved. Uses quarter 2 so it
+  // doesn't interfere with the completed swap just verified above. ----
+  async function snapshotQuarter(qi){
+    const cells = await page.locator(`#gameBody-1 [data-slot*="|${qi}|"]`).all();
+    const snap = [];
+    for(const cell of cells){
+      const slot = await cell.getAttribute("data-slot");
+      const name = (await cell.locator(".pname").textContent()).trim();
+      snap.push({ pos: slot.split("|")[2], name });
+    }
+    return snap;
+  }
+  async function startVacancyFlow(qi){
+    const before = await snapshotQuarter(qi);
+    const editPos = before[2].pos;
+    const otherEntry = before.find(e=>e.pos!==editPos);
+    await page.locator(`#gameBody-1 [data-slot$="|${qi}|${editPos}"]`).click();
+    await page.waitForSelector(".modal #slotSelect");
+    const targetValue = await page.locator(".modal #slotSelect option").filter({ hasText: otherEntry.name }).first().getAttribute("value");
+    await page.selectOption(".modal #slotSelect", targetValue);
+    await page.click('.modal [data-act="save"]');
+    await page.waitForSelector(".modal #vacantSelect", {timeout:2000});
+    return before;
+  }
+
+  // Variant 1: dismiss via the vacancy dialog's own Cancel button.
+  const q2Before = await startVacancyFlow(1);
+  check(!!(await page.locator('.modal [data-act="cancel"]').count()), "the follow-up vacancy dialog has a Cancel button");
+  await page.click('.modal [data-act="cancel"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]');
+  const q2AfterCancel = await snapshotQuarter(1);
+  check(JSON.stringify(q2AfterCancel)===JSON.stringify(q2Before),
+    `Cancelling the follow-up "now empty" dialog leaves the quarter completely unchanged (before=${JSON.stringify(q2Before)}, after=${JSON.stringify(q2AfterCancel)})`);
+
+  // Variant 2: dismiss via a backdrop click (no button at all) — the original
+  // bug report's exact path, since openModal always closes on backdrop mousedown.
+  const q3Before = await startVacancyFlow(2);
+  await page.locator(".modal-backdrop").click({ position: { x: 10, y: 10 } });
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]');
+  const q3AfterBackdrop = await snapshotQuarter(2);
+  check(JSON.stringify(q3AfterBackdrop)===JSON.stringify(q3Before),
+    `Dismissing the follow-up dialog via a backdrop click leaves the quarter completely unchanged (before=${JSON.stringify(q3Before)}, after=${JSON.stringify(q3AfterBackdrop)})`);
+
   // ---- Settings: verify the new default and that the old toggle is gone ----
   await page.click('.tab-btn[data-tab="settings"]');
   const sliderVal = (await page.locator("#sliderVal").textContent()).trim();

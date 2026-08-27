@@ -47,6 +47,17 @@ function shuffled(arr, rng){
   return a;
 }
 
+/* Coerce an untrusted setting (localStorage, CSV import, hand-edited state) to a
+   number inside [lo,hi]. `Math.max(0,Math.min(10,NaN))` is NaN, which used to
+   flow straight into the cost model and poison every comparison downstream —
+   NaN < x is false, so the search silently selected nothing. Anything
+   non-finite falls back to `fallback` instead. */
+function clampSetting(v, lo, hi, fallback){
+  const n = Number(v);
+  if(!Number.isFinite(n)) return fallback;
+  return Math.max(lo, Math.min(hi, n));
+}
+
 function variance(nums){
   if(!nums.length) return 0;
   const mean = nums.reduce((a,b)=>a+b,0)/nums.length;
@@ -93,7 +104,7 @@ function hasZeroCoverage(squadAfter){
    to PHASE1_COVERAGE_WEIGHT (slider=10, reproducing the original hardcoded
    default ratio, which is what shipped previously and stays the default). */
 function deriveRosterOffWeights(rosterOffWeight){
-  const clamped = Math.max(0, Math.min(10, Number(rosterOffWeight)));
+  const clamped = clampSetting(rosterOffWeight, 0, 10, 10);
   return {
     fairness: PHASE1_FAIRNESS_WEIGHT,
     coverage: (clamped/10) * PHASE1_COVERAGE_WEIGHT
@@ -177,6 +188,13 @@ function solveSeasonRosterOff(input){
           if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
         });
         const chosen = best!==null ? best : bestSafe;
+        if(!chosen){
+          // Unreachable with finite weights: `remaining` is non-empty, so some
+          // candidate always scores below Infinity. Only a non-finite weight
+          // could get here, and silently pushing null would corrupt the seed
+          // (indexOf(null) === -1 removes the *last* candidate instead).
+          throw new Error("Phase 1 seed could not pick a roster-off candidate (non-finite weights?)");
+        }
         picked.push(chosen);
         remaining.splice(remaining.indexOf(chosen),1);
       }
@@ -414,13 +432,13 @@ function computeRosterOffAchievabilityNotes(players){
    guarantee: raising it can only make in-preference candidates cheaper
    relative to off-preference ones, never the reverse. */
 function buildQuarterCostFns(cumulative, settings){
-  const slider = Math.max(0,Math.min(10,Number(settings.preferenceSlider)));
+  const slider = clampSetting(settings.preferenceSlider, 0, 10, 9);
   const sliderNorm = slider/10;
   const allowOff = !!settings.allowOffPreference;
   const topTwo = !!settings.topTwoOnly;
   const weights = settings.fairnessWeights||{};
-  const benchWeight = Number(weights.bench)||0;
-  const purityWeight = Number(weights.positionPurity)||0;
+  const benchWeight = clampSetting(weights.bench, 1, 10, 2);
+  const purityWeight = clampSetting(weights.positionPurity, 1, 10, 1);
 
   function prefRank(p,pos){
     const list = topTwo ? p.prefs.slice(0,2) : p.prefs;
@@ -639,6 +657,7 @@ const RosterSolver = {
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD
   },
   variance,
+  clampSetting,
   gameCoveragePenalty,
   hasZeroCoverage,
   deriveRosterOffWeights,

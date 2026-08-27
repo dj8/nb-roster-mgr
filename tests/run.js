@@ -538,6 +538,93 @@ test("CSV-IMPORT-SANITIZE-1: a corrupted CSV is sanitized rather than corrupting
   assert.ok(!g.schedule.quarters[0].onCourt.GA, "an unknown player id in the schedule should be dropped, not left dangling: "+JSON.stringify(g.schedule.quarters[0].onCourt));
 });
 
+test("CSV-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped, not left as NaN", ()=>{
+  // Previously: Number("abc") -> NaN flowed straight into deriveRosterOffWeights/
+  // buildQuarterCostFns, every candidate scored NaN in Phase 1's greedy seed, and
+  // solveSeasonRosterOff crashed with "Cannot read properties of null (reading 'id')"
+  // because a null candidate got pushed onto the picked list. Import must sanitize
+  // instead of propagating garbage into the solver.
+  const engine = freshEngine();
+  const defs = [
+    ["Amy",["GS","GA"]], ["Bea",["GA","GS"]], ["Cat",["WA","C"]], ["Dee",["C","WA"]],
+    ["Eve",["WD","GD"]], ["Fay",["GD","WD"]], ["Gia",["GK","GD"]], ["Hal",["GS","WA"]],
+    ["Ivy",["WA","C"]], ["Jaz",["C","WD"]]
+  ];
+  const rows = [
+    "#META","version,1",
+    "#SEASON","numGames,3","desiredBenchSize,2",
+    "#SETTINGS","preferenceSlider,abc","rosterOffWeight,abc","weight_bench,nope","weight_positionPurity,",
+    "#PLAYERS",
+    ...defs.map(([name,prefs],i)=>`p${i},${name},${prefs.join("|")},`),
+    "#FILLINS","#GAMES","#SCHEDULE"
+  ].join("\n");
+
+  engine.importFullCsv(rows);
+  const st = engine._getState();
+  assert.ok(Number.isFinite(st.settings.preferenceSlider), "preferenceSlider must be a finite number after import: "+st.settings.preferenceSlider);
+  assert.ok(Number.isFinite(st.settings.rosterOffWeight), "rosterOffWeight must be a finite number after import: "+st.settings.rosterOffWeight);
+  assert.ok(Number.isFinite(st.settings.fairnessWeights.bench), "bench weight must be a finite number after import: "+st.settings.fairnessWeights.bench);
+  assert.ok(Number.isFinite(st.settings.fairnessWeights.positionPurity), "positionPurity weight must be a finite number after import: "+st.settings.fairnessWeights.positionPurity);
+
+  // The real regression check: generation must not throw.
+  const r = engine.runGeneration();
+  assert.strictEqual(r.invalid, null);
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n);
+    assert.strictEqual(g.error, null, "game "+n+" should generate cleanly after a garbage-settings import: "+g.error);
+  });
+});
+
+test("SETTINGS-SANITIZE-1 (C1 regression): a corrupted localStorage blob is clamped on load, not left as NaN", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  Object.assign(st, {
+    season: {numGames:"NaN", desiredBenchSize:-5},
+    settings: {preferenceSlider:"oops", rosterOffWeight:999, allowOffPreference:true, topTwoOnly:false,
+               fairnessWeights:{bench:"x", positionPurity:0}}
+  });
+  engine.saveState();
+  const reloaded = engine.loadState();
+  assert.ok(Number.isFinite(reloaded.season.numGames) && reloaded.season.numGames>=1 && reloaded.season.numGames<=60,
+    "numGames should be clamped to a valid range: "+reloaded.season.numGames);
+  assert.strictEqual(reloaded.season.desiredBenchSize, 0, "a negative bench size should be clamped to 0");
+  assert.ok(Number.isFinite(reloaded.settings.preferenceSlider), "a non-numeric preferenceSlider should fall back to a finite default");
+  assert.strictEqual(reloaded.settings.rosterOffWeight, 10, "an out-of-range rosterOffWeight (999) should be clamped to the max (10)");
+  assert.ok(Number.isFinite(reloaded.settings.fairnessWeights.bench), "a non-numeric bench weight should fall back to a finite default");
+});
+
+test("CSV-IMPORT-XSS-1 (C2 regression): imported preferences are filtered to real positions only", ()=>{
+  // Previously: importFullCsv took the CSV's "prefs" column verbatim with no
+  // check against POSITIONS, and those strings were later interpolated into
+  // HTML unescaped in several render spots (player list, fill-in dialogs,
+  // fill-in list). A crafted CSV — the kind a coach might receive from a
+  // co-coach, since CSV is this app's stated sharing mechanism — could land
+  // arbitrary markup inside player/fill-in prefs.
+  const engine = freshEngine();
+  // Each field is quoted exactly once (toCsvField-style) — quoting twice would
+  // corrupt the field content itself (stray literal quote characters) and mask
+  // the thing under test, which is import-time filtering, not CSV escaping.
+  const csvField = v => /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v;
+  const rows = [
+    ["#META"],["version","1"],
+    ["#SEASON"],["numGames","1"],["desiredBenchSize","0"],
+    ["#SETTINGS"],["preferenceSlider","9"],
+    ["#PLAYERS"],
+    ["p1","Amy",'GS|"><img src=x onerror=alert(1)>',""],
+    ["#FILLINS"],
+    ["f1","Guest",'"><svg onload=alert(2)>'],
+    ["#GAMES"],["#SCHEDULE"]
+  ];
+  const csv = rows.map(r=>r.map(csvField).join(",")).join("\n");
+
+  engine.importFullCsv(csv);
+  const st = engine._getState();
+  // st.players/fillIns live in the harness's separate vm realm (see the note on
+  // PHASE1-TOGGLE-1 above) — spread into a same-realm array before comparing.
+  assert.deepStrictEqual([...st.players[0].prefs], ["GS"], "the injected markup must be stripped, leaving only the real position token: "+JSON.stringify(st.players[0].prefs));
+  assert.deepStrictEqual([...st.fillIns[0].prefs], [], "a fill-in preference string with no real position tokens should end up empty, not carry the markup through: "+JSON.stringify(st.fillIns[0].prefs));
+});
+
 /* ============================================================
    7. CSV round-trip
    ============================================================ */
@@ -690,6 +777,54 @@ test("ED-7: a played game's outcome still folds into season fairness totals", ()
   const summaries = engine.computePlayerSummaries();
   const totalOnCourt = summaries.reduce((sum,s)=>sum+s.onCourt, 0);
   assert.strictEqual(totalOnCourt, 2*4*7, "both games' on-court quarters (including the played/locked one) should count toward summaries");
+});
+
+test("ED-9 (H4 regression): a played game's roster-off/unavailable record survives a later availability edit", ()=>{
+  // Previously: planGameAvailability recomputed a played game's fixedOffIds by
+  // filtering game.rosteredOffIds down to whoever is *currently* available —
+  // so if a coach edited a player's availability for that game number after
+  // the fact (e.g. correcting a record, or just editing a different game and
+  // triggering a season-wide regeneration), the already-locked game's
+  // roster-off record silently changed. §8.1 requires it stay byte-for-byte
+  // unchanged "regardless of what triggers the regeneration".
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 3;
+  st.season.desiredBenchSize = 2;
+  const defs = [
+    ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
+    ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
+    ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]], ["Jaz",["C","WD","GD"]]
+  ];
+  defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+
+  const g1 = engine.getGame(1);
+  g1.isPlayed = true;
+  assert.ok(g1.rosteredOffIds.length>0, "sanity: game 1 should have at least one roster-off");
+  // g1.rosteredOffIds lives in the harness's separate vm realm; .slice() on it
+  // would stay in that realm (species-preserving), so spread into a same-realm
+  // array first — same convention as PHASE1-TOGGLE-1 and CSV-IMPORT-XSS-1 above.
+  const rosteredOffBefore = [...g1.rosteredOffIds].sort();
+  const scheduleBefore = JSON.stringify(g1.schedule);
+  const victimId = rosteredOffBefore[0];
+
+  // Mark the already-rested player unavailable for game 1, after the fact,
+  // and regenerate — simulating an availability correction or an edit to a
+  // different game that triggers a full season regeneration.
+  engine._getState().players.find(p=>p.id===victimId).unavailable = [1];
+  engine.runGeneration();
+
+  const g1After = engine.getGame(1);
+  assert.deepStrictEqual([...g1After.rosteredOffIds].sort(), rosteredOffBefore,
+    "a played game's rosteredOffIds must not change after an availability edit: "+JSON.stringify(g1After.rosteredOffIds));
+  assert.strictEqual(JSON.stringify(g1After.schedule), scheduleBefore,
+    "a played game's schedule must not change after an availability edit");
+
+  const victimSummary = engine.computePlayerSummaries().find(s=>s.id===victimId);
+  assert.strictEqual(victimSummary.missed, 1,
+    "the player must be counted as missed exactly once for game 1, not double-counted as both rostered-off and unavailable: "+victimSummary.missed);
 });
 
 test("FILLIN-EXCLUDED: fill-ins assigned to a shortfall game are excluded from season fairness totals", ()=>{

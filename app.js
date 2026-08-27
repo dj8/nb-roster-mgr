@@ -56,6 +56,41 @@ function newGameState(){
   };
 }
 
+/* Coerce the numeric season/settings knobs to sane values. Both entry points for
+   untrusted state (localStorage in loadState, CSV in importFullCsv) run through
+   this: a non-numeric value used to survive as NaN all the way into the solver's
+   cost model, where every comparison against it is false and the search silently
+   selects nothing. Returns the list of fields it had to correct. */
+function sanitizeSettingsAndSeason(state){
+  const corrected = [];
+  const d = defaultState();
+  const fix = (obj, key, lo, hi, fallback, label)=>{
+    const before = obj[key];
+    const after = RosterSolver.clampSetting(before, lo, hi, fallback);
+    if(after!==before){ obj[key]=after; corrected.push(`${label} (${JSON.stringify(before)} → ${after})`); }
+  };
+  state.season = state.season || Object.assign({}, d.season);
+  fix(state.season, "numGames", 1, 60, d.season.numGames, "Number of games");
+  fix(state.season, "desiredBenchSize", 0, 20, d.season.desiredBenchSize, "Desired bench size");
+  state.settings = state.settings || Object.assign({}, d.settings);
+  fix(state.settings, "preferenceSlider", 0, 10, d.settings.preferenceSlider, "Preference slider");
+  fix(state.settings, "rosterOffWeight", 0, 10, d.settings.rosterOffWeight, "Roster-off weight");
+  state.settings.fairnessWeights = state.settings.fairnessWeights || Object.assign({}, d.settings.fairnessWeights);
+  fix(state.settings.fairnessWeights, "bench", 1, 10, d.settings.fairnessWeights.bench, "Bench weight");
+  fix(state.settings.fairnessWeights, "positionPurity", 1, 10, d.settings.fairnessWeights.positionPurity, "Position-purity weight");
+  state.settings.allowOffPreference = !!state.settings.allowOffPreference;
+  state.settings.topTwoOnly = !!state.settings.topTwoOnly;
+  return corrected;
+}
+
+/* Keep only real netball positions. Preference strings reach us from CSV files a
+   coach may have received from someone else, and they are rendered into HTML and
+   used as cost-matrix keys — anything not in POSITIONS is meaningless to the
+   solver and unsafe in the DOM. */
+function sanitizePrefs(prefs){
+  return (Array.isArray(prefs)?prefs:[]).map(x=>String(x).trim().toUpperCase()).filter(x=>POSITIONS.includes(x));
+}
+
 /* ---------------- State ---------------- */
 let STATE = loadState();
 
@@ -79,6 +114,10 @@ function loadState(){
       delete g.strictSpecialistMode;
       if(!Array.isArray(g.coverageWarnings)) g.coverageWarnings=[];
     });
+    merged.players.forEach(p=>{ p.prefs = sanitizePrefs(p.prefs); });
+    merged.fillIns.forEach(f=>{ f.prefs = sanitizePrefs(f.prefs); });
+    const corrected = sanitizeSettingsAndSeason(merged);
+    if(corrected.length) console.warn("Stored settings were out of range and have been reset:", corrected);
     return merged;
   }catch(e){ console.warn("Failed to load state, starting fresh.",e); return defaultState(); }
 }
@@ -144,6 +183,29 @@ function isUnavailable(player, gameNum){
 function planGameAvailability(gameNum){
   const game = getGame(gameNum);
   const regulars = STATE.players;
+
+  // §8.1: a played game's actual outcome — who was unavailable, who was
+  // rostered off — is a frozen historical fact, "left byte-for-byte unchanged,
+  // regardless of what triggers the regeneration (new season generation,
+  // availability change, manual edit elsewhere, etc.)". Reading from *current*
+  // player.unavailable data (as the branches below do) would let an
+  // availability edit made after the fact silently rewrite that history —
+  // e.g. filtering fixedOffIds down to whoever is *currently* available could
+  // drop an already-rested player from the record entirely. So this must be
+  // the very first check, before shortfall/lock/override logic ever looks at
+  // live availability, and it must use the game's own stored fields, not
+  // recompute anything from STATE.players.
+  if(game.isPlayed){
+    const frozenUnavailable = (game.unavailableIds||[]).slice();
+    const frozenOff = (game.rosteredOffIds||[]).slice();
+    const frozenExcluded = new Set(frozenUnavailable.concat(frozenOff));
+    return {
+      shortfall: !!game.shortfall, minFillIns: 0, recommendedFillIns: 0,
+      availableRegularIds: regulars.filter(p=>!frozenExcluded.has(p.id)).map(p=>p.id),
+      unavailableIds: frozenUnavailable, rosterOffCount: frozenOff.length, fixedOffIds: frozenOff
+    };
+  }
+
   const availableRegulars = regulars.filter(p=>!isUnavailable(p,gameNum));
   const unavailableIds = regulars.filter(p=>isUnavailable(p,gameNum)).map(p=>p.id);
   const shortfall = availableRegulars.length < 7;
@@ -156,8 +218,6 @@ function planGameAvailability(gameNum){
   if(shortfall){
     // §6: don't force the normal roster-off rule; use all available regulars + fill-ins
     fixedOffIds = [];
-  } else if(game.isPlayed){
-    fixedOffIds = (game.rosteredOffIds||[]).filter(id=>availableRegulars.some(p=>p.id===id));
   } else if(game.rosterOffLockIds && game.rosterOffLockIds.length){
     fixedOffIds = game.rosterOffLockIds.filter(id=>availableRegulars.some(p=>p.id===id));
   } else if(Number.isFinite(game.rosterOffOverride)){
@@ -320,6 +380,13 @@ function computeSeasonRosterOff(){
 
   nums.forEach(num=>{
     const game = getGame(num);
+    // §8.1: never rewrite a played game's derived display fields either — its
+    // stored rosteredOffIds/unavailableIds/etc. are already the frozen facts
+    // planGameAvailability just fed into Phase 1 above; writing them back here
+    // would be a no-op at best, but skipping outright makes the invariant
+    // ("played games are read-only, full stop") obvious from this function
+    // alone rather than relying on every upstream field happening to agree.
+    if(game.isPlayed) return;
     const a = availByNum[num];
     game.rosteredOffIds = a.shortfall ? [] : (phase1.rosterOffByGame[num]||[]);
     game.unavailableIds = a.unavailableIds;
@@ -351,16 +418,19 @@ function runGeneration(){
 
   nums.forEach(num=>{
     const game = getGame(num);
+
+    if(game.isPlayed){
+      // §8.1: locked — leave every stored field untouched (schedule, squadIds,
+      // coverage warnings, everything), and only fold its already-frozen
+      // result into cumulative fairness for the rest of the season.
+      foldGameIntoCumulative(cumulative, game.rosteredOffIds, game.unavailableIds, game.schedule);
+      return;
+    }
+
     const plan = planGameSquad(num);
     game.squadIds = plan.squad.map(p=>p.id);
     game.noBenchOnly = plan.noBenchOnly;
     game.coverageWarnings = computeCoverageWarnings(plan);
-
-    if(game.isPlayed){
-      // locked: leave schedule untouched, but still fold into cumulative fairness
-      foldGameIntoCumulative(cumulative, game.rosteredOffIds, game.unavailableIds, game.schedule);
-      return;
-    }
 
     if(plan.squad.length<7){
       game.error = `Not enough players for game ${num}: ${plan.squad.length} available (need 7). Add ${7-plan.squad.length} more fill-in(s).`;
@@ -656,7 +726,7 @@ function renderPlayerList(el){
       <div style="flex:1;min-width:0;">
         <div class="player-name">${esc(p.name)}</div>
         <div class="player-meta">
-          ${p.prefs.map((pos,i)=>`<span class="pos-badge pos-${pos}" title="${POS_LABEL[pos]}">${pos}</span>`).join(" ")}
+          ${p.prefs.map((pos,i)=>`<span class="pos-badge pos-${esc(pos)}" title="${esc(POS_LABEL[pos])}">${esc(pos)}</span>`).join(" ")}
           ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn" style="margin-left:6px;">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
         </div>
       </div>
@@ -702,7 +772,7 @@ function openPlayerDialog(playerId){
   `, modal=>{
     function paintChips(){
       modal.querySelector("#prefChips").innerHTML = draft.prefs.length
-        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${pos}">${pos}</span>${POS_LABEL[pos]}<button data-rm="${pos}" title="Remove">&times;</button></span>`).join("")
+        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>${esc(POS_LABEL[pos])}<button data-rm="${esc(pos)}" title="Remove">&times;</button></span>`).join("")
         : `<span class="hint">No preferences set yet — click a position below.</span>`;
       modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs = draft.prefs.filter(p=>p!==b.dataset.rm); paintChips(); paintButtons(); });
     }
@@ -1023,7 +1093,7 @@ function openAssignFillInDialog(num){
     modal.querySelector("#finList").innerHTML = STATE.fillIns.map(f=>`
       <label class="checkbox-row"><input type="checkbox" value="${f.id}" ${assigned.has(f.id)?"checked":""}>
         <span class="cb-label">${esc(f.name)}</span>
-        <span class="cb-desc">${f.prefs.join(", ")||"no preferences set"}</span></label>`).join("");
+        <span class="cb-desc">${f.prefs.map(esc).join(", ")||"no preferences set"}</span></label>`).join("");
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
       game.fillInIds = Array.from(modal.querySelectorAll("#finList input:checked")).map(i=>i.value);
@@ -1043,16 +1113,43 @@ function refreshOffPreferenceFlag(q, pos){
 }
 
 /* A locked slot that no longer holds the player it was locked to is stale
-   (forcing that id back in on rebalance would be wrong) — drop the lock. */
-function clearStaleLock(game, qi, pos, expectedPid){
+   (forcing that id back in on rebalance would be wrong) — drop the lock.
+   Operates on a lockedSlots draft (see openSlotEditDialog), not live state. */
+function clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid){
   const lockKey = qi+"-"+pos;
-  if(game.lockedSlots && game.lockedSlots[lockKey]===expectedPid) delete game.lockedSlots[lockKey];
+  if(lockedSlotsDraft[lockKey]===expectedPid) delete lockedSlotsDraft[lockKey];
 }
 
 function finishSlotEdit(num){
   saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
 }
 
+/* Single, atomic write-back point for a slot edit (see openSlotEditDialog /
+   openFillVacancyDialog). Everything before this call works on draft copies
+   of the quarter and the game's lockedSlots map — nothing touches live STATE
+   until here, so Cancel, a backdrop-dismissed modal, or simply abandoning a
+   multi-step edit midway (declining the follow-up "now empty" dialog) all
+   leave the schedule exactly as it was, by construction, with no separate
+   rollback logic needed. */
+function commitSlotEdit(num, qi, qDraft, lockedSlotsDraft){
+  const game = getGame(num);
+  game.schedule.quarters[qi] = qDraft;
+  game.lockedSlots = lockedSlotsDraft;
+  finishSlotEdit(num);
+}
+
+/* Both dialogs below work on *drafts* — a deep-cloned quarter and a shallow
+   copy of the game's lockedSlots map — never the live STATE objects. Nothing
+   is written back to STATE until commitSlotEdit runs, at the single explicit
+   "Save" that finishes the whole edit. This makes every other exit path safe
+   by construction: Cancel, a backdrop-dismissed modal, or simply abandoning
+   the flow partway through the follow-up "now empty" dialog all leave the
+   schedule exactly as it was — there is no separate rollback to get right,
+   because nothing was ever mutated in place to begin with. (Previously,
+   openSlotEditDialog mutated q/game.lockedSlots directly and then opened the
+   follow-up dialog — which had no Cancel button at all — so dismissing it
+   left a real gap in the quarter and dropped the displaced player entirely,
+   with the partial state already persisted.) */
 function openSlotEditDialog(num, qi, pos){
   const game = getGame(num);
   if(game.isPlayed){ toast("This game is locked as played. Unlock it first to edit."); return; }
@@ -1087,60 +1184,61 @@ function openSlotEditDialog(num, qi, pos){
     modal.querySelector('[data-act="save"]').onclick=()=>{
       const pid = sel.value||null;
       const lock = modal.querySelector("#slotLock").checked;
-      game.lockedSlots = game.lockedSlots||{};
+      const qDraft = deepClone(q);
+      const lockedSlotsDraft = Object.assign({}, game.lockedSlots||{});
 
       if(pid===oldPid){
         // No player change — just apply the lock toggle.
-        if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
-        finishSlotEdit(num);
+        if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
+        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         return;
       }
 
       if(!pid){
         // Explicitly leaving this slot unassigned: the previous occupant, if
         // any, goes to the bench rather than vanishing from the quarter.
-        q.onCourt[pos] = null;
-        if(oldPid && !q.bench.includes(oldPid)) q.bench.push(oldPid);
-        refreshOffPreferenceFlag(q, pos);
-        if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
+        qDraft.onCourt[pos] = null;
+        if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
+        refreshOffPreferenceFlag(qDraft, pos);
+        if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
+        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         toast(`${POS_LABEL[pos]} left unassigned this quarter — remember to fill it before the game is played.`);
-        finishSlotEdit(num);
         return;
       }
 
-      if(q.bench.includes(pid)){
+      if(qDraft.bench.includes(pid)){
         // Straight swap: the incoming player's bench seat is exactly what the
         // displaced player needs, so no follow-up decision is required.
-        q.bench = q.bench.filter(id=>id!==pid);
-        if(oldPid) q.bench.push(oldPid);
-        q.onCourt[pos] = pid;
-        refreshOffPreferenceFlag(q, pos);
-        if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
-        finishSlotEdit(num);
+        qDraft.bench = qDraft.bench.filter(id=>id!==pid);
+        if(oldPid) qDraft.bench.push(oldPid);
+        qDraft.onCourt[pos] = pid;
+        refreshOffPreferenceFlag(qDraft, pos);
+        if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
+        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         return;
       }
 
       // Otherwise pid should be on-court at some other position Y this quarter
       // — moving them here vacates Y, which needs an explicit decision: fill
       // it with the player just displaced from `pos`, or bring someone up
-      // from the bench (see openFillVacancyDialog).
-      const otherPos = POSITIONS.find(p2=>p2!==pos && q.onCourt[p2]===pid);
-      q.onCourt[pos] = pid;
-      if(lock) game.lockedSlots[lockKey]=pid; else delete game.lockedSlots[lockKey];
+      // from the bench (see openFillVacancyDialog). Both drafts are handed
+      // to it so it can finish (or abandon) the same in-flight edit.
+      const otherPos = POSITIONS.find(p2=>p2!==pos && qDraft.onCourt[p2]===pid);
+      qDraft.onCourt[pos] = pid;
+      if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
       if(!otherPos){
         // Defensive: pid wasn't actually found on-court or bench this quarter
         // (shouldn't happen for a squad member) — nothing to vacate, so just
         // bench whoever was displaced, same as the unassigned case.
-        refreshOffPreferenceFlag(q, pos);
-        if(oldPid && !q.bench.includes(oldPid)) q.bench.push(oldPid);
-        finishSlotEdit(num);
+        refreshOffPreferenceFlag(qDraft, pos);
+        if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
+        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         return;
       }
-      q.onCourt[otherPos] = null;
-      refreshOffPreferenceFlag(q, pos);
-      clearStaleLock(game, qi, otherPos, pid);
-      saveState();
-      openFillVacancyDialog(num, qi, otherPos, oldPid);
+      qDraft.onCourt[otherPos] = null;
+      refreshOffPreferenceFlag(qDraft, pos);
+      clearStaleLock(lockedSlotsDraft, qi, otherPos, pid);
+      openFillVacancyDialog(num, qi, otherPos, oldPid, qDraft, lockedSlotsDraft);
     };
   });
 }
@@ -1149,17 +1247,17 @@ function openSlotEditDialog(num, qi, pos){
    occupant (they moved to fill a different slot). Ask who takes it — the
    player displaced from that other slot (`displacedPid`), or someone from
    the bench — so the quarter never silently ends up with a gap or a
-   duplicate player. */
-function openFillVacancyDialog(num, qi, vacantPos, displacedPid){
-  const game = getGame(num);
-  const q = game.schedule.quarters[qi];
+   duplicate player. Continues working on the same qDraft/lockedSlotsDraft
+   handed in by openSlotEditDialog; Cancel (or dismissing the modal any other
+   way) simply discards them, since nothing has touched live STATE yet. */
+function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedSlotsDraft){
   const displacedPlayer = displacedPid ? (byId(STATE.players,displacedPid)||byId(STATE.fillIns,displacedPid)) : null;
-  const benchPlayers = (q.bench||[]).map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
+  const benchPlayers = (qDraft.bench||[]).map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
 
   const optionHtml = p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
   openModal(`
     <h3>Game ${num} · Q${qi+1} · ${vacantPos} is now empty</h3>
-    <p class="modal-sub">${POS_LABEL[vacantPos]} — who fills it?</p>
+    <p class="modal-sub">${POS_LABEL[vacantPos]} — who fills it? Cancelling discards this whole edit — nothing has been saved yet.</p>
     <div class="field"><label>Assign player</label>
       <select id="vacantSelect">
         <option value="">— leave unassigned —</option>
@@ -1168,21 +1266,23 @@ function openFillVacancyDialog(num, qi, vacantPos, displacedPid){
       </select>
     </div>
     <div class="modal-actions">
+      <button class="btn" data-act="cancel">Cancel</button>
       <button class="btn btn-primary" data-act="save">Save</button>
     </div>
   `, modal=>{
     const sel = modal.querySelector("#vacantSelect");
     sel.value = displacedPid||"";
+    modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
       const chosen = sel.value||null;
       if(chosen){
-        q.bench = (q.bench||[]).filter(id=>id!==chosen);
-        q.onCourt[vacantPos] = chosen;
+        qDraft.bench = (qDraft.bench||[]).filter(id=>id!==chosen);
+        qDraft.onCourt[vacantPos] = chosen;
       }
       // Whoever was displaced and isn't the one filling this slot goes to the bench.
-      if(displacedPid && displacedPid!==chosen && !q.bench.includes(displacedPid)) q.bench.push(displacedPid);
-      refreshOffPreferenceFlag(q, vacantPos);
-      finishSlotEdit(num);
+      if(displacedPid && displacedPid!==chosen && !qDraft.bench.includes(displacedPid)) qDraft.bench.push(displacedPid);
+      refreshOffPreferenceFlag(qDraft, vacantPos);
+      commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
     };
   });
 }
@@ -1210,7 +1310,7 @@ function renderFillIns(root){
       return `<div class="list-row">
         <div style="flex:1;min-width:0;">
           <div class="player-name">${esc(f.name)}</div>
-          <div class="player-meta">${f.prefs.map(pos=>`<span class="pos-badge pos-${pos}">${pos}</span>`).join(" ")||'<span class="hint">no preferences set</span>'}
+          <div class="player-meta">${f.prefs.map(pos=>`<span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>`).join(" ")||'<span class="hint">no preferences set</span>'}
             ${usedIn.length?`<span class="pill pill-accent" style="margin-left:6px;">Used in ${usedIn.length} game(s)</span>`:""}</div>
         </div>
         <div class="btn-row" style="margin:0;">
@@ -1254,7 +1354,7 @@ function openFillInDialog(fillInId){
   `, modal=>{
     function paintChips(){
       modal.querySelector("#fiChips").innerHTML = draft.prefs.length
-        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${pos}">${pos}</span>${POS_LABEL[pos]}<button data-rm="${pos}">&times;</button></span>`).join("")
+        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>${esc(POS_LABEL[pos])}<button data-rm="${esc(pos)}">&times;</button></span>`).join("")
         : `<span class="hint">Flexible / no preference.</span>`;
       modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs=draft.prefs.filter(p=>p!==b.dataset.rm); paintChips(); paintButtons(); });
     }
@@ -1553,11 +1653,11 @@ function importFullCsv(text){
     if(set.theme) ns.theme = set.theme;
 
     ns.players = (sections.PLAYERS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:r[1]||"", prefs:(r[2]||"").split("|").filter(Boolean),
+      id:r[0], name:r[1]||"", prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
       unavailable:(r[3]||"").split("|").filter(Boolean).map(Number)
     }));
     ns.fillIns = (sections.FILLINS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:r[1]||"", prefs:(r[2]||"").split("|").filter(Boolean)
+      id:r[0], name:r[1]||"", prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean))
     }));
 
     ns.games = {};
@@ -1596,12 +1696,26 @@ function importFullCsv(text){
     });
 
     const warnings = sanitizeImportedState(ns);
+    const settingsWarnings = sanitizeSettingsAndSeason(ns);
+    warnings.push(...settingsWarnings);
 
+    // Commit to the live STATE only after the re-solve below succeeds. Settings
+    // are now validated above, but keeping this rollback is cheap insurance
+    // against any other bad-data path in Phase 1 — a thrown error here must
+    // never leave a half-imported, unusable state as the app's current STATE
+    // (previously it did: STATE was assigned before this solve ran, so a crash
+    // left corrupt settings live and persisted on the very next save).
+    const previousState = STATE;
     STATE = ns;
-    // recompute derived display-only fields without touching schedule/locks. Played games'
-    // rosteredIds were loaded directly from the CSV above and are treated as a frozen fact;
-    // everything else is re-derived (a fresh Phase 1 solve for roster-off, same as generation).
-    computeSeasonRosterOff();
+    try{
+      // recompute derived display-only fields without touching schedule/locks. Played games'
+      // rosteredIds were loaded directly from the CSV above and are treated as a frozen fact;
+      // everything else is re-derived (a fresh Phase 1 solve for roster-off, same as generation).
+      computeSeasonRosterOff();
+    }catch(err){
+      STATE = previousState;
+      throw err;
+    }
     saveState();
     render();
     if(warnings.length){
