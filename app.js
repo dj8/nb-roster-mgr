@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "1.0.0";
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
