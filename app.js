@@ -649,7 +649,7 @@ function render(){
           <div class="brand-mark">GK</div>
           <div>
             <h1>Season Roster</h1>
-            <div class="sub">Netball rotation &amp; fairness planner · v${APP_VERSION}</div>
+            <div class="sub">Netball even rotation planner · v${APP_VERSION}</div>
           </div>
         </div>
         <div class="topbar-actions">
