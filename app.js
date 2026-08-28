@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -992,8 +992,8 @@ function renderGameBody(num){
       ${gapHtml}
       <label class="checkbox-row" style="margin-top:10px;">
         <input type="checkbox" id="strictPairing-${num}" ${game.strictSpecialistPairing?"checked":""} ${game.isPlayed?"disabled":""}>
-        <span class="cb-label">Strict specialist pairing (this game only)</span>
-        <span class="cb-desc">On: allows a small, bounded deviation from strict roster-off fairness for this game specifically, if it meaningfully protects position coverage — the season-wide balance for every other game is unaffected (§5.5)</span>
+        <span class="cb-label">Protect position coverage</span>
+        <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
       </label>
       <div class="section-label" style="margin-top:10px;">Fill-ins assigned to this game</div>
       <div>${fillinChips||'<span class="hint">None yet.</span>'}</div>
@@ -1500,7 +1500,7 @@ function renderReports(root){
         ${summaries.length? summaries.map(s=>`
           <tr><td><strong>${esc(s.name)}</strong></td><td class="mono">${s.gamesPlayedIn}</td>
             <td class="mono">${s.onCourt}</td><td class="mono">${s.bench}</td><td class="mono">${s.missed}</td>
-            ${POSITIONS.map(pos=>`<td class="mono">${s.positions[pos]||0}${s.offPrefPositions[pos]?` <span class="pill pill-danger" style="padding:1px 6px;">${s.offPrefPositions[pos]} off-pref</span>`:""}</td>`).join("")}
+            ${POSITIONS.map(pos=>`<td class="mono">${s.positions[pos]?`<span class="pos-badge pos-${pos}">${s.positions[pos]}</span>`:0}${s.offPrefPositions[pos]?` <span class="pill pill-danger" style="padding:1px 6px;">${s.offPrefPositions[pos]} off-pref</span>`:""}</td>`).join("")}
             <td class="mono">${s.offPrefTotal}</td></tr>
         `).join("") : `<tr><td colspan="12" class="hint">No players yet.</td></tr>`}
         </tbody>
