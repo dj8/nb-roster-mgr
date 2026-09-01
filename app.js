@@ -10,7 +10,7 @@ const APP_VERSION = "1.0.1";
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
-const QUARTERS = [0,1,2,3];
+const VALID_TABS = ["setup","schedule","fillins","reports","settings","data"];
 
 /* ---------------- Utilities ---------------- */
 function uid(prefix){ return prefix+"_"+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4); }
@@ -52,7 +52,11 @@ function newGameState(){
     rosteredOffIds:null,        // computed
     unavailableIds:null,        // computed (regulars unavailable this game)
     shortfall:false,
+    minFillIns:0,               // computed (§6): minimum fill-ins needed when shortfall is true
+    recommendedFillIns:0,       // computed (§6): minFillIns + a small rotation buffer
+    noBenchOnly:false,          // computed: squad is exactly 7, no shortfall — valid, not an error (RO-4/QR-5)
     generated:false,
+    error:null,                 // computed: coach-facing message set by runGeneration when this game can't be scheduled
     coverageWarnings:[]         // computed: [{position,count,causedBy:[names]}]
   };
 }
@@ -89,7 +93,23 @@ function sanitizeSettingsAndSeason(state){
    used as cost-matrix keys — anything not in POSITIONS is meaningless to the
    solver and unsafe in the DOM. */
 function sanitizePrefs(prefs){
-  return (Array.isArray(prefs)?prefs:[]).map(x=>String(x).trim().toUpperCase()).filter(x=>POSITIONS.includes(x));
+  const cleaned = (Array.isArray(prefs)?prefs:[]).map(x=>String(x).trim().toUpperCase()).filter(x=>POSITIONS.includes(x));
+  // De-duplicate (keep first occurrence, preserving stated rank order) — a
+  // duplicated position from a hand-edited or malformed CSV row shouldn't be
+  // able to inflate prefs.length, which feeds directly into the Phase 2 cost
+  // model's off-preference cost (Math.max(1, prefs.length)) and the
+  // purity/variety term's safe cap (prefs.length - idx) — a row like
+  // "GS|GS|GS|GS|GA" would otherwise look like a genuine 5-position list and
+  // get costed as such, purely as an artifact of the encoding.
+  return cleaned.filter((pos,i)=>cleaned.indexOf(pos)===i);
+}
+
+/* Same validation the Add-player dialog already applies to a typed-in
+   "unavailable for game numbers" field — reused here so CSV import can't
+   produce a player.unavailable entry (NaN, negative, zero) that the dialog
+   itself would refuse to save. */
+function sanitizeUnavailable(nums){
+  return (Array.isArray(nums)?nums:[]).map(Number).filter(n=>Number.isFinite(n)&&n>0);
 }
 
 /* ---------------- State ---------------- */
@@ -119,6 +139,12 @@ function loadState(){
     merged.fillIns.forEach(f=>{ f.prefs = sanitizePrefs(f.prefs); });
     const corrected = sanitizeSettingsAndSeason(merged);
     if(corrected.length) console.warn("Stored settings were out of range and have been reset:", corrected);
+    // An unrecognised activeTab (hand-edited storage, or a value saved by a
+    // since-renamed tab) would otherwise crash renderMain's `fns[activeTab](...)`
+    // dispatch outright — a blank page with no recovery, since the bad value
+    // is already persisted. Every other field coming out of localStorage is
+    // validated; this one wasn't.
+    if(!VALID_TABS.includes(merged.activeTab)) merged.activeTab = "setup";
     return merged;
   }catch(e){ console.warn("Failed to load state, starting fresh.",e); return defaultState(); }
 }
@@ -160,17 +186,6 @@ function regularRosterInvalid(){
 }
 
 function playerLabel(p){ return p ? p.name : "—"; }
-
-/* Build the pool of "playable units": regular players + assigned fill-ins,
-   each normalised to {id, name, prefs, isFillIn} */
-function poolFor(game){
-  const regulars = STATE.players.map(p=>({id:p.id,name:p.name,prefs:p.prefs.slice(),isFillIn:false}));
-  const fillins = (game.fillInIds||[]).map(fid=>{
-    const f = byId(STATE.fillIns, fid);
-    return f ? {id:f.id,name:f.name,prefs:f.prefs.slice(),isFillIn:true} : null;
-  }).filter(Boolean);
-  return {regulars, fillins};
-}
 
 function isUnavailable(player, gameNum){
   return (player.unavailable||[]).includes(gameNum);
@@ -219,7 +234,14 @@ function planGameAvailability(gameNum){
   if(shortfall){
     // §6: don't force the normal roster-off rule; use all available regulars + fill-ins
     fixedOffIds = [];
-  } else if(game.rosterOffLockIds && game.rosterOffLockIds.length){
+  } else if(Array.isArray(game.rosterOffLockIds)){
+    // Array.isArray, not a truthy+length check: an explicit, empty selection
+    // ("roster nobody off this game") is a real, meaningful manual choice,
+    // distinct from `null` ("no lock — let auto-derivation decide"). A
+    // length check treated both the same, so saving the roster-off dialog
+    // with nothing ticked silently fell through to auto-derivation instead
+    // of honoring "nobody off" — indistinguishable from never having opened
+    // the dialog at all.
     fixedOffIds = game.rosterOffLockIds.filter(id=>availableRegulars.some(p=>p.id===id));
   } else if(Number.isFinite(game.rosterOffOverride)){
     rosterOffCount = clamp(game.rosterOffOverride,0,Math.max(0,availableRegulars.length-7));
@@ -340,14 +362,27 @@ function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, sche
   });
 }
 
-function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds){
+/* §5.3 asks for "which specialist(s) for that position were unavailable/
+   benched that quarter (i.e. why it was necessary)". `squadIds` covers the
+   "unavailable" half (rostered off/unavailable for the whole game, so never
+   in the squad at all); `benchIds` is this specific quarter's bench, needed
+   for the other half — a specialist who's on the bench *this quarter* was
+   previously invisible here (squadIds includes benched players, so they
+   never showed up as "unavailable"), which meant the common case of "the
+   specialist was simply rested this quarter" rendered as if no specialist
+   existed on the roster at all. Also considers fill-ins assigned to this
+   game, not just regular players. */
+function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds){
   const player = byId(STATE.players,playerId) || byId(STATE.fillIns,playerId);
-  const specialists = STATE.players.filter(p=>p.id!==playerId && p.prefs.includes(pos));
+  const assignedFillIns = (getGame(gameNum).fillInIds||[]).map(fid=>byId(STATE.fillIns,fid)).filter(Boolean);
+  const specialists = STATE.players.concat(assignedFillIns).filter(p=>p.id!==playerId && p.prefs.includes(pos));
   const squadIdSet = new Set(squadIds);
+  const benchIdSet = new Set(benchIds||[]);
   const unavailableSpecialists = specialists.filter(p=>!squadIdSet.has(p.id)).map(p=>p.name);
+  const benchedSpecialists = specialists.filter(p=>squadIdSet.has(p.id) && benchIdSet.has(p.id)).map(p=>p.name);
   return {
     game:gameNum, quarter:quarterIdx+1, playerId, playerName: player?player.name:"?",
-    position:pos, unavailableSpecialists
+    position:pos, unavailableSpecialists, benchedSpecialists
   };
 }
 
@@ -461,7 +496,7 @@ function runGeneration(){
     const quarters = [];
     const cumulativeSnapshots = [];
     const lockedSlotsPerQuarter = [];
-    let quarterError = null;
+    const failingQuarters = []; // {quarter, positions} — every quarter with an unfillable position, not just the last one
 
     for(let q=0;q<4;q++){
       const lockedSlots = {};
@@ -485,7 +520,11 @@ function runGeneration(){
       });
 
       if(result.errors.length){
-        quarterError = `Game ${num}, Quarter ${q+1}: no eligible in-preference player for ${result.errors.map(e=>e.position).join(", ")}. Add/adjust a fill-in, or allow off-preference positions.`;
+        // A `null` position means a defensive SLOT_MISMATCH (caller-contract
+        // violation, not a real coach-facing scenario) rather than a genuine
+        // unfillable position — render it as a clear phrase instead of the
+        // literal string "null" from a raw array join.
+        failingQuarters.push({quarter:q+1, positions:result.errors.map(e=>e.position||"an internal slot-count mismatch")});
       }
 
       // fold this quarter immediately so later quarters in same game see updated counts
@@ -497,6 +536,22 @@ function runGeneration(){
       });
       benchedLastQuarter = new Set(result.bench);
       quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
+    }
+
+    if(failingQuarters.length){
+      // §5.2/§6.1: with allowOffPreference off, a position that can't be filled
+      // in-preference must never be silently filled anyway (solveQuarterPositions
+      // now leaves it empty and benches the player instead), and this game's
+      // schedule must not be saved as if it were complete — undo this game's
+      // cumulative contribution and treat it the same as the "not enough
+      // players" shortfall case: no schedule, explicit error, coach action
+      // required.
+      quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
+      const detail = failingQuarters.map(f=>`Q${f.quarter}: ${f.positions.join(", ")}`).join("; ");
+      game.error = `Game ${num}: no eligible in-preference player for — ${detail}. Add/adjust a fill-in, or allow off-preference positions.`;
+      game.schedule = null; game.generated = false;
+      foldGameIntoCumulative(cumulative, plan.rosteredOffIds, plan.unavailableIds, null);
+      return;
     }
 
     // Phase 2b: bounded local-search refinement across this game's own 4 quarters only.
@@ -516,7 +571,7 @@ function runGeneration(){
 
     game.schedule = {quarters:refined.quarters};
     game.generated = true;
-    game.error = quarterError;
+    game.error = null;
   });
 
   STATE._lastGeneratedAt = todayIso();
@@ -564,11 +619,20 @@ function computeOffPrefLog(){
     const squadIds = game.squadIds||[];
     game.schedule.quarters.forEach((q,qi)=>{
       POSITIONS.forEach(pos=>{
-        if(q.offPreference && q.offPreference[pos]) log.push(buildOffPrefLog(num,qi,pos,q.onCourt[pos],squadIds));
+        if(q.offPreference && q.offPreference[pos]) log.push(buildOffPrefLog(num,qi,pos,q.onCourt[pos],squadIds,q.bench));
       });
     });
   });
   return log;
+}
+/* Renders a buildOffPrefLog() entry's two reason lists into one readable
+   string, shared by the Reports tab table and the XLSX export so they never
+   drift apart. */
+function describeOffPrefReason(o){
+  const parts = [];
+  if(o.unavailableSpecialists.length) parts.push(`Unavailable: ${o.unavailableSpecialists.join(", ")}`);
+  if(o.benchedSpecialists.length) parts.push(`Benched: ${o.benchedSpecialists.join(", ")}`);
+  return parts.length ? parts.join("; ") : "no specialists on the roster";
 }
 function computeOffPrefRate(){
   const log = computeOffPrefLog();
@@ -630,7 +694,7 @@ function confirmDialog(title, msg, onYes){
 /* ============================================================
    RENDER: SHELL
    ============================================================ */
-const TABS = [
+const TABS = [ // ids here must match VALID_TABS above exactly
   {id:"setup", label:"Setup"},
   {id:"schedule", label:"Schedule"},
   {id:"fillins", label:"Fill-ins"},
@@ -766,7 +830,7 @@ function openPlayerDialog(playerId){
   const draft = existing ? deepClone(existing) : {id:uid("p"), name:"", prefs:[], unavailable:[]};
   const isDup = name => STATE.players.some(p=>p.id!==draft.id && p.name.trim().toLowerCase()===name.trim().toLowerCase());
 
-  const m = openModal(`
+  openModal(`
     <h3>${existing?"Edit player":"Add player"}</h3>
     <p class="modal-sub">Preferences are ordered best-to-worst. Positions not listed are treated as off-preference.</p>
     <div class="field"><label>Name</label><input type="text" id="pfName" value="${esc(draft.name)}" placeholder="e.g. Jess Nguyen"></div>
@@ -811,7 +875,7 @@ function openPlayerDialog(playerId){
       // roster player should list at least one position.
       if(!draft.prefs.length){ toast("Add at least one position preference."); return; }
       draft.name = name;
-      draft.unavailable = modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)).filter(n=>Number.isFinite(n)&&n>0);
+      draft.unavailable = sanitizeUnavailable(modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)));
       if(existing){ Object.assign(existing, draft); }
       else STATE.players.push(draft);
       saveState(); closeModal(); renderMain();
@@ -828,18 +892,26 @@ function importPlayersCsv(text){
     if(!header.includes("name")){ header=["name","preferences"]; startIdx=0; }
     const nameIdx = header.indexOf("name");
     const prefIdx = header.indexOf("preferences")>=0?header.indexOf("preferences"):1;
-    let added=0, skipped=0;
+    let added=0, skipped=0, skippedNoPrefs=0;
     for(let i=startIdx;i<rows.length;i++){
       const r = rows[i]; if(!r || !r[nameIdx] || !r[nameIdx].trim()) continue;
       const name = r[nameIdx].trim();
       if(STATE.players.some(p=>p.name.toLowerCase()===name.toLowerCase())){ skipped++; continue; }
       const prefsRaw = (r[prefIdx]||"").trim();
-      const prefs = prefsRaw.split(/[|,;\s]+/).map(s=>s.toUpperCase().trim()).filter(s=>POSITIONS.includes(s));
+      const prefs = sanitizePrefs(prefsRaw.split(/[|,;\s]+/));
+      // Same rule the Add-player dialog enforces (a regular squad player needs
+      // at least one real position to have any identity for the solver) —
+      // previously this path could silently create a preference-less player,
+      // which the dialog forbids.
+      if(!prefs.length){ skippedNoPrefs++; continue; }
       STATE.players.push({id:uid("p"), name, prefs, unavailable:[]});
       added++;
     }
     saveState(); renderMain();
-    toast(`Imported ${added} player(s)${skipped?`, skipped ${skipped} duplicate(s)`:""}.`);
+    const notes = [];
+    if(skipped) notes.push(`skipped ${skipped} duplicate(s)`);
+    if(skippedNoPrefs) notes.push(`skipped ${skippedNoPrefs} with no recognised position preference`);
+    toast(`Imported ${added} player(s)${notes.length?", "+notes.join(", "):""}.`);
   }catch(e){ toast("Could not read that CSV: "+e.message); }
 }
 
@@ -866,6 +938,22 @@ function toCsvField(v){
   v = v==null?"":String(v);
   if(/[",\n]/.test(v)) return '"'+v.replace(/"/g,'""')+'"';
   return v;
+}
+/* CSV/spreadsheet formula-injection guard (OWASP-recommended mitigation): a
+   free-text field beginning with =, +, -, or @ executes as a formula when
+   the exported file is opened in Excel/LibreOffice — a real concern since
+   this export is explicitly meant to be handed to a co-coach, not just kept
+   locally. Applied only to free-text name fields (not every field toCsvField
+   touches), since a leading '-' is otherwise a legitimate character in some
+   numeric columns. unguardCsvText reverses it on import — but only when what
+   follows the leading quote is itself one of the guarded characters, so a
+   name that genuinely starts with a literal apostrophe is never mistaken for
+   one we added. */
+function guardCsvText(v){
+  return /^[=+\-@]/.test(v) ? "'"+v : v;
+}
+function unguardCsvText(v){
+  return (v[0]==="'" && /^[=+\-@]/.test(v.slice(1))) ? v.slice(1) : v;
 }
 
 /* ============================================================
@@ -924,7 +1012,7 @@ function renderGamesList(el){
   gameNums().forEach(num=>wireGameCard(el, num));
 }
 
-function statusPillsForGame(game, num){
+function statusPillsForGame(game){
   const pills=[];
   if(game.isPlayed) pills.push(`<span class="game-locked-banner">&#128274; Played &amp; locked</span>`);
   if(game.error) pills.push(`<span class="pill pill-danger">${esc(game.error)}</span>`);
@@ -948,7 +1036,7 @@ function renderGameCard(num){
     <div class="game-card-head">
       <h4>Game ${num}</h4>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-        ${statusPillsForGame(game,num)}
+        ${statusPillsForGame(game)}
         <button class="btn btn-sm" data-toggle="${num}">${open?"Hide":"Details"}</button>
       </div>
     </div>
@@ -1103,7 +1191,7 @@ function openRosterOffDialog(num){
   const avail = planGameAvailability(num);
   const availIds = avail.availableRegularIds;
   const current = new Set(game.rosterOffLockIds || game.rosteredOffIds || []);
-  const m = openModal(`
+  openModal(`
     <h3>Roster off — Game ${num}</h3>
     <p class="modal-sub">Manually choose who's rostered off. Leave unset to let the engine auto-select for fairness.</p>
     <div id="offList" style="max-height:280px;overflow-y:auto;"></div>
@@ -1118,12 +1206,28 @@ function openRosterOffDialog(num){
         <span class="cb-label">${esc(p.name)}</span></label>`).join("");
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="clear"]').onclick=()=>{
-      game.rosterOffLockIds=null; saveState(); closeModal(); toast("Cleared — engine will auto-select.");
+      game.rosterOffLockIds=null;
+      // Keep in sync with the override handler's convention (app.js ~1084):
+      // the exact auto-derived pick isn't known without a fresh Phase 1
+      // solve, so this is set to null and every display that reads it
+      // (the "Rostered off" line, coverage warnings, player summaries) shows
+      // blank until the next Generate/Rebalance — not left showing the just-
+      // cleared, now-stale selection.
+      game.rosteredOffIds=null;
+      saveState(); closeModal(); toast("Cleared — regenerate to auto-select.");
       scheduleUiState.openGame=num; renderMain();
     };
     modal.querySelector('[data-act="save"]').onclick=()=>{
       const ids = Array.from(modal.querySelectorAll("#offList input:checked")).map(i=>i.value);
-      game.rosterOffLockIds = ids; saveState(); closeModal();
+      game.rosterOffLockIds = ids;
+      // Unlike Clear, the exact selection here IS known — sync it into
+      // rosteredOffIds immediately so the "Rostered off" line, coverage
+      // warnings, and player-summary missed-game counts (all of which read
+      // this field directly, not through planGameSquad) reflect the manual
+      // pick right away instead of showing the previous auto-derived value
+      // until the coach happens to regenerate.
+      game.rosteredOffIds = ids.slice();
+      saveState(); closeModal();
       scheduleUiState.openGame=num; renderMain();
     };
   });
@@ -1350,6 +1454,7 @@ function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedS
       // Whoever was displaced and isn't the one filling this slot goes to the bench.
       if(displacedPid && displacedPid!==chosen && !qDraft.bench.includes(displacedPid)) qDraft.bench.push(displacedPid);
       refreshOffPreferenceFlag(qDraft, vacantPos);
+      if(!chosen) toast(`${POS_LABEL[vacantPos]} left unassigned this quarter — remember to fill it before the game is played.`);
       commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
     };
   });
@@ -1414,7 +1519,7 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
   const draft = existing ? deepClone(existing) : {id:uid("fi"), name:"", prefs:[], saved:true};
   if(draft.saved==null) draft.saved = true; // pre-existing fill-ins from before this field existed
 
-  const m = openModal(`
+  openModal(`
     <h3>${existing?"Edit fill-in":"Add fill-in"}</h3>
     <p class="modal-sub">Guest player. Not part of the permanent roster or season fairness.</p>
     <div class="field"><label>Name</label><input type="text" id="fiName" value="${esc(draft.name)}" placeholder="e.g. Casey (guest)"></div>
@@ -1502,7 +1607,7 @@ function renderReports(root){
             <td class="mono">${s.onCourt}</td><td class="mono">${s.bench}</td><td class="mono">${s.missed}</td>
             ${POSITIONS.map(pos=>`<td class="mono">${s.positions[pos]?`<span class="pos-badge pos-${pos}">${s.positions[pos]}</span>`:0}${s.offPrefPositions[pos]?` <span class="pill pill-danger" style="padding:1px 6px;">${s.offPrefPositions[pos]} off-pref</span>`:""}</td>`).join("")}
             <td class="mono">${s.offPrefTotal}</td></tr>
-        `).join("") : `<tr><td colspan="12" class="hint">No players yet.</td></tr>`}
+        `).join("") : `<tr><td colspan="13" class="hint">No players yet.</td></tr>`}
         </tbody>
       </table></div>
     </div>
@@ -1515,12 +1620,12 @@ function renderReports(root){
         <div class="stat-box"><div class="num">${offPrefRate.rate.toFixed(1)}%</div><div class="lbl">season rate</div></div>
       </div>
       <div class="table-scroll"><table>
-        <thead><tr><th>Game</th><th>Qtr</th><th>Player</th><th>Position</th><th>Why (specialists unavailable)</th></tr></thead>
+        <thead><tr><th>Game</th><th>Qtr</th><th>Player</th><th>Position</th><th>Why (specialists unavailable/benched)</th></tr></thead>
         <tbody>
         ${offPref.length? offPref.map(o=>`
           <tr><td class="mono">${o.game}</td><td class="mono">${o.quarter}</td><td>${esc(o.playerName)}</td>
             <td><span class="pos-badge pos-${o.position}">${o.position}</span></td>
-            <td class="hint">${o.unavailableSpecialists.length?esc(o.unavailableSpecialists.join(", ")):"no specialists on the roster"}</td></tr>
+            <td class="hint">${esc(describeOffPrefReason(o))}</td></tr>
         `).join("") : `<tr><td colspan="5" class="hint">None yet — generate the season to populate this log.</td></tr>`}
         </tbody>
       </table></div>
@@ -1687,9 +1792,9 @@ function exportFullCsv(){
   row("weight_positionPurity",STATE.settings.fairnessWeights.positionPurity);
   row("theme",STATE.theme);
   row("#PLAYERS","id","name","prefs","unavailable");
-  STATE.players.forEach(p=>row(p.id,p.name,(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
+  STATE.players.forEach(p=>row(p.id,guardCsvText(p.name),(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
   row("#FILLINS","id","name","prefs","saved");
-  STATE.fillIns.forEach(f=>row(f.id,f.name,(f.prefs||[]).join("|"),f.saved===false?0:1));
+  STATE.fillIns.forEach(f=>row(f.id,guardCsvText(f.name),(f.prefs||[]).join("|"),f.saved===false?0:1));
   row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing");
   gameNums().forEach(n=>{
     const g = getGame(n);
@@ -1743,11 +1848,11 @@ function importFullCsv(text){
     if(set.theme) ns.theme = set.theme;
 
     ns.players = (sections.PLAYERS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:r[1]||"", prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
-      unavailable:(r[3]||"").split("|").filter(Boolean).map(Number)
+      id:r[0], name:unguardCsvText(r[1]||""), prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
+      unavailable:sanitizeUnavailable((r[3]||"").split("|").filter(Boolean).map(Number))
     }));
     ns.fillIns = (sections.FILLINS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:r[1]||"", prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
+      id:r[0], name:unguardCsvText(r[1]||""), prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
       saved: r[3]===undefined ? true : r[3]!=="0"
     }));
 
@@ -1758,6 +1863,12 @@ function importFullCsv(text){
       g.isPlayed = isPlayed==="1";
       g.strictSpecialistPairing = strictPairingStr==="1";
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
+      // Known, accepted limitation: the pipe-joined CSV encoding can't
+      // distinguish an explicit "lock to nobody" from "no lock at all" — both
+      // serialize to an empty string — so an explicit-empty roster-off lock
+      // degrades to "auto" across a CSV export/reimport. In-app (localStorage,
+      // via JSON) this distinction round-trips correctly; only the CSV
+      // interchange format collapses it.
       g.rosterOffLockIds = (rosterOffLockIds||"").split("|").filter(Boolean);
       if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
       g.rosteredOffIds = (rosteredOffIds||"").split("|").filter(Boolean); // frozen historical fact for played games; recomputed for others
@@ -1843,6 +1954,16 @@ function sanitizeImportedState(ns){
   ns.players = ns.players.filter(p=>{
     if(!p.id || !p.name || seenPlayerIds.has(p.id)){
       warnings.push(`Dropped an invalid/duplicate player row (${p.name||p.id||"unnamed"}).`);
+      return false;
+    }
+    if(!p.prefs || !p.prefs.length){
+      // Same rule the Add-player dialog enforces: a regular squad player
+      // needs at least one recognised position preference. Dropping here
+      // (rather than importing a preference-less player, as this path used
+      // to) also excludes them from seenPlayerIds below, so any fill-in/
+      // lock/schedule reference to them gets cleaned up the same way an
+      // invalid id would be.
+      warnings.push(`Dropped ${p.name} — no recognised position preference.`);
       return false;
     }
     seenPlayerIds.add(p.id);
@@ -1941,8 +2062,8 @@ function exportXlsx(){
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), "Short-Staffed Notes");
 
-  const offRows = [["Game","Quarter","Player","Position","Unavailable Specialists"]];
-  computeOffPrefLog().forEach(o=> offRows.push([o.game,o.quarter,o.playerName,o.position,o.unavailableSpecialists.join(", ")]));
+  const offRows = [["Game","Quarter","Player","Position","Why (Specialists Unavailable/Benched)"]];
+  computeOffPrefLog().forEach(o=> offRows.push([o.game,o.quarter,o.playerName,o.position,describeOffPrefReason(o)]));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(offRows), "Off-Preference Log");
 
   XLSX.writeFile(wb, `netball-roster-${new Date().toISOString().slice(0,10)}.xlsx`);

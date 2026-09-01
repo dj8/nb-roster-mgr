@@ -227,6 +227,19 @@ async function shot(page, name){
   await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]');
   check(await page.isChecked(strictBoxSel), "strict specialist pairing checkbox stays checked after collapse/reopen");
 
+  // ---- Manual roster-off dialog (E2/E3): saving a specific pick must show up
+  // immediately in the "Rostered off" line, without needing to regenerate. ----
+  const rosteredOffLine = page.locator('#gameBody-1 .section-label', { hasText: "Rostered off" }).locator('xpath=following-sibling::div[contains(@class,"hint")][1]');
+  await page.click('[data-manageoff="1"]');
+  await page.waitForSelector('.modal #offList');
+  await page.locator('.modal #offList input[type="checkbox"]').evaluateAll(boxes=>boxes.forEach(b=>{ if(b.checked) b.click(); }));
+  const amyCheckbox = page.locator('.modal #offList label', { hasText: "Amy" }).locator('input[type="checkbox"]');
+  await amyCheckbox.check();
+  await page.click('.modal [data-act="save"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  check((await rosteredOffLine.textContent())==="Amy",
+    `manually saving a roster-off pick updates the "Rostered off" line immediately (got "${await rosteredOffLine.textContent()}")`);
+
   // ---- Fill-ins: create a one-off (unsaved) fill-in scoped to game 1, via
   // the "+ New fill-in" flow inside Assign-a-fill-in (§6), then confirm it
   // does NOT show up as a candidate when assigning fill-ins to a different

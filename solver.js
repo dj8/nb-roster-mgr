@@ -78,8 +78,10 @@ function variance(nums){
    regardless of remaining depth elsewhere, which over-penalized rosters
    with broadly overlapping preference lists — see COVERAGE_OVERLAP_WEIGHT,
    now unused but left as a named constant in case a rank-weighted
-   tie-break signal is wanted again later). */
-function gameCoveragePenalty(squadAfterOff, offPlayers){
+   tie-break signal is wanted again later). Takes only the post-removal
+   squad — which players were actually removed doesn't affect the penalty,
+   so callers no longer need to compute that list just to pass it in. */
+function gameCoveragePenalty(squadAfterOff){
   let penalty = 0;
   POSITIONS.forEach(pos=>{
     const coverers = squadAfterOff.filter(p=>p.prefs.includes(pos));
@@ -173,8 +175,7 @@ function solveSeasonRosterOff(input){
       const offSet = new Set(offIds);
       const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
       const squadAfter = pool.filter(p=>!offSet.has(p.id));
-      const offPlayers = pool.filter(p=>offSet.has(p.id));
-      coverageTerm += effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter, offPlayers);
+      coverageTerm += effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
     });
     return fairnessTerm + coverageTerm;
   }
@@ -194,8 +195,7 @@ function solveSeasonRosterOff(input){
         remaining.forEach(cand=>{
           const missed = runningMissed[cand.id]||0;
           const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
-          const off = picked.concat([cand]);
-          const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter, off);
+          const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
           if(score<bestSafeScore){ bestSafeScore=score; bestSafe=cand; }
           const disqualified = !allowOffPreference && hasZeroCoverage(squadAfter);
           if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
@@ -612,7 +612,22 @@ function solveQuarterPositions(input){
     const p = remaining[rowIdx];
     const col = columns[colIdx];
     if(col==="BENCH"){ bench.push(p.id); return; }
-    if(matrix[rowIdx][colIdx] >= BIG_M){ errors.push({position:col, reason:"NO_ELIGIBLE_PLAYER"}); }
+    if(matrix[rowIdx][colIdx] >= BIG_M){
+      // The Hungarian solver itself must still return a complete assignment
+      // even when every option for a row is disqualified (see HG-4) — but
+      // §5.2 is absolute when allowOffPreference is off: no player may EVER
+      // be assigned a position outside their stated list, "under any
+      // circumstance". Committing this cell into onCourt anyway (as this
+      // used to do) silently produced exactly that forbidden assignment —
+      // the caller only learns about `errors`, but the schedule itself
+      // already has the disallowed fill baked in with offPreference[col]
+      // set true. Leave the position unfilled and bench the player instead;
+      // the caller (runGeneration) discards the whole game's schedule when
+      // any error is present, so this is never shown as a real lineup.
+      errors.push({position:col, reason:"NO_ELIGIBLE_PLAYER"});
+      bench.push(p.id);
+      return;
+    }
     onCourt[col]=p.id;
     if(!p.prefs.includes(col)) offPreference[col]=true;
   });
@@ -747,6 +762,7 @@ const RosterSolver = {
   POSITIONS,
   CONSTANTS: {
     PHASE1_FAIRNESS_WEIGHT, PHASE1_COVERAGE_WEIGHT, PHASE1_TIME_BUDGET_MS, PHASE1_MAX_PASSES,
+    PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, COVERAGE_OVERLAP_WEIGHT,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
     BENCH_SCALE_BOOST, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT

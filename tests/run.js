@@ -740,6 +740,34 @@ test("OFFPREF-LOG-FRESH-1: computeOffPrefLog reflects manual schedule edits with
   assert.strictEqual(log.length, 2, "off-preference log should immediately reflect the manual edit: "+JSON.stringify(log));
 });
 
+test("OFFPREF-LOG-BENCHED-1 (I4 regression): the off-preference log names a specialist benched that quarter, not just ones missing from the squad entirely", ()=>{
+  // §5.3: "which specialist(s) for that position were unavailable/benched
+  // that quarter". Previously only "unavailable" (absent from squadIds
+  // entirely) was tracked — squadIds includes benched players, so a
+  // specialist who was simply rested that quarter (the common case) was
+  // silently invisible here, with no category to catch it.
+  const engine = freshEngine();
+  const st = engine._getState();
+  addPlayer(engine, "Amy", ["GS"]);
+  addPlayer(engine, "Bea", ["GK"]); // benched this quarter, still in the squad
+  addPlayer(engine, "Cat", ["GK"]); // unavailable for the whole game, never in the squad
+  engine.ensureGamesExist();
+  const g = engine.getGame(1);
+  g.schedule = { quarters: [
+    { onCourt: {GS:"__amy__", GK:"__amy__"}, bench: ["__bea__"], offPreference: {GK:true} }
+  ]};
+  // Resolve real ids after addPlayer generated them.
+  const amy = st.players.find(p=>p.name==="Amy").id, bea = st.players.find(p=>p.name==="Bea").id;
+  g.schedule.quarters[0].onCourt = {GS:amy, GK:amy};
+  g.schedule.quarters[0].bench = [bea];
+  g.squadIds = [amy, bea]; // Cat is deliberately excluded — "unavailable"
+
+  const log = engine.computeOffPrefLog();
+  assert.strictEqual(log.length, 1);
+  assert.deepStrictEqual([...log[0].unavailableSpecialists], ["Cat"]);
+  assert.deepStrictEqual([...log[0].benchedSpecialists], ["Bea"]);
+});
+
 test("CSV-IMPORT-SANITIZE-1: a corrupted CSV is sanitized rather than corrupting app state", ()=>{
   const engine = freshEngine();
   const csv = [
@@ -769,6 +797,58 @@ test("CSV-IMPORT-SANITIZE-1: a corrupted CSV is sanitized rather than corrupting
   assert.strictEqual(Object.keys(g.lockedSlots).length, 0, "a locked slot referencing an unknown player id should be dropped: "+JSON.stringify(g.lockedSlots));
   assert.strictEqual(g.schedule.quarters[0].onCourt.GS, "p2", "a valid schedule entry should still import correctly");
   assert.ok(!g.schedule.quarters[0].onCourt.GA, "an unknown player id in the schedule should be dropped, not left dangling: "+JSON.stringify(g.schedule.quarters[0].onCourt));
+});
+
+test("CSV-IMPORT-VALIDATE-1 (E5/E6/E7 regression): full-CSV player import applies the same rules as the Add-player dialog", ()=>{
+  const engine = freshEngine();
+  const csv = [
+    "#META", "version,1",
+    "#SEASON", "numGames,5", "desiredBenchSize,2",
+    "#SETTINGS", "preferenceSlider,9",
+    "#PLAYERS",
+    "p1,Dupe,GS|GS|GS|GA,3|abc|-2|99|0",   // duplicated prefs + garbage/invalid unavailable values
+    "p2,NoPrefs,,",                          // no recognised preference at all
+    "#FILLINS",
+    "#GAMES",
+    "#SCHEDULE"
+  ].join("\n");
+
+  engine.importFullCsv(csv);
+  const st = engine._getState();
+
+  const dupe = st.players.find(p=>p.name==="Dupe");
+  assert.ok(dupe, "the valid player row should still import");
+  // Cross-realm arrays (see harness.js) — spread before deepStrictEqual.
+  assert.deepStrictEqual([...dupe.prefs], ["GS","GA"], "E6: duplicated preference entries must be de-duplicated, not inflate prefs.length: "+JSON.stringify(dupe.prefs));
+  // Note: only non-finite/negative/zero values are filtered — an out-of-range
+  // game number like 99 in a 5-game season is left as-is, matching the
+  // Add-player dialog's own validation exactly (it has no upper bound either).
+  assert.deepStrictEqual([...dupe.unavailable], [3,99], "E5: non-numeric/negative/zero unavailable values must be filtered out, same as the Add-player dialog: "+JSON.stringify(dupe.unavailable));
+
+  assert.ok(!st.players.some(p=>p.name==="NoPrefs"), "E7: a player with zero recognised preferences must be dropped, not imported with an empty list");
+});
+
+test("CSV-FORMULA-GUARD-1 (I10 regression): a name starting with =, +, -, or @ is neutralised on export and restored on import", ()=>{
+  // OWASP CSV-injection mitigation: a cell beginning with one of these
+  // characters executes as a formula when opened in Excel/LibreOffice — a
+  // real concern since this export is explicitly meant to be handed to a
+  // co-coach. guardCsvText/unguardCsvText must round-trip exactly through
+  // this app's own export→import, not just escape on the way out.
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  const dangerousName = "=1+1";
+  st.players.push({id: engine.uid("p"), name: dangerousName, prefs:["GS"], unavailable:[]});
+  engine.ensureGamesExist();
+
+  engine.exportFullCsv();
+  const csvText = engine.CapturingBlob.last;
+  assert.ok(!csvText.includes(",=1+1,") , "the raw dangerous value must not appear unescaped in the exported CSV");
+  assert.ok(csvText.includes(",'=1+1,"), "the exported CSV should carry the neutralised, quote-prefixed value");
+
+  engine.importFullCsv(csvText);
+  const st2 = engine._getState();
+  assert.strictEqual(st2.players[0].name, dangerousName, "the original name must be restored exactly on import, not left with a stray leading quote");
 });
 
 test("CSV-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped, not left as NaN", ()=>{
@@ -1036,6 +1116,24 @@ test("RO-4: one more available player than needed rosters off exactly one", ()=>
   assert.strictEqual(g.rosteredOffIds.length, 1, "10 available players with bench size 2 needs exactly 1 roster-off");
 });
 
+test("MANUAL-ROSTEROFF-EMPTY-1 (E3 regression): an explicit 'roster off nobody' lock is honored, not treated as auto", ()=>{
+  // Previously: planGameAvailability checked `rosterOffLockIds && .length`,
+  // so a manual lock explicitly saved as [] (the coach unchecked everyone,
+  // meaning "nobody off this game") was indistinguishable from `null` ("no
+  // lock — auto-derive") and silently fell through to the normal derived
+  // count instead.
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 2;
+  ["GS","GA","WA","C","WD","GD","GK","GA","GD","WA"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos])); // 10 players, auto would roster off 1
+  engine.ensureGamesExist();
+  engine.getGame(1).rosterOffLockIds = [];
+  const avail = engine.planGameAvailability(1);
+  assert.deepStrictEqual(avail.fixedOffIds, [], "an explicit empty lock must be honored as 'roster off nobody', not fall back to auto-derivation");
+  assert.strictEqual(avail.rosterOffCount, 0);
+});
+
 test("OP-5: off-preference fill is allowed and used when allowOffPreference is on and no in-preference candidate remains", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
@@ -1053,6 +1151,12 @@ test("OP-5: off-preference fill is allowed and used when allowOffPreference is o
 });
 
 test("OP-9: toggling allowOffPreference off raises an error instead of an off-preference fallback", ()=>{
+  // Regression: solveQuarterPositions used to push a NO_ELIGIBLE_PLAYER error
+  // AND still commit the disqualified (BIG_M) cell into onCourt anyway, so
+  // the schedule silently contained the exact off-preference fill §5.2 says
+  // must never happen "under any circumstance" when this toggle is off — the
+  // error string alone (the only thing this test used to check) didn't catch
+  // it, since it was set correctly even while the forbidden fill shipped.
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
@@ -1064,6 +1168,9 @@ test("OP-9: toggling allowOffPreference off raises an error instead of an off-pr
   engine.runGeneration();
   const g = engine.getGame(1);
   assert.ok(g.error && /GK/.test(g.error), "expected a no-eligible-player error mentioning GK: "+g.error);
+  assert.strictEqual(g.generated, false, "a game with an unfillable position must not be marked generated");
+  assert.strictEqual(g.schedule, null, "a game with an unfillable position must not have a saved schedule");
+  assert.strictEqual(engine.computeOffPrefLog().length, 0, "no off-preference fill should ever be logged when the toggle is off");
 });
 
 test("OP-11: with allowOffPreference off, the preference slider has no effect (no off-preference fills regardless of value)", ()=>{
