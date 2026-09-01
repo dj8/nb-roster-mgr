@@ -659,36 +659,124 @@ function computeRosterOffAchievabilityNotesForReports(){
    ============================================================ */
 function toast(msg){
   let stack = document.querySelector(".toast-stack");
-  if(!stack){ stack=document.createElement("div"); stack.className="toast-stack"; document.body.appendChild(stack); }
+  if(!stack){
+    stack=document.createElement("div"); stack.className="toast-stack";
+    stack.setAttribute("role","status"); stack.setAttribute("aria-live","polite"); stack.setAttribute("aria-atomic","false");
+    document.body.appendChild(stack);
+  }
   const el = document.createElement("div"); el.className="toast"; el.textContent=msg;
   stack.appendChild(el);
   setTimeout(()=>{ el.style.opacity="0"; el.style.transition="opacity .25s"; setTimeout(()=>el.remove(),260); }, 2600);
 }
+
+/* Elements a keyboard user can land on inside a modal, in DOM order — used
+   both to pick an initial focus target and to trap Tab within the dialog. */
+function focusableEls(container){
+  return Array.from(container.querySelectorAll(
+    'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+  )).filter(el=>el.offsetParent!==null);
+}
+let _modalReturnFocus = null;
+function handleModalKeydown(e){
+  const modal = document.querySelector(".modal-backdrop .modal");
+  if(!modal) return;
+  if(e.key==="Escape"){ e.preventDefault(); closeModal(); return; }
+  if(e.key==="Tab"){
+    const items = focusableEls(modal);
+    if(!items.length){ e.preventDefault(); return; }
+    const first = items[0], last = items[items.length-1];
+    if(e.shiftKey && document.activeElement===first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); }
+  }
+}
 function closeModal(){
   const bd = document.querySelector(".modal-backdrop");
-  if(bd) bd.remove();
+  if(!bd) return;
+  bd.remove();
+  document.body.style.overflow = "";
+  document.removeEventListener("keydown", handleModalKeydown, true);
+  if(_modalReturnFocus && document.contains(_modalReturnFocus)) _modalReturnFocus.focus();
+  _modalReturnFocus = null;
 }
+let _modalTitleSeq = 0;
+/* Every dialog in this app opens through here, so focus handling, Escape-to-
+   close, Tab trapping and title association (aria-labelledby, pointed at the
+   modal's own <h3>) are all fixed in one place rather than re-implemented per
+   dialog. */
 function openModal(html, onMount){
   closeModal();
+  _modalReturnFocus = document.activeElement;
   const bd = document.createElement("div");
   bd.className="modal-backdrop";
-  bd.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`;
+  const titleId = "modalTitle"+(++_modalTitleSeq);
+  bd.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">${html}</div>`;
   bd.addEventListener("mousedown", e=>{ if(e.target===bd) closeModal(); });
   document.body.appendChild(bd);
-  if(onMount) onMount(bd.querySelector(".modal"));
-  return bd.querySelector(".modal");
+  const modalEl = bd.querySelector(".modal");
+  const h3 = modalEl.querySelector("h3");
+  if(h3) h3.id = titleId;
+  document.body.style.overflow = "hidden";
+  document.addEventListener("keydown", handleModalKeydown, true);
+  if(onMount) onMount(modalEl);
+  const items = focusableEls(modalEl);
+  (items[0]||modalEl).focus();
+  return modalEl;
 }
-function confirmDialog(title, msg, onYes){
+function confirmDialog(title, msg, onYes, opts){
+  opts = opts || {};
+  const confirmLabel = opts.confirmLabel || "Confirm";
+  const btnClass = opts.danger ? "btn-danger-solid" : "btn-primary";
   openModal(`
     <h3>${esc(title)}</h3>
     <p class="modal-sub">${esc(msg)}</p>
     <div class="modal-actions">
       <button class="btn" data-act="cancel">Cancel</button>
-      <button class="btn btn-primary" data-act="yes">Confirm</button>
+      <button class="btn ${btnClass}" data-act="yes">${esc(confirmLabel)}</button>
     </div>`, m=>{
     m.querySelector('[data-act="cancel"]').onclick=closeModal;
     m.querySelector('[data-act="yes"]').onclick=()=>{ closeModal(); onYes(); };
   });
+}
+
+/* Inline, focus-carrying validation error shown right under the offending
+   field — used at submit time instead of (or alongside) a toast, which a
+   screen-reader user gets no benefit from and which appears far from the
+   field that actually needs attention. `afterSelector` is the element the
+   message is inserted after; `focusSelector` (default: the same element) is
+   what receives focus. */
+function showFieldError(modal, afterSelector, msg, focusSelector){
+  const afterEl = modal.querySelector(afterSelector);
+  if(!afterEl){ toast(msg); return; }
+  afterEl.classList.add("input-error");
+  let err = afterEl.nextElementSibling;
+  if(!err || !err.classList.contains("field-error")){
+    err = document.createElement("div"); err.className="field-error";
+    afterEl.insertAdjacentElement("afterend", err);
+  }
+  err.textContent = msg;
+  const focusEl = focusSelector ? modal.querySelector(focusSelector) : afterEl;
+  if(focusEl && focusEl.focus) focusEl.focus();
+}
+function clearFieldErrors(modal){
+  modal.querySelectorAll(".field-error").forEach(e=>e.remove());
+  modal.querySelectorAll(".input-error").forEach(e=>e.classList.remove("input-error"));
+}
+
+/* Scroll-shadow affordance for horizontally/vertically-scrollable regions
+   (.table-scroll, .tabs, .scroll-list) — toggles .at-end so the CSS fade
+   disappears once there's nothing further to scroll to. */
+function wireScrollFade(el){
+  if(!el) return;
+  const horizontal = el.classList.contains("tabs") || el.classList.contains("table-scroll");
+  const update = ()=>{
+    const atEnd = horizontal
+      ? (el.scrollWidth - el.clientWidth - el.scrollLeft < 4)
+      : (el.scrollHeight - el.clientHeight - el.scrollTop < 4);
+    const noOverflow = horizontal ? el.scrollWidth<=el.clientWidth : el.scrollHeight<=el.clientHeight;
+    el.classList.toggle("at-end", atEnd || noOverflow);
+  };
+  el.addEventListener("scroll", update);
+  update();
 }
 
 /* ============================================================
@@ -720,8 +808,9 @@ function render(){
           <button class="icon-btn" id="themeToggle" title="Toggle dark / light mode">${STATE.theme==="dark"?"&#9728;":"&#9789;"}</button>
         </div>
       </div>
-      <div class="tabs" id="tabs">
-        ${TABS.map(t=>`<button class="tab-btn ${STATE.activeTab===t.id?'active':''}" data-tab="${t.id}">${t.label}</button>`).join("")}
+      <div class="tabs" id="tabs" role="tablist">
+        ${TABS.map(t=>`<button class="tab-btn ${STATE.activeTab===t.id?'active':''}" data-tab="${t.id}" id="tabbtn-${t.id}"
+          role="tab" aria-selected="${STATE.activeTab===t.id}" aria-controls="panelRoot">${t.label}</button>`).join("")}
       </div>
     </div>
     <main id="main"></main>
@@ -730,16 +819,29 @@ function render(){
     STATE.theme = STATE.theme==="dark"?"light":"dark"; saveState(); render();
   };
   document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{ STATE.activeTab=b.dataset.tab; saveState(); renderMain(); syncTabButtons(); });
+  document.getElementById("tabs").addEventListener("keydown", e=>{
+    if(e.key!=="ArrowRight" && e.key!=="ArrowLeft") return;
+    e.preventDefault();
+    const idx = TABS.findIndex(t=>t.id===STATE.activeTab);
+    const next = e.key==="ArrowRight" ? (idx+1)%TABS.length : (idx-1+TABS.length)%TABS.length;
+    STATE.activeTab = TABS[next].id; saveState(); renderMain(); syncTabButtons();
+    document.getElementById("tabbtn-"+TABS[next].id).focus();
+  });
+  wireScrollFade(document.getElementById("tabs"));
   renderMain();
 }
 function syncTabButtons(){
-  document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("active", b.dataset.tab===STATE.activeTab));
+  document.querySelectorAll("[data-tab]").forEach(b=>{
+    const active = b.dataset.tab===STATE.activeTab;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", active?"true":"false");
+  });
 }
 function renderMain(){
   const main = document.getElementById("main");
   ensureGamesExist();
   const fns = {setup:renderSetup, schedule:renderSchedule, fillins:renderFillIns, reports:renderReports, settings:renderSettings, data:renderData};
-  main.innerHTML = `<div class="panel active" id="panelRoot"></div>`;
+  main.innerHTML = `<div class="panel active" id="panelRoot" role="tabpanel" aria-labelledby="tabbtn-${STATE.activeTab}"></div>`;
   fns[STATE.activeTab](document.getElementById("panelRoot"));
 }
 
@@ -753,13 +855,13 @@ function renderSetup(root){
       <div class="card-head">
         <div><h2>Season parameters</h2><p>Drives roster-off &amp; bench math for every game.</p></div>
       </div>
-      <div class="row">
-        <div class="field"><label>Number of games</label>
+      <div class="row-compact">
+        <div class="field field-compact"><label for="numGames">Number of games</label>
           <input type="number" id="numGames" min="1" max="60" value="${STATE.season.numGames}"></div>
-        <div class="field"><label>Desired bench size</label>
+        <div class="field field-compact"><label for="benchSize">Desired bench size</label>
           <input type="number" id="benchSize" min="0" max="20" value="${STATE.season.desiredBenchSize}"></div>
       </div>
-      ${invalidMsg? `<div class="pill pill-danger" style="display:block;margin-top:4px;">${esc(invalidMsg)}</div>` : `<p class="hint">On-court is always 7. Roster-off count per game = available regulars − (7 + desired bench size), auto-derived unless you override a specific game in the Schedule tab.</p>`}
+      ${invalidMsg? `<div class="alert alert-danger" style="margin-top:4px;">${esc(invalidMsg)}</div>` : `<p class="hint">On-court is always 7. Roster-off count per game = available regulars − (7 + desired bench size), auto-derived unless you override a specific game in the Schedule tab.</p>`}
     </div>
 
     <div class="card">
@@ -802,14 +904,14 @@ function renderPlayerList(el){
   }
   el.innerHTML = STATE.players.map(p=>`
     <div class="list-row">
-      <div style="flex:1;min-width:0;">
+      <div class="list-row-main">
         <div class="player-name">${esc(p.name)}</div>
         <div class="player-meta">
-          ${p.prefs.map((pos,i)=>`<span class="pos-badge pos-${esc(pos)}" title="${esc(POS_LABEL[pos])}">${esc(pos)}</span>`).join(" ")}
-          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn" style="margin-left:6px;">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
+          ${p.prefs.map((pos,i)=>`<span class="pref-item"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}" title="${esc(POS_LABEL[pos])}">${esc(pos)}</span></span>`).join(" ")}
+          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn pill-inline">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
         </div>
       </div>
-      <div class="btn-row" style="margin:0;">
+      <div class="btn-row btn-row-tight">
         <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
         <button class="btn btn-sm btn-danger" data-del="${p.id}">Remove</button>
       </div>
@@ -821,7 +923,7 @@ function renderPlayerList(el){
     confirmDialog("Remove player", `Remove ${p.name} from the roster? This also clears them from any generated schedule.`, ()=>{
       STATE.players = STATE.players.filter(x=>x.id!==b.dataset.del);
       saveState(); renderMain();
-    });
+    }, {confirmLabel:`Remove ${p.name}`, danger:true});
   });
 }
 
@@ -866,14 +968,16 @@ function openPlayerDialog(playerId){
     });
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
-      const name = modal.querySelector("#pfName").value.trim();
-      if(!name){ toast("Enter a name first."); return; }
-      if(isDup(name)){ toast("That name is already on the roster."); return; }
+      clearFieldErrors(modal);
+      const nameInput = modal.querySelector("#pfName");
+      const name = nameInput.value.trim();
+      if(!name){ showFieldError(modal, "#pfName", "Enter a name first."); return; }
+      if(isDup(name)){ nameInput.classList.add("input-error"); modal.querySelector("#dupWarn").style.display="block"; nameInput.focus(); return; }
       // A regular squad player with zero stated preferences has no real
       // position identity for the solver to work with — unlike a fill-in
       // (§6 explicitly allows a flexible/no-preference guest), a permanent
       // roster player should list at least one position.
-      if(!draft.prefs.length){ toast("Add at least one position preference."); return; }
+      if(!draft.prefs.length){ showFieldError(modal, "#prefButtons", "Add at least one position preference."); return; }
       draft.name = name;
       draft.unavailable = sanitizeUnavailable(modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)));
       if(existing){ Object.assign(existing, draft); }
@@ -959,11 +1063,17 @@ function unguardCsvText(v){
 /* ============================================================
    RENDER: SCHEDULE TAB
    ============================================================ */
-let scheduleUiState = { openGame:null };
+let scheduleUiState = { openGame:null, filter:"all" };
+/* True whenever a setting/override has changed since the last Generate/
+   Rebalance — the schedule on screen may no longer reflect it. Deliberately
+   not persisted: it describes the gap between STATE and the last engine run
+   within this session, not a fact about the season itself. */
+let dirtySinceGeneration = false;
 
 function renderSchedule(root){
   const invalidMsg = regularRosterInvalid();
   const hasAnyGenerated = gameNums().some(n=>getGame(n).generated || getGame(n).isPlayed);
+  const FILTERS = [["all","All"],["attention","Needs attention"],["played","Played"]];
   root.innerHTML = `
     <div class="card">
       <div class="card-head">
@@ -974,15 +1084,19 @@ function renderSchedule(root){
         </div>
       </div>
       ${!STATE.players.length? `<p class="hint">Add players in the Setup tab first.</p>` :
-        invalidMsg ? `<div class="pill pill-danger">${esc(invalidMsg)}</div>` :
+        invalidMsg ? `<div class="alert alert-danger">${esc(invalidMsg)}</div>` :
         `<p class="hint">Rebalance re-runs the same engine honoring every lock and edit you've made — played games and manually locked slots are never touched, but the fairness math folds their results in.</p>`}
-      ${Number.isFinite(STATE._lastGenerationMs)? `<p class="hint">Last generation took ${STATE._lastGenerationMs}ms.</p>` : ""}
+      ${dirtySinceGeneration && hasAnyGenerated? `<div class="alert alert-warn" style="margin-top:10px;">Settings or overrides changed since the last generation — rebalance to apply them.</div>` : ""}
       <div id="genSummary"></div>
     </div>
-    <div id="gamesList"></div>
+    <div class="btn-row" role="group" aria-label="Filter games">
+      ${FILTERS.map(([id,label])=>`<button class="btn btn-sm ${scheduleUiState.filter===id?'btn-primary':''}" data-filter="${id}">${label}</button>`).join("")}
+    </div>
+    <div id="gamesList" style="margin-top:10px;"></div>
   `;
   document.getElementById("genBtn").onclick=()=>runGenerationWithBusyState("Season generated");
   document.getElementById("rebalBtn").onclick=()=>runGenerationWithBusyState("Remaining games rebalanced");
+  root.querySelectorAll("[data-filter]").forEach(b=>b.onclick=()=>{ scheduleUiState.filter=b.dataset.filter; renderSchedule(root); });
   renderGamesList(document.getElementById("gamesList"));
 
   /* runGeneration() is fully synchronous — it can take up to several seconds
@@ -1001,22 +1115,36 @@ function renderSchedule(root){
     genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
     setTimeout(()=>{
       const r = runGeneration();
-      toast(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
+      dirtySinceGeneration = false;
+      console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
+      const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
+      const errored = gameNums().filter(n=>getGame(n).error).length;
+      const bits = [`${gameNums().length} games`];
+      if(errored) bits.push(`${errored} couldn't be scheduled`);
+      else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
+      toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
       renderSchedule(root);
     }, 0);
   }
 }
 
 function renderGamesList(el){
-  el.innerHTML = gameNums().map(num=>renderGameCard(num)).join("");
-  gameNums().forEach(num=>wireGameCard(el, num));
+  const nums = gameNums().filter(n=>{
+    const g = getGame(n);
+    if(scheduleUiState.filter==="played") return g.isPlayed;
+    if(scheduleUiState.filter==="attention") return !g.isPlayed && (g.error || g.shortfall || (g.coverageWarnings&&g.coverageWarnings.length) || !g.generated);
+    return true;
+  });
+  el.innerHTML = nums.length ? nums.map(num=>renderGameCard(num)).join("")
+    : `<div class="empty-state"><div class="glyph">&#9989;</div><div>No games match this filter.</div></div>`;
+  nums.forEach(num=>wireGameCard(el, num));
 }
 
 function statusPillsForGame(game){
   const pills=[];
   if(game.isPlayed) pills.push(`<span class="game-locked-banner">&#128274; Played &amp; locked</span>`);
-  if(game.error) pills.push(`<span class="pill pill-danger">${esc(game.error)}</span>`);
-  else if(game.shortfall) pills.push(`<span class="pill pill-danger">Shortfall — recommend ${game.recommendedFillIns} fill-in(s)</span>`);
+  if(game.error) pills.push(`<span class="pill pill-danger" title="${esc(game.error)}">Error</span>`);
+  else if(game.shortfall) pills.push(`<span class="pill pill-danger">Shortfall</span>`);
   else if(game.noBenchOnly) pills.push(`<span class="pill pill-warn">No bench this game</span>`);
   if(!game.error && game.generated) pills.push(`<span class="pill pill-ok">Generated</span>`);
   if(!game.generated && !game.isPlayed && !game.error) pills.push(`<span class="pill pill-muted">Not yet generated</span>`);
@@ -1031,13 +1159,21 @@ function statusPillsForGame(game){
 function renderGameCard(num){
   const game = getGame(num);
   const open = scheduleUiState.openGame===num;
+  const offNames = (game.rosteredOffIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
+  const summaryBits = [];
+  if(offNames.length) summaryBits.push(`Off: ${offNames.slice(0,3).join(", ")}${offNames.length>3?` +${offNames.length-3}`:""}`);
+  if(game.fillInIds && game.fillInIds.length) summaryBits.push(`${game.fillInIds.length} fill-in(s)`);
+  const summaryLine = summaryBits.join(" · ");
   return `
-  <div class="game-card" data-game="${num}">
+  <div class="game-card ${game.isPlayed?'game-card-locked':''}" data-game="${num}">
     <div class="game-card-head">
-      <h4>Game ${num}</h4>
+      <div>
+        <h4>Game ${num}</h4>
+        ${!open && summaryLine? `<div class="hint" style="margin-top:2px;">${esc(summaryLine)}</div>`:""}
+      </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         ${statusPillsForGame(game)}
-        <button class="btn btn-sm" data-toggle="${num}">${open?"Hide":"Details"}</button>
+        <button class="btn btn-sm" data-toggle="${num}" aria-expanded="${open}" aria-controls="gameBody-${num}">${open?"Hide":"Details"}</button>
       </div>
     </div>
     <div id="gameBody-${num}">${open?renderGameBody(num):""}</div>
@@ -1054,13 +1190,15 @@ function renderGameBody(num){
   let gapHtml="";
   if(avail.shortfall){
     const gaps = fillInGapSuggestions(num);
-    gapHtml = `<div class="pill pill-danger" style="display:block;">Minimum ${avail.minFillIns} fill-in(s) needed, ${avail.recommendedFillIns} recommended for bench rotation.
+    gapHtml = `<div class="alert alert-danger">Minimum ${avail.minFillIns} fill-in(s) needed, ${avail.recommendedFillIns} recommended for bench rotation.
       ${gaps.length?` Coverage gaps: ${gaps.join(", ")}.`:""}</div>`;
   }
+  const errorHtml = game.error ? `<div class="alert alert-danger" style="margin-top:12px;">${esc(game.error)}</div>` : "";
 
   return `
     <div style="margin-top:12px;">
-      <div class="row">
+      ${errorHtml}
+      <div class="detail-row">
         <div>
           <div class="section-label">Rostered off</div>
           <div class="hint">${esc(rosteredOffNames)}</div>
@@ -1071,9 +1209,9 @@ function renderGameBody(num){
           <div class="hint">${esc(unavailNames)}</div>
         </div>
         <div>
-          <div class="section-label">Roster-off count override</div>
+          <label class="section-label" for="rosterOffOverride-${num}">Roster-off count override</label>
           <input type="number" class="mono" id="rosterOffOverride-${num}" placeholder="auto" min="0"
-            value="${Number.isFinite(game.rosterOffOverride)?game.rosterOffOverride:''}" ${game.isPlayed?"disabled":""} style="max-width:100px;">
+            value="${Number.isFinite(game.rosterOffOverride)?game.rosterOffOverride:''}" ${game.isPlayed?"disabled":""}>
           <div class="hint" style="margin-top:4px;">How many players to roster off this game (auto-derived from desired bench size unless set here).</div>
         </div>
       </div>
@@ -1090,7 +1228,7 @@ function renderGameBody(num){
       <div class="section-label" style="margin-top:14px;">Rotation grid</div>
       ${renderRotationGrid(num)}
       <div class="legend">
-        <span><span class="swatch" style="background:var(--surface-2);"></span> On court</span>
+        <span><span class="swatch" style="background:var(--surface-3);border:1px solid var(--border-soft);"></span> On court</span>
         <span><span class="swatch" style="background:var(--bg-alt);border:1px solid var(--border);"></span> Bench</span>
         <span><span class="swatch" style="outline:2px solid var(--danger);"></span> Off-preference</span>
         <span><span class="swatch" style="outline:2px dashed var(--warn);"></span> Fill-in</span>
@@ -1098,7 +1236,7 @@ function renderGameBody(num){
       </div>
 
       <div class="btn-row" style="margin-top:14px;">
-        <button class="btn btn-sm ${game.isPlayed?'btn-danger':''}" data-toggleplayed="${num}">
+        <button class="btn btn-sm" data-toggleplayed="${num}">
           ${game.isPlayed?"Unlock (mark not played)":"Mark game as played (lock)"}
         </button>
       </div>
@@ -1109,8 +1247,10 @@ function renderGameBody(num){
 function renderRotationGrid(num){
   const game = getGame(num);
   if(!game.schedule){
-    return `<div class="empty-state" style="padding:20px;"><div class="cta">Not generated yet. Run Generate season above.</div></div>`;
+    const msg = game.error ? "Couldn't be scheduled — resolve the issue above." : "Not generated yet. Run Generate season above.";
+    return `<div class="empty-state" style="padding:20px;"><div class="cta">${esc(msg)}</div></div>`;
   }
+  const editable = !game.isPlayed;
   const rows = game.schedule.quarters.map((q,qi)=>{
     const cells = POSITIONS.map(pos=>{
       const pid = q.onCourt[pos];
@@ -1119,20 +1259,22 @@ function renderRotationGrid(num){
       const lockKey = qi+"-"+pos;
       const isLocked = game.lockedSlots && game.lockedSlots[lockKey];
       const name = pid ? (byId(STATE.players,pid)||byId(STATE.fillIns,pid)||{}).name : "—";
-      const classes = ["grid-cell","cell-oncourt","cell-clickable"];
+      const classes = ["grid-cell","cell-oncourt"];
+      classes.push(editable ? "cell-clickable" : "cell-readonly");
       if(isFillIn) classes.push("cell-fillin");
       if(isOffPref) classes.push("cell-offpref");
       if(isLocked) classes.push("cell-locked");
-      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"><div class="pname">${esc(name)}</div></div></td>`;
+      const tabAttr = editable ? ' tabindex="0" role="button"' : "";
+      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"${tabAttr}><div class="pname" title="${esc(name)}">${esc(name)}</div></div></td>`;
     }).join("");
     const benchNames = (q.bench||[]).map(pid=>{
       const isFillIn = STATE.fillIns.some(f=>f.id===pid);
       const p = byId(STATE.players,pid)||byId(STATE.fillIns,pid);
       return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:'?')}</span>`;
     }).join("") || '<span class="hint">—</span>';
-    return `<tr><td class="mono">Q${qi+1}</td>${cells}<td>${benchNames}</td></tr>`;
+    return `<tr><td class="mono">Q${qi+1}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
   }).join("");
-  return `<div class="table-scroll"><table>
+  return `<div class="table-scroll" style="--fade-bg:var(--surface-2);"><table>
     <thead><tr><th></th>${POSITIONS.map(p=>`<th><span class="pos-badge pos-${p}">${p}</span></th>`).join("")}<th>Bench</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
@@ -1155,14 +1297,14 @@ function wireGameCard(el, num){
     game.rosterOffOverride = v===""?null:clamp(parseInt(v,10),0,STATE.players.length);
     game.rosteredOffIds = null; // clear manual selection lock when override count changes
     game.rosterOffLockIds = null;
-    saveState(); toast("Roster-off override set. Regenerate to apply.");
+    saveState(); dirtySinceGeneration = true; toast("Roster-off override set. Regenerate to apply.");
   };
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
   const strictPairing = card.querySelector(`#strictPairing-${num}`);
   if(strictPairing) strictPairing.onchange=e=>{
     getGame(num).strictSpecialistPairing = e.target.checked;
-    saveState(); toast("Regenerate to apply.");
+    saveState(); dirtySinceGeneration = true; toast("Regenerate to apply.");
   };
   const assignFillin = card.querySelector(`[data-assignfillin="${num}"]`);
   if(assignFillin) assignFillin.onclick=()=>openAssignFillInDialog(num);
@@ -1178,12 +1320,30 @@ function wireGameCard(el, num){
     saveState(); toast(game.isPlayed?`Game ${num} locked as played.`:`Game ${num} unlocked.`);
     renderGamesList(el);
   };
-  card.querySelectorAll("[data-slot]").forEach(cellEl=>{
-    cellEl.onclick=()=>{
+  card.querySelectorAll("[data-slot].cell-clickable").forEach(cellEl=>{
+    const open = ()=>{
       const [g,qi,pos] = cellEl.dataset.slot.split("|");
       openSlotEditDialog(Number(g), Number(qi), pos);
     };
+    cellEl.onclick = open;
+    cellEl.addEventListener("keydown", e=>{
+      if(e.key==="Enter" || e.key===" "){ e.preventDefault(); open(); }
+    });
   });
+  wireScrollFade(card.querySelector(".table-scroll"));
+}
+
+/* The count the auto-deriver would pick right now, ignoring any existing
+   manual lock — used only to tell the coach what they're aiming for in
+   openRosterOffDialog. Mirrors planGameAvailability's own default-branch
+   arithmetic (it can't reuse that function's rosterOffCount directly, since
+   that field is left at 0 once a manual lock exists). */
+function expectedRosterOffCount(num){
+  const game = getGame(num);
+  const avail = planGameAvailability(num);
+  if(avail.shortfall) return 0;
+  if(Number.isFinite(game.rosterOffOverride)) return clamp(game.rosterOffOverride,0,Math.max(0,avail.availableRegularIds.length-7));
+  return Math.max(0, avail.availableRegularIds.length-(7+Number(STATE.season.desiredBenchSize||0)));
 }
 
 function openRosterOffDialog(num){
@@ -1191,12 +1351,14 @@ function openRosterOffDialog(num){
   const avail = planGameAvailability(num);
   const availIds = avail.availableRegularIds;
   const current = new Set(game.rosterOffLockIds || game.rosteredOffIds || []);
+  const expected = expectedRosterOffCount(num);
   openModal(`
     <h3>Roster off — Game ${num}</h3>
     <p class="modal-sub">Manually choose who's rostered off. Leave unset to let the engine auto-select for fairness.</p>
-    <div id="offList" style="max-height:280px;overflow-y:auto;"></div>
+    <p class="hint" id="offCountLine" style="margin-bottom:8px;"></p>
+    <div id="offList" class="scroll-list"></div>
     <div class="modal-actions">
-      <button class="btn" data-act="clear">Clear (auto)</button>
+      <button class="btn" data-act="clear" style="margin-right:auto;">Clear (auto)</button>
       <button class="btn" data-act="cancel">Cancel</button>
       <button class="btn btn-primary" data-act="save">Save</button>
     </div>
@@ -1204,6 +1366,14 @@ function openRosterOffDialog(num){
     modal.querySelector("#offList").innerHTML = STATE.players.filter(p=>availIds.includes(p.id)).map(p=>`
       <label class="checkbox-row"><input type="checkbox" value="${p.id}" ${current.has(p.id)?"checked":""}>
         <span class="cb-label">${esc(p.name)}</span></label>`).join("");
+    function updateCountLine(){
+      const n = modal.querySelectorAll("#offList input:checked").length;
+      const line = modal.querySelector("#offCountLine");
+      line.textContent = `Selected ${n} of ${expected} expected off this game.`;
+      line.style.color = n===expected ? "" : "var(--warn)";
+    }
+    updateCountLine();
+    modal.querySelectorAll("#offList input").forEach(cb=>cb.addEventListener("change", updateCountLine));
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="clear"]').onclick=()=>{
       game.rosterOffLockIds=null;
@@ -1248,12 +1418,13 @@ function openAssignFillInDialog(num){
       <label class="checkbox-row"><input type="checkbox" value="${f.id}" ${assigned.has(f.id)?"checked":""}>
         <span class="cb-label">${esc(f.name)}</span>
         <span class="cb-desc">${f.prefs.map(esc).join(", ")||"no preferences set"}</span></label>`).join("")
-      : `<p class="hint">No saved fill-ins yet — add one below.</p>`;
+      : `<div class="empty-state"><div class="glyph">&#128100;</div><div>No saved fill-ins yet.</div><div class="cta">Add one below.</div></div>`;
   }
 
   const modal = openModal(`
     <h3>Assign fill-in — Game ${num}</h3>
-    <div id="finList" style="max-height:280px;overflow-y:auto;"></div>
+    <p class="modal-sub">Choose which saved fill-ins are available for this game.</p>
+    <div id="finList" class="scroll-list"></div>
     <div class="btn-row" style="margin-top:10px;">
       <button class="btn btn-sm" id="newFillinBtn">+ New fill-in</button>
     </div>
@@ -1482,13 +1653,13 @@ function renderFillIns(root){
       const usedIn = gameNums().filter(n=>(getGame(n).fillInIds||[]).includes(f.id));
       const oneOff = f.saved===false;
       return `<div class="list-row">
-        <div style="flex:1;min-width:0;">
+        <div class="list-row-main">
           <div class="player-name">${esc(f.name)}</div>
           <div class="player-meta">${f.prefs.map(pos=>`<span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>`).join(" ")||'<span class="hint">no preferences set</span>'}
-            ${oneOff?`<span class="pill pill-warn" style="margin-left:6px;">One-off${usedIn.length?` — game ${usedIn.join(", ")}`:""}</span>`
-              :usedIn.length?`<span class="pill pill-accent" style="margin-left:6px;">Used in ${usedIn.length} game(s)</span>`:""}</div>
+            ${oneOff?`<span class="pill pill-warn pill-inline">One-off${usedIn.length?` — game ${usedIn.join(", ")}`:""}</span>`
+              :usedIn.length?`<span class="pill pill-accent pill-inline">Used in ${usedIn.length} game(s)</span>`:""}</div>
         </div>
-        <div class="btn-row" style="margin:0;">
+        <div class="btn-row btn-row-tight">
           <button class="btn btn-sm" data-editfi="${f.id}">Edit</button>
           <button class="btn btn-sm btn-danger" data-delfi="${f.id}">Remove</button>
         </div>
@@ -1496,11 +1667,12 @@ function renderFillIns(root){
     }).join("");
     listEl.querySelectorAll("[data-editfi]").forEach(b=>b.onclick=()=>openFillInDialog(b.dataset.editfi));
     listEl.querySelectorAll("[data-delfi]").forEach(b=>b.onclick=()=>{
+      const f = byId(STATE.fillIns, b.dataset.delfi);
       confirmDialog("Remove fill-in", "Remove this fill-in and unassign them from any games?", ()=>{
         STATE.fillIns = STATE.fillIns.filter(f=>f.id!==b.dataset.delfi);
         gameNums().forEach(n=>{ const g=getGame(n); g.fillInIds=(g.fillInIds||[]).filter(id=>id!==b.dataset.delfi); });
         saveState(); renderMain();
-      });
+      }, {confirmLabel:`Remove ${f?f.name:"fill-in"}`, danger:true});
     });
   }
   document.getElementById("addFillinBtn").onclick=()=>openFillInDialog(null);
@@ -1552,8 +1724,9 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
     // Cancel: discard draft entirely, state untouched.
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
+      clearFieldErrors(modal);
       const name = modal.querySelector("#fiName").value.trim();
-      if(!name){ toast("Enter a name first."); return; }
+      if(!name){ showFieldError(modal, "#fiName", "Enter a name first."); return; }
       draft.name = name;
       const savedCheckbox = modal.querySelector("#fiSaved");
       if(savedCheckbox) draft.saved = savedCheckbox.checked;
@@ -1582,11 +1755,13 @@ function renderReports(root){
   const missedWarning = computeMissedGamesWarningForReports();
   const achievabilityNotes = computeRosterOffAchievabilityNotesForReports();
 
+  const spread = arr => arr.length ? Math.max(...arr)-Math.min(...arr) : 0;
+
   root.innerHTML = `
     ${missedWarning? `
     <div class="card">
       <div class="card-head"><div><h2>Missed-games spread</h2><p>Informational — never overrides a generation decision on its own.</p></div></div>
-      <div class="pill pill-warn" style="display:block;">
+      <div class="alert alert-warn">
         Missed-games spread is ${missedWarning.spread} (most: ${esc(missedWarning.mostMissed.join(", "))} at ${missedWarning.max};
         least: ${esc(missedWarning.leastMissed.join(", "))} at ${missedWarning.min}). ${esc(missedWarning.suggestion)}
       </div>
@@ -1594,18 +1769,26 @@ function renderReports(root){
     ${achievabilityNotes.length? `
     <div class="card">
       <div class="card-head"><div><h2>Roster-off evenness: structural limits</h2><p>Based on how thin certain positions are on this roster — not a settings effect.</p></div></div>
-      ${achievabilityNotes.map(n=>`<div class="pill pill-warn" style="display:block;margin-bottom:6px;">${esc(n.message)}</div>`).join("")}
+      ${achievabilityNotes.map(n=>`<div class="alert alert-warn">${esc(n.message)}</div>`).join("")}
     </div>` : ""}
     <div class="card">
       <div class="card-head"><div><h2>Player summary</h2><p>On-court / bench / missed games and position breakdown, including off-preference quarters.</p></div></div>
-      <div class="table-scroll"><table>
+      ${summaries.length? `<div class="stat-grid" style="margin-bottom:14px;">
+        <div class="stat-box"><div class="num">${spread(summaries.map(s=>s.onCourt))}</div><div class="lbl">On-court Q spread</div></div>
+        <div class="stat-box"><div class="num">${spread(summaries.map(s=>s.bench))}</div><div class="lbl">Bench Q spread</div></div>
+        <div class="stat-box"><div class="num">${spread(summaries.map(s=>s.missed))}</div><div class="lbl">Missed-games spread</div></div>
+      </div>` : ""}
+      <div class="table-scroll sticky-first" style="--fade-bg:var(--surface);"><table>
         <thead><tr><th>Player</th><th>Games</th><th>On-court Q</th><th>Bench Q</th><th>Missed</th>
-          ${POSITIONS.map(p=>`<th>${p}</th>`).join("")}<th>Off-pref Q</th></tr></thead>
+          ${POSITIONS.map(p=>`<th><span class="pos-badge pos-${p}">${p}</span></th>`).join("")}<th>Off-pref Q</th></tr></thead>
         <tbody>
         ${summaries.length? summaries.map(s=>`
           <tr><td><strong>${esc(s.name)}</strong></td><td class="mono">${s.gamesPlayedIn}</td>
             <td class="mono">${s.onCourt}</td><td class="mono">${s.bench}</td><td class="mono">${s.missed}</td>
-            ${POSITIONS.map(pos=>`<td class="mono">${s.positions[pos]?`<span class="pos-badge pos-${pos}">${s.positions[pos]}</span>`:0}${s.offPrefPositions[pos]?` <span class="pill pill-danger" style="padding:1px 6px;">${s.offPrefPositions[pos]} off-pref</span>`:""}</td>`).join("")}
+            ${POSITIONS.map(pos=>{
+              const n = s.positions[pos]||0, off = s.offPrefPositions[pos]||0;
+              return `<td class="mono">${n}${off?` <span class="offpref-dot" title="${off} off-preference quarter(s) at ${pos}">&bull;${off}</span>`:""}</td>`;
+            }).join("")}
             <td class="mono">${s.offPrefTotal}</td></tr>
         `).join("") : `<tr><td colspan="13" class="hint">No players yet.</td></tr>`}
         </tbody>
@@ -1619,7 +1802,7 @@ function renderReports(root){
         <div class="stat-box"><div class="num">${offPrefRate.totalSlots}</div><div class="lbl">total on-court slots</div></div>
         <div class="stat-box"><div class="num">${offPrefRate.rate.toFixed(1)}%</div><div class="lbl">season rate</div></div>
       </div>
-      <div class="table-scroll"><table>
+      <div class="table-scroll" style="--fade-bg:var(--surface);"><table>
         <thead><tr><th>Game</th><th>Qtr</th><th>Player</th><th>Position</th><th>Why (specialists unavailable/benched)</th></tr></thead>
         <tbody>
         ${offPref.length? offPref.map(o=>`
@@ -1643,6 +1826,7 @@ function renderReports(root){
       }).join("") : `<p class="hint">No short-staffed games currently.</p>`}
     </div>
   `;
+  root.querySelectorAll(".table-scroll").forEach(wireScrollFade);
 }
 
 /* ============================================================
@@ -1652,6 +1836,14 @@ function renderReports(root){
    pair of end labels describing what each direction actually does. Used for
    every priority/weight slider on this tab so they're visually and
    structurally consistent. */
+/* Paints the filled portion of a range input via the --range-pct custom
+   property the CSS gradient reads (see styles.css) — kept as a plain DOM
+   helper, not something the browser does natively for type=range. */
+function syncRangeFill(input){
+  const pct = (Number(input.value)-Number(input.min)) / (Number(input.max)-Number(input.min)) * 100;
+  input.style.setProperty("--range-pct", pct+"%");
+}
+
 function labelledSliderHtml({id, dataWeight, min, max, step, value, valueId, leftLabel, rightLabel}){
   const idAttr = id ? ` id="${id}"` : "";
   const dataAttr = dataWeight ? ` data-weight="${dataWeight}"` : "";
@@ -1680,10 +1872,11 @@ function renderSettings(root){
     }
   };
   root.innerHTML = `
+    ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance from the Schedule tab.</div>` : ""}
     <div class="card">
       <div class="card-head"><div><h2>Preference vs. fairness</h2><p>How strongly the engine favors a player's stated preference rank over even rotation. Defaults to strongly favouring preference — placing players in their preferred positions, every game and across the season, is the dominant objective.</p></div></div>
       <div class="field">
-        <label>Priority slider — fairness &#8596; strict preference</label>
+        <label for="prefSlider">Priority slider — fairness &#8596; strict preference</label>
         ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
           leftLabel:"Playing-time fairness & variety", rightLabel:"Strict preference honouring"})}
         <p class="hint">Higher values never increase off-preference fills for the same data — at maximum, off-preference is used only where truly unavoidable. Lower it to weight playing-time fairness and position variety more heavily against preference.</p>
@@ -1703,7 +1896,7 @@ function renderSettings(root){
     <div class="card">
       <div class="card-head"><div><h2>Roster-off fairness vs. position coverage</h2><p>How strongly the season-wide roster-off search favours perfectly even missed-games counts versus protecting thin positions from losing coverage.</p></div></div>
       <div class="field">
-        <label>Priority slider — roster-off fairness &#8596; position coverage</label>
+        <label for="rosterOffSlider">Priority slider — roster-off fairness &#8596; position coverage</label>
         ${labelledSliderHtml({id:"rosterOffSlider", min:0, max:10, step:1, value:s.rosterOffWeight, valueId:"rosterOffSliderVal",
           leftLabel:"Roster-off fairness", rightLabel:"Position coverage"})}
         <p class="hint">With a roster that has good depth at every position, these two goals rarely conflict and this slider will have little visible effect — it mainly matters for positions only a few players prefer.</p>
@@ -1713,22 +1906,24 @@ function renderSettings(root){
       <div class="card-head"><div><h2>Fairness priority order</h2><p>Relative weight — higher number matters more when trade-offs arise.</p></div></div>
       ${["bench","positionPurity"].map(k=>{
         const l = weightLabels[k];
-        return `<div class="field"><label>${l.title}</label>
-          ${labelledSliderHtml({dataWeight:k, min:1, max:10, step:1, value:s.fairnessWeights[k], leftLabel:l.left, rightLabel:l.right})}
+        const sliderId = "weight_"+k;
+        return `<div class="field"><label for="${sliderId}">${l.title}</label>
+          ${labelledSliderHtml({id:sliderId, dataWeight:k, min:1, max:10, step:1, value:s.fairnessWeights[k], leftLabel:l.left, rightLabel:l.right})}
         </div>`;
       }).join("")}
       <p class="hint">These weights bias the preference/balance trade-off and bench-rotation ordering; regenerate after changing them.</p>
     </div>
   `;
-  document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; };
-  document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
-  document.getElementById("rosterOffSlider").oninput=e=>{ document.getElementById("rosterOffSliderVal").textContent=e.target.value; };
-  document.getElementById("rosterOffSlider").onchange=e=>{ s.rosterOffWeight=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
-  document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; saveState(); toast("Regenerate to apply."); };
-  document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; saveState(); toast("Regenerate to apply."); };
+  root.querySelectorAll('input[type=range]').forEach(syncRangeFill);
+  document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; syncRangeFill(e.target); };
+  document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
+  document.getElementById("rosterOffSlider").oninput=e=>{ document.getElementById("rosterOffSliderVal").textContent=e.target.value; syncRangeFill(e.target); };
+  document.getElementById("rosterOffSlider").onchange=e=>{ s.rosterOffWeight=Number(e.target.value); saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
+  document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
+  document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
   root.querySelectorAll("[data-weight]").forEach(inp=>{
-    inp.oninput=e=>{ e.target.nextElementSibling.textContent=e.target.value; };
-    inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); saveState(); toast("Regenerate to apply."); };
+    inp.oninput=e=>{ e.target.nextElementSibling.textContent=e.target.value; syncRangeFill(e.target); };
+    inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
   });
 }
 
@@ -1767,7 +1962,7 @@ function renderData(root){
   document.getElementById("resetBtn").onclick=()=>{
     confirmDialog("Clear all data", "This permanently deletes every player, game, and setting stored in this browser. This cannot be undone.", ()=>{
       STATE = defaultState(); saveState(); render(); toast("All data cleared.");
-    });
+    }, {confirmLabel:"Clear all data", danger:true});
   };
 }
 
