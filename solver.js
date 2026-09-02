@@ -1,10 +1,9 @@
 /* ============================================================
-   Roster solver — season-wide roster-off search (Phase 1),
-   exact per-quarter Hungarian position assignment (Phase 2a),
-   and within-game local-search refinement (Phase 2b).
-   Pure: no DOM, no localStorage, no reference to app-level STATE.
-   Every function takes explicit plain-data input and returns
-   plain data. Depends on hungarian.js (must load first). 
+   Roster solver: season-wide roster-off search (Phase 1),
+   per-quarter Hungarian position assignment (Phase 2a), and
+   within-game local-search refinement (Phase 2b). Pure —
+   plain data in, plain data out, no DOM/localStorage/STATE.
+   Depends on hungarian.js (must load first).
    ============================================================ */
 (function(root){
 "use strict";
@@ -12,26 +11,25 @@
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 
 /* ---------------- Tunable constants (retune here) ---------------- */
-const PHASE1_FAIRNESS_WEIGHT = 1;       // secondary objective weight
-const PHASE1_COVERAGE_WEIGHT = 4;       // dominant — preference-enablement matters more
+const PHASE1_FAIRNESS_WEIGHT = 1;
+const PHASE1_COVERAGE_WEIGHT = 4;       // dominant over fairness — preference-enablement matters more
 const PHASE1_TIME_BUDGET_MS = 3000;
 const PHASE1_MAX_PASSES = 50;
-const COVERAGE_GAP_ZERO_PENALTY = 100;  // a position with 0 remaining covering players
-const COVERAGE_GAP_ONE_PENALTY = 30;    // a position with exactly 1 remaining covering player
-const COVERAGE_OVERLAP_WEIGHT = 10;     // two players rostered off together who share a preferred position
-const MISSED_GAMES_WARNING_SPREAD = 2;  // reports-tab warning threshold (max-min missed games)
-const PHASE2B_TIME_BUDGET_MS = 500;     // per-game refinement budget
-const BIG_M = 1e9;                      // disqualified-cell sentinel (finite, keeps Hungarian arithmetic sane)
-const THIN_POSITION_PREFERRER_THRESHOLD = 1; // positions with this many (or fewer) preferrers can't be rested without risking zero coverage
-const BENCH_SCALE_BOOST = 10;           // compensates bench cost for the (1-sliderNorm) attenuation below, so it keeps its old (pre-normalization) magnitude at the default slider (9)
-const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed seed -> deterministic, reproducible restarts (no Math.random)
-const STRICT_SPECIALIST_COVERAGE_BOOST = 3; // §5.5 per-game toggle: how much more heavily THIS game's coverage penalty counts, on top of the season-wide weight, when its own strict_specialist_pairing flag is on
-const STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT = PHASE1_COVERAGE_WEIGHT; // floor, not just a multiplier — a multiplicative boost alone does nothing when the season-wide slider is at 0 (fully coverage-blind), and the per-game toggle must still work at that extreme
-const PHASE1_STAGNANT_ATTEMPTS_LIMIT = 25; // stop restarting after this many non-improving attempts in a row
+const COVERAGE_GAP_ZERO_PENALTY = 100;  // zero players left covering the position
+const COVERAGE_GAP_ONE_PENALTY = 30;    // exactly one player left covering it
+const COVERAGE_OVERLAP_WEIGHT = 10;     // unused — superseded by the rank-weighted penalty in gameCoveragePenalty()
+const MISSED_GAMES_WARNING_SPREAD = 2;  // Reports-tab warning threshold (max-min missed games)
+const PHASE2B_TIME_BUDGET_MS = 500;
+const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
+const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers, resting anyone risks zero coverage
+const BENCH_SCALE_BOOST = 10;           // offsets the (1-sliderNorm) attenuation on bench cost, below
+const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed -> deterministic, reproducible restarts (no Math.random)
+const STRICT_SPECIALIST_COVERAGE_BOOST = 3; // §5.5: multiplies a game's own coverage weight when its strictSpecialistPairing flag is on
+const STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT = PHASE1_COVERAGE_WEIGHT; // floor for the boost above — a pure multiplier does nothing when the season-wide weight is 0
+const PHASE1_STAGNANT_ATTEMPTS_LIMIT = 25; // stop restarting after this many non-improving attempts
 
-/* Deterministic PRNG (mulberry32) — used only to reorder games between restart
-   attempts, never to decide who's rostered off. Fixed seed keeps every run
-   (and every test) reproducible. */
+/* Deterministic PRNG — reorders games between restart attempts only, never
+   decides who's rostered off. Fixed seed keeps runs (and tests) reproducible. */
 function mulberry32(seed){
   let a = seed;
   return function(){
@@ -50,11 +48,10 @@ function shuffled(arr, rng){
   return a;
 }
 
-/* Coerce an untrusted setting (localStorage, CSV import, hand-edited state) to a
-   number inside [lo,hi]. `Math.max(0,Math.min(10,NaN))` is NaN, which used to
-   flow straight into the cost model and poison every comparison downstream —
-   NaN < x is false, so the search silently selected nothing. Anything
-   non-finite falls back to `fallback` instead. */
+/* Coerces an untrusted setting (localStorage, CSV import) to a number inside
+   [lo,hi]. Non-finite input falls back to `fallback` rather than propagating
+   NaN — every comparison against NaN is false, so an uncaught NaN silently
+   disables whatever downstream logic depends on it. */
 function clampSetting(v, lo, hi, fallback){
   const n = Number(v);
   if(!Number.isFinite(n)) return fallback;
@@ -67,19 +64,12 @@ function variance(nums){
   return nums.reduce((a,b)=>a+(b-mean)*(b-mean),0)/nums.length;
 }
 
-/* Rank-weighted per-position coverage-gap penalty for one game's final
-   roster-off outcome: for each position, look at who's actually left
-   covering it once every rostered-off player for this game has been
-   removed, and penalize heavily at 0 remaining, moderately at 1 remaining.
-   This alone already captures "did rostering these specific people off
-   together strip a position's depth" correctly, however many of them
-   share that position — no separate pairwise term is needed on top (an
-   earlier version added one, but it fired on *any* shared preference
-   regardless of remaining depth elsewhere, which over-penalized rosters
-   with broadly overlapping preference lists — see COVERAGE_OVERLAP_WEIGHT,
-   now unused but left as a named constant in case a rank-weighted
-   tie-break signal is wanted again later). */
-function gameCoveragePenalty(squadAfterOff, offPlayers){
+/* Per-position coverage-gap penalty for one roster-off outcome: penalizes
+   heavily at 0 remaining covering players, moderately at 1. Rank-weighted
+   and based only on the post-removal squad, which is what makes it correct
+   regardless of how many rostered-off players share a position — no
+   separate pairwise-overlap term needed. */
+function gameCoveragePenalty(squadAfterOff){
   let penalty = 0;
   POSITIONS.forEach(pos=>{
     const coverers = squadAfterOff.filter(p=>p.prefs.includes(pos));
@@ -92,20 +82,18 @@ function gameCoveragePenalty(squadAfterOff, offPlayers){
   return penalty;
 }
 
-/* True if, after removing `offPlayers` from `pool`, some position would be left
-   with zero in-preference covering players. Used to enforce a *hard* rule when
-   "allow off-preference" is off — a zero-coverage position isn't just
-   undesirable then, it's disallowed (Phase 2 will hard-error on it), so Phase 1
-   must never hand it a configuration like that. */
+/* True if removing `offPlayers` from `pool` leaves any position with zero
+   in-preference coverage. The hard version of the penalty above — when
+   "allow off-preference" is off, Phase 1 must never produce this, since
+   Phase 2 will hard-error on it. */
 function hasZeroCoverage(squadAfter){
   return POSITIONS.some(pos=>!squadAfter.some(p=>p.prefs.includes(pos)));
 }
 
-/* Map the single 0-10 "roster-off fairness <-> position coverage" slider onto
-   Phase 1's {fairness, coverage} weights. Fairness weight is held constant;
-   coverage weight scales from 0 (slider=0, coverage-blind — pure fairness) up
-   to PHASE1_COVERAGE_WEIGHT (slider=10, reproducing the original hardcoded
-   default ratio, which is what shipped previously and stays the default). */
+/* Maps the 0-10 "roster-off fairness <-> position coverage" slider onto
+   Phase 1's {fairness, coverage} weights. Fairness is held constant; coverage
+   scales from 0 (slider=0, pure fairness) to PHASE1_COVERAGE_WEIGHT (slider=10,
+   the default). */
 function deriveRosterOffWeights(rosterOffWeight){
   const clamped = clampSetting(rosterOffWeight, 0, 10, 10);
   return {
@@ -154,12 +142,10 @@ function solveSeasonRosterOff(input){
     decidableGames.forEach(g=>{ (current[g.num]||[]).forEach(id=>{ if(missed[id]!=null) missed[id]++; }); });
     return missed;
   }
-  /* §5.5: a game with its own strict_specialist_pairing flag on counts its
-     OWN coverage penalty more heavily than the season-wide coverageWeight
-     alone would — a small, bounded, per-game deviation from strict fairness
-     ordering, used to protect that one game's position coverage without
-     changing the season-wide balance for every other game (which keeps
-     using the plain coverageWeight, untouched). */
+  /* §5.5: a game with strictSpecialistPairing on weighs its own coverage
+     penalty more heavily than coverageWeight alone would — a bounded,
+     per-game deviation that doesn't touch the weight used for every other
+     game. */
   function effectiveCoverageWeight(g){
     if(!g.strictSpecialistPairing) return coverageWeight;
     return Math.max(coverageWeight*STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT);
@@ -173,8 +159,7 @@ function solveSeasonRosterOff(input){
       const offSet = new Set(offIds);
       const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
       const squadAfter = pool.filter(p=>!offSet.has(p.id));
-      const offPlayers = pool.filter(p=>offSet.has(p.id));
-      coverageTerm += effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter, offPlayers);
+      coverageTerm += effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
     });
     return fairnessTerm + coverageTerm;
   }
@@ -194,8 +179,7 @@ function solveSeasonRosterOff(input){
         remaining.forEach(cand=>{
           const missed = runningMissed[cand.id]||0;
           const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
-          const off = picked.concat([cand]);
-          const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter, off);
+          const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
           if(score<bestSafeScore){ bestSafeScore=score; bestSafe=cand; }
           const disqualified = !allowOffPreference && hasZeroCoverage(squadAfter);
           if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
@@ -217,8 +201,7 @@ function solveSeasonRosterOff(input){
     return current;
   }
 
-  /* ---- local-search refinement: single-game swaps + paired cross-game
-     exchanges, until no move improves or the shared deadline is hit ---- */
+  /* ---- local search: three move types (below), until nothing improves or the deadline hits ---- */
   function refine(current, gameOrder){
     let bestObjective = totalObjectiveOf(current);
     let passes = 0;
@@ -258,15 +241,11 @@ function solveSeasonRosterOff(input){
         }
       }
 
-      // Move 2: paired cross-game exchange — swap *which* of two games player A
-      // is rested in with player B's, when A is off in g1/on in g2 and B is off
-      // in g2/on in g1. This leaves both A's and B's total missed-game count
-      // unchanged (each is still off in exactly one of the two games), so it's
-      // a pure coverage-penalty move — and it's what lets the search escape a
-      // local optimum where fairness is already perfectly even but the two
-      // single-game swaps that would get there each individually look like a
-      // fairness regression on their own (and get rejected), even though doing
-      // both together is fairness-neutral.
+      // Move 2: paired cross-game exchange — A (off in g1, on in g2) trades
+      // rest-games with B (off in g2, on in g1). Both totals stay unchanged,
+      // so this is a pure coverage-penalty move: it escapes local optima
+      // where the two single-game swaps that would get there each look like
+      // a fairness regression alone, even though together they're neutral.
       for(let gi=0; gi<gameOrder.length; gi++){
         for(let gj=gi+1; gj<gameOrder.length; gj++){
           if(Date.now()>deadline){ timedOut=true; break outer; }
@@ -305,15 +284,11 @@ function solveSeasonRosterOff(input){
         }
       }
 
-      // Move 3: two-hop chained exchange, targeting the current most- and
-      // least-missed players (H, L). H hands off their off-slot in gameA to
-      // an intermediary X (who's on-court there); X's *own* off-slot in some
-      // other gameB then gets handed to L. X's total is unchanged (they lose
-      // one off-game and gain another), so the fairness gain is isolated to
-      // H (-1) and L (+1) only. This is what closes gaps neither a single-
-      // game swap nor a same-pair cross-game exchange can reach alone, since
-      // each half looks like a regression in isolation but chaining through
-      // X cancels X's own count exactly.
+      // Move 3: chained exchange through an intermediary X, targeting the
+      // current most/least-missed players (H, L). H's off-slot in gameA goes
+      // to X; X's own off-slot in gameB goes to L. X's total is unchanged, so
+      // the fairness gain is isolated to H (-1) / L (+1) — closes gaps
+      // Moves 1-2 can't reach alone.
       if(Date.now()>deadline){ timedOut=true; break outer; }
       {
         const missedNow = totalMissedMapOf(current);
@@ -369,16 +344,12 @@ function solveSeasonRosterOff(input){
     return { current, bestObjective, passes, timedOut };
   }
 
-  /* ---- attempt 0: original deterministic game order (exact prior behavior —
-     in particular, a non-positive timeBudgetMs still yields a pure, deterministic
-     seed with zero refinement passes, same as before this restart mechanism
-     existed). Further attempts reorder games via a fixed-seed PRNG (never
-     Math.random, so results stay reproducible) purely to give the greedy seed
-     a different construction order — single-swap and paired-exchange local
-     search alone can get stuck in a coverage-penalty local optimum that a
-     differently-ordered seed sidesteps entirely (this is what the reported
-     11-player/11-game/2-off-per-game case needed). Stops early once a
-     near-perfect objective is reached or restarts stop improving. ---- */
+  /* Attempt 0 uses the deterministic game order (so a non-positive
+     timeBudgetMs still yields a pure seed with zero refinement passes).
+     Further attempts reorder games via the fixed-seed PRNG to give the
+     greedy seed a different construction order — the local search alone can
+     get stuck in a coverage-penalty local optimum a differently-ordered seed
+     sidesteps. Stops early once near-optimal or restarts stop improving. */
   let best = refine(buildSeed(decidableGames), decidableGames);
   let attempts = 1;
   const rng = mulberry32(PHASE1_RESTART_SEED);
@@ -403,11 +374,9 @@ function solveSeasonRosterOff(input){
 }
 
 /* ============================================================
-   Roster-off achievability: positions so thin (few preferrers) that
-   perfectly even missed-games counts can be structurally out of reach.
-   Season/settings-independent — purely about roster composition, since
-   this is a real constraint whenever "allow off-preference" is off (and,
-   even when it's on, a strong practical pull in the same direction).
+   Roster-off achievability: positions so thin (few preferrers) that even
+   missed-games counts can be structurally out of reach. Settings-independent
+   — purely a function of roster composition.
    ============================================================ */
 function computeRosterOffAchievabilityNotes(players){
   const notes = [];
@@ -430,32 +399,23 @@ function computeRosterOffAchievabilityNotes(players){
    PHASE 2a — exact per-quarter Hungarian position assignment
    ============================================================ */
 
-/* NOTE on cost design: `weights.bench` is a single unified "playing-time
-   evenness" dial. It drives both (a) the bench cell's cost — lower cost
-   (more likely picked) for players with less season/this-game bench time
-   so far, which is how bench rotation emerges from the same optimization
-   instead of a separate pass — and (b) a lightweight tie-break among
-   position cells for players tied on preference rank, biased toward
-   whoever has had less on-court time this season. `weights.positionPurity`
-   nudges a player away from a position they've already played a lot this
-   season. Both purity and balance terms are bounded well below 1 (an
-   integer) so they can never flip an in-preference rank into losing
-   against an off-preference candidate (whose cost is exactly "one worse
-   than list length") — that preserves the slider's monotonicity
-   guarantee: raising it can only make in-preference candidates cheaper
+/* `weights.bench` is a single "playing-time evenness" dial: it sets bench
+   cell cost (so bench rotation emerges from the same optimization, not a
+   separate pass) and tie-breaks position cells tied on preference rank
+   toward whoever's had less on-court time. `weights.positionPurity` nudges
+   a player away from an over-played position. Both terms are bounded well
+   below 1 so they can never flip an in-preference rank into losing against
+   an off-preference candidate (cost = "one worse than list length") —
+   raising either weight can only make in-preference candidates cheaper
    relative to off-preference ones, never the reverse. */
 function buildQuarterCostFns(cumulative, settings){
   const slider = clampSetting(settings.preferenceSlider, 0, 10, 9);
   const sliderNorm = slider/10;
-  // The balance/bench side's weight, symmetric with sliderNorm's weight on
-  // the preference side. (A steeper, e.g. squared, falloff was tried here to
-  // try to further quiet residual wobble in the 7-10 "mostly preference"
-  // region — it measurably made the fuzzed monotonicity sweep below *worse*,
-  // not better, which is itself informative: the remaining non-monotonicity
-  // isn't "balance noise occasionally outvotes a marginal preference
-  // decision" so much as path-dependence across a sequential, cumulative-
-  // state multi-quarter/multi-game solve, which a per-cell weighting curve
-  // can't reach. Kept linear, the simpler and empirically-no-worse option.)
+  // The balance/bench side's weight, symmetric with sliderNorm. Linear, not a
+  // steeper falloff (e.g. squared) — a squared curve was tried and measured
+  // strictly worse on the monotonicity sweep below, since the residual
+  // non-monotonicity is path-dependence across the cumulative multi-quarter
+  // solve, which no per-cell curve can fix.
   const balanceDamping = (1-sliderNorm);
   const allowOff = !!settings.allowOffPreference;
   const topTwo = !!settings.topTwoOnly;
@@ -463,45 +423,31 @@ function buildQuarterCostFns(cumulative, settings){
   const benchWeight = clampSetting(weights.bench, 1, 10, 2);
   const purityWeight = clampSetting(weights.positionPurity, 1, 10, 1);
 
-  /* Always rank against the player's *full* stated list — §5.2 defines
-     off-preference as "outside the stated preference list", not "outside the
-     top 2". Slicing to the top 2 here (as this used to do) made a player's
-     3rd+ preference indistinguishable from a position they never listed at
-     all: both hit the `idx<0` branch below, so with allowOffPreference off,
-     a position only ever preferred as someone's 3rd choice could be reported
-     as having *no* eligible in-preference player, even though it manifestly
-     does. §4 rule 5 makes "prefer top 2" a position-*variety* scope — a soft
-     nudge toward a player's top 2 — not a hard eligibility cutoff. */
+  /* Ranks against the player's *full* stated list, never just the top 2 —
+     §5.2 defines off-preference as "outside the stated list", and slicing to
+     top 2 would make a 3rd+ choice indistinguishable from an unlisted
+     position (both hit `idx<0` below). §4 rule 5's "prefer top 2" is a soft
+     variety nudge (see topTwo below), not an eligibility cutoff. */
   function prefRank(p,pos){
     return p.prefs.indexOf(pos);
   }
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
     if(idx>=0) return idx;
-    // Off-preference cost is "one worse than their whole list". For a player
-    // with zero stated preferences, `p.prefs.length` is 0 — the same as a
-    // rank-0 specialist's cost — which made an empty preference list the
-    // single cheapest possible candidate at every position, beating every
-    // real specialist. Floor at 1 so it's never better than a genuine rank-0
-    // in-preference pick, while staying "one worse than the whole list" for
-    // any player who actually listed at least one position.
+    // "One worse than their whole list" — floored at 1 so a player with zero
+    // stated preferences (prefs.length === 0) doesn't cost the same as a
+    // genuine rank-0 specialist and out-compete them at every position.
     return allowOff ? Math.max(1, p.prefs.length) : null;
   }
-  /* Bonus/penalty layered onto an in-preference rank: purity (nudge away from
-     a position already played a lot) and, when "prefer top 2 only" is on, a
-     small extra nudge away from a 3rd+-ranked position. Capped relative to
-     THIS candidate's own gap to their off-preference cost
-     (prefs.length - idx), not a flat constant — a flat cap under 1 (as this
-     used to be) saturates almost immediately (posCount=1 already maxes it
-     out at typical purity weights), so raising the weight further had no
-     visible effect: it could never even overcome a single preference-rank
-     step, meaning a player's #1 choice could never lose to their #2 no
-     matter how many times they'd already played it. Scaling the cap to the
-     player's own list keeps the one property that actually matters — an
-     in-preference candidate never costs more than their own off-preference
-     fallback — while giving a low-ranked (especially rank-0) position much
-     more room to lose ground as it gets played out, so "spread across the
-     whole list" (§11) is something the weight can actually do. */
+  /* Purity penalty (a position already played a lot) plus, with "top 2 only"
+     on, a small extra nudge off a 3rd+-ranked position. Capped relative to
+     this candidate's own gap to its off-preference cost (prefs.length - idx),
+     not a flat constant — a flat cap saturates almost immediately and could
+     never outweigh a single preference-rank step, so a #1 choice could never
+     lose to a #2 no matter how overplayed. Scaling the cap to the player's
+     own list preserves "never costs more than the off-preference fallback"
+     while letting a low-ranked position actually lose ground as it's played
+     out (§11's "spread across the whole list"). */
   function purityAndVarietyTerm(p,pos){
     const idx = prefRank(p,pos);
     if(idx<0) return 0; // no purity/variety signal for an off-preference cell
@@ -511,17 +457,12 @@ function buildQuarterCostFns(cumulative, settings){
     const safeCap = Math.max(0, (p.prefs.length-idx) - 0.05);
     return Math.min(purity+scopeBump, safeCap);
   }
-  /* How many of this player's squad-quarters (on-court + bench) have already
-     been decided this season, per the cumulative snapshot this quarter's
-     solve is working from. Turns onCourt/bench totals into RATES rather than
-     raw, ever-growing counts: a player who's played half of an 11-game season
-     should look about as "overplayed" (or not) as one three games into a
-     20-game season, not have their raw count keep climbing all season in a
-     way that quietly outweighs preference cost later on regardless of the
-     preference slider — which is what an unbounded count multiplied by an
-     unbounded weight did before, and was the main reason bench/balance
-     weight changes could shift off-preference fill counts in ways their own
-     slider labels didn't predict. */
+  /* Squad-quarters (on-court + bench) decided so far this season, per this
+     quarter's cumulative snapshot. Used to turn onCourt/bench totals into
+     RATES rather than raw counts, so a player half-way through an 11-game
+     season and one three games into a 20-game season look equally
+     "overplayed" — an unbounded raw count would otherwise keep climbing all
+     season and quietly outweigh preference cost regardless of the slider. */
   function quartersSoFar(p){
     return ((cumulative.onCourt&&cumulative.onCourt[p.id])||0) + ((cumulative.bench&&cumulative.bench[p.id])||0);
   }
@@ -537,24 +478,13 @@ function buildQuarterCostFns(cumulative, settings){
     const balanceSide = balanceCost(p);
     return sliderNorm*prefSide + balanceDamping*balanceSide;
   }
-  /* Bench-slot cost, scaled by the SAME balanceDamping factor as balanceCost
-     above, and boosted back up by BENCH_SCALE_BOOST so it keeps a comparable
-     magnitude to before at the default slider (9). Previously this wasn't
-     scaled by the slider at all, so raising the preference slider toward
-     "strict preference" could still leave bench-rotation pressure competing
-     with — and occasionally beating — preference cost when deciding who gets
-     a court slot vs a bench slot, which is how bench weight could increase
-     off-preference fills even at the slider's literal maximum (10), directly
-     contradicting §5.1 ("at the high end ... off-preference fills only occur
-     when no in-preference candidate is eligible at all"). Scaling it the same
-     way as balanceCost makes it exactly 0 at slider=10, and negligible well
-     before that — bench rotation still meaningfully differentiates
-     candidates across the lower/middle range, including the default, while
-     guaranteeing it can't be the reason an in-preference candidate loses out
-     once the coach has asked for mostly-strict preference.
-     back-to-back-bench avoidance (§4 rule 6, within-game polish) is left
-     unscaled: it's a small, preference-neutral tie-break, not part of the
-     preference-vs-fairness trade-off the slider governs. */
+  /* Bench-slot cost, scaled by the same balanceDamping factor as balanceCost
+     (and boosted by BENCH_SCALE_BOOST to keep a comparable magnitude at the
+     default slider). This makes it exactly 0 at slider=10, guaranteeing
+     bench-rotation pressure can never be the reason an in-preference
+     candidate loses to an off-preference one at max preference (§5.1).
+     Back-to-back-bench avoidance (§4 rule 6) is left unscaled — a small,
+     preference-neutral tie-break, not part of the slider's trade-off. */
   function benchCellCost(p){
     const played = quartersSoFar(p);
     const benchRate = played>0 ? ((cumulative.bench&&cumulative.bench[p.id])||0)/played : 0;
@@ -612,7 +542,16 @@ function solveQuarterPositions(input){
     const p = remaining[rowIdx];
     const col = columns[colIdx];
     if(col==="BENCH"){ bench.push(p.id); return; }
-    if(matrix[rowIdx][colIdx] >= BIG_M){ errors.push({position:col, reason:"NO_ELIGIBLE_PLAYER"}); }
+    if(matrix[rowIdx][colIdx] >= BIG_M){
+      // Hungarian still returns a complete assignment even when every option
+      // for a row is disqualified (see HG-4) — but §5.2 forbids ever
+      // committing an off-preference fill when allowOffPreference is off, so
+      // bench the player instead. runGeneration discards the whole game's
+      // schedule whenever `errors` is non-empty, so this is never shown live.
+      errors.push({position:col, reason:"NO_ELIGIBLE_PLAYER"});
+      bench.push(p.id);
+      return;
+    }
     onCourt[col]=p.id;
     if(!p.prefs.includes(col)) offPreference[col]=true;
   });
@@ -623,13 +562,12 @@ function solveQuarterPositions(input){
 /* ============================================================
    PHASE 2b — within-game local-search refinement
    ============================================================
-   Confined to one game's own quarters. Each quarter's cost is evaluated
-   against a *fixed* cumulative snapshot captured at the start of that
-   quarter during the Phase 2a forward pass — swaps re-score using those
-   same snapshots rather than re-propagating cascading cumulative effects
-   through downstream quarters, which keeps the refinement simple, fast,
-   and easy to reason about while still closing most of the gap between
-   "each quarter optimal in isolation" and "this game, as a whole, is good."
+   Confined to one game's own quarters. Each quarter's cost is scored against
+   a *fixed* cumulative snapshot taken at the start of that quarter in the
+   Phase 2a forward pass, rather than re-propagating cascading effects
+   through downstream quarters — keeps refinement simple and fast while still
+   closing most of the gap between "each quarter optimal alone" and "this
+   game, as a whole, is good."
    input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
             cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
             settings, timeBudgetMs }
@@ -747,6 +685,7 @@ const RosterSolver = {
   POSITIONS,
   CONSTANTS: {
     PHASE1_FAIRNESS_WEIGHT, PHASE1_COVERAGE_WEIGHT, PHASE1_TIME_BUDGET_MS, PHASE1_MAX_PASSES,
+    PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, COVERAGE_OVERLAP_WEIGHT,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
     BENCH_SCALE_BOOST, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT

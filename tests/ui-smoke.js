@@ -42,9 +42,8 @@ const PLAYERS = [
 ];
 
 async function shot(page, name){
-  // The app's body has a CSS background/color transition (pre-existing, not part of this
-  // rewrite); a screenshot taken immediately after a paint can catch it mid-fade and look
-  // washed out even though the underlying styles are already correct. A short settle avoids that.
+  // The body has a CSS background/color transition — a screenshot taken
+  // immediately after paint can catch it mid-fade. Settle briefly first.
   await page.waitForTimeout(250);
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, name), fullPage:true });
 }
@@ -99,11 +98,8 @@ async function shot(page, name){
   // ---- Schedule: generate, check for errors, inspect a game's rotation grid ----
   await page.click('.tab-btn[data-tab="schedule"]');
   await page.click("#genBtn");
-  // runGeneration() is fully synchronous and deferred via setTimeout(...,0), so
-  // immediately after the click (before that timeout's callback has run) the
-  // button should already show the busy state — this is the one window where
-  // it's observable before the (typically sub-10ms, for this tiny roster) run
-  // completes and renderSchedule() puts the buttons back to normal.
+  // runGeneration() is deferred via setTimeout(...,0), so the busy state is
+  // observable only in the instant right after the click, before it runs.
   const genBtnTextWhileBusy = await page.locator("#genBtn").textContent();
   const genBtnDisabledWhileBusy = await page.locator("#genBtn").isDisabled();
   check(/generating/i.test(genBtnTextWhileBusy) && genBtnDisabledWhileBusy,
@@ -138,9 +134,8 @@ async function shot(page, name){
   });
   check(!!afterLockValue, `locked slot still shows a lock indicator after rebalance (${afterLockValue})`);
 
-  // ---- Manual slot-edit swap: moving an on-court player must relocate the
-  // player they displaced (via the follow-up "now empty" dialog), never lose
-  // them or duplicate anyone across the quarter's 7 on-court slots ----
+  // ---- Manual slot-edit swap: the displaced player must be relocated via
+  // the follow-up dialog, never lost or duplicated on-court ----
   const q1Slots = await page.locator('#gameBody-1 [data-slot*="|0|"]').all();
   const q1Before = [];
   for(const cell of q1Slots){
@@ -171,10 +166,9 @@ async function shot(page, name){
   check(new Set(q1After).size===q1After.length, `no player appears twice on-court after the swap (${JSON.stringify(q1After)})`);
   await shot(page, "04b-after-slot-swap.png");
 
-  // ---- H5 regression: dismissing the follow-up "now empty" dialog (via its
-  // Cancel button, or via the backdrop) must fully discard the whole edit —
-  // no gap, no lost player, nothing partially saved. Uses quarter 2 so it
-  // doesn't interfere with the completed swap just verified above. ----
+  // ---- H5 regression: dismissing the follow-up dialog (Cancel or backdrop)
+  // must discard the whole edit, not partially save it. Uses quarter 2 so it
+  // doesn't interfere with the swap just verified above. ----
   async function snapshotQuarter(qi){
     const cells = await page.locator(`#gameBody-1 [data-slot*="|${qi}|"]`).all();
     const snap = [];
@@ -227,11 +221,22 @@ async function shot(page, name){
   await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]');
   check(await page.isChecked(strictBoxSel), "strict specialist pairing checkbox stays checked after collapse/reopen");
 
-  // ---- Fill-ins: create a one-off (unsaved) fill-in scoped to game 1, via
-  // the "+ New fill-in" flow inside Assign-a-fill-in (§6), then confirm it
-  // does NOT show up as a candidate when assigning fill-ins to a different
-  // game (M4: the save-vs-one-off choice must actually be enforced, not
-  // just accepted as input). ----
+  // ---- Manual roster-off dialog (E2/E3): saving a specific pick must show up
+  // immediately in the "Rostered off" line, without needing to regenerate. ----
+  const rosteredOffLine = page.locator('#gameBody-1 .section-label', { hasText: "Rostered off" }).locator('xpath=following-sibling::div[contains(@class,"hint")][1]');
+  await page.click('[data-manageoff="1"]');
+  await page.waitForSelector('.modal #offList');
+  await page.locator('.modal #offList input[type="checkbox"]').evaluateAll(boxes=>boxes.forEach(b=>{ if(b.checked) b.click(); }));
+  const amyCheckbox = page.locator('.modal #offList label', { hasText: "Amy" }).locator('input[type="checkbox"]');
+  await amyCheckbox.check();
+  await page.click('.modal [data-act="save"]');
+  await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
+  check((await rosteredOffLine.textContent())==="Amy",
+    `manually saving a roster-off pick updates the "Rostered off" line immediately (got "${await rosteredOffLine.textContent()}")`);
+
+  // ---- Fill-ins: a one-off created via "+ New fill-in" inside
+  // Assign-a-fill-in (§6) must not appear as a candidate for a different
+  // game (M4: the save-vs-one-off choice must be enforced). ----
   await page.click('[data-assignfillin="1"]');
   await page.waitForSelector('.modal #newFillinBtn');
   await page.click('#newFillinBtn');
@@ -318,9 +323,7 @@ async function shot(page, name){
   const themeAfter = await page.getAttribute("html","data-theme");
   check(themeBefore!==themeAfter, `theme toggles on click (before=${themeBefore}, after=${themeAfter})`);
 
-  // ---- XLSX export (M8: XLSX is now vendored locally, not loaded from a
-  // CDN — this both proves the vendored file actually works and exercises
-  // the export path at all, which had no coverage before) ----
+  // ---- XLSX export (M8: proves the locally-vendored library works) ----
   await page.click('.tab-btn[data-tab="data"]');
   const [xlsxDownload] = await Promise.all([
     page.waitForEvent("download"),
