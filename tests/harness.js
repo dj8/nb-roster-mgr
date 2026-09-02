@@ -1,7 +1,7 @@
-/* Loads the app's inline engine script from index.html into a Node vm sandbox with
-   stubbed document/localStorage/URL/Blob, and appends a module.exports block inside the
-   IIFE so internal engine functions are reachable for testing (never shipped — index.html
-   itself has no module.exports).  */
+/* Loads hungarian.js/solver.js/app.js into a Node vm sandbox with stubbed
+   document/localStorage/URL/Blob, appending a module.exports block just
+   before app.js's closing IIFE so its internal functions are testable
+   (never shipped — app.js itself has no module.exports). */
 "use strict";
 const fs = require("fs");
 const path = require("path");

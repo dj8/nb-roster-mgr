@@ -199,7 +199,7 @@ tr:last-child td{border-bottom:none;}
 .pill-muted{background:var(--surface-2);color:var(--text-dim);}
 .pill-inline{margin-left:6px;}
 
-/* ---------- Alerts (persistent inline notices — distinct from transient toasts) ---------- */
+/* ---------- Alerts (persistent, unlike .toast) ---------- */
 .alert{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:var(--radius);
   font-size:12.5px;font-weight:500;line-height:1.5;border-left:3px solid transparent;margin-bottom:10px;}
 .alert:last-child{margin-bottom:0;}

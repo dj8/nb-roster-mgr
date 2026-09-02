@@ -61,11 +61,9 @@ function newGameState(){
   };
 }
 
-/* Coerce the numeric season/settings knobs to sane values. Both entry points for
-   untrusted state (localStorage in loadState, CSV in importFullCsv) run through
-   this: a non-numeric value used to survive as NaN all the way into the solver's
-   cost model, where every comparison against it is false and the search silently
-   selects nothing. Returns the list of fields it had to correct. */
+/* Clamps season/settings numerics for both untrusted entry points (loadState,
+   importFullCsv) — an unclamped NaN would propagate into the solver's cost
+   model, where every comparison against it is false. Returns the corrections made. */
 function sanitizeSettingsAndSeason(state){
   const corrected = [];
   const d = defaultState();
@@ -88,26 +86,18 @@ function sanitizeSettingsAndSeason(state){
   return corrected;
 }
 
-/* Keep only real netball positions. Preference strings reach us from CSV files a
-   coach may have received from someone else, and they are rendered into HTML and
-   used as cost-matrix keys — anything not in POSITIONS is meaningless to the
-   solver and unsafe in the DOM. */
+/* Filters preference strings (may come from an untrusted CSV) to real position
+   codes — anything else is meaningless as a cost-matrix key and unsafe in the
+   DOM. De-dupes (keeping stated rank order) so a malformed row like
+   "GS|GS|GS|GA" can't inflate prefs.length, which feeds the solver's
+   off-preference cost and purity-term cap. */
 function sanitizePrefs(prefs){
   const cleaned = (Array.isArray(prefs)?prefs:[]).map(x=>String(x).trim().toUpperCase()).filter(x=>POSITIONS.includes(x));
-  // De-duplicate (keep first occurrence, preserving stated rank order) — a
-  // duplicated position from a hand-edited or malformed CSV row shouldn't be
-  // able to inflate prefs.length, which feeds directly into the Phase 2 cost
-  // model's off-preference cost (Math.max(1, prefs.length)) and the
-  // purity/variety term's safe cap (prefs.length - idx) — a row like
-  // "GS|GS|GS|GS|GA" would otherwise look like a genuine 5-position list and
-  // get costed as such, purely as an artifact of the encoding.
   return cleaned.filter((pos,i)=>cleaned.indexOf(pos)===i);
 }
 
-/* Same validation the Add-player dialog already applies to a typed-in
-   "unavailable for game numbers" field — reused here so CSV import can't
-   produce a player.unavailable entry (NaN, negative, zero) that the dialog
-   itself would refuse to save. */
+/* Mirrors the Add-player dialog's own validation of "unavailable for game
+   numbers" so CSV import can't produce an entry the dialog would refuse. */
 function sanitizeUnavailable(nums){
   return (Array.isArray(nums)?nums:[]).map(Number).filter(n=>Number.isFinite(n)&&n>0);
 }
@@ -139,11 +129,7 @@ function loadState(){
     merged.fillIns.forEach(f=>{ f.prefs = sanitizePrefs(f.prefs); });
     const corrected = sanitizeSettingsAndSeason(merged);
     if(corrected.length) console.warn("Stored settings were out of range and have been reset:", corrected);
-    // An unrecognised activeTab (hand-edited storage, or a value saved by a
-    // since-renamed tab) would otherwise crash renderMain's `fns[activeTab](...)`
-    // dispatch outright — a blank page with no recovery, since the bad value
-    // is already persisted. Every other field coming out of localStorage is
-    // validated; this one wasn't.
+    // An unrecognised activeTab would crash renderMain's fns[activeTab] dispatch.
     if(!VALID_TABS.includes(merged.activeTab)) merged.activeTab = "setup";
     return merged;
   }catch(e){ console.warn("Failed to load state, starting fresh.",e); return defaultState(); }
@@ -200,17 +186,10 @@ function planGameAvailability(gameNum){
   const game = getGame(gameNum);
   const regulars = STATE.players;
 
-  // §8.1: a played game's actual outcome — who was unavailable, who was
-  // rostered off — is a frozen historical fact, "left byte-for-byte unchanged,
-  // regardless of what triggers the regeneration (new season generation,
-  // availability change, manual edit elsewhere, etc.)". Reading from *current*
-  // player.unavailable data (as the branches below do) would let an
-  // availability edit made after the fact silently rewrite that history —
-  // e.g. filtering fixedOffIds down to whoever is *currently* available could
-  // drop an already-rested player from the record entirely. So this must be
-  // the very first check, before shortfall/lock/override logic ever looks at
-  // live availability, and it must use the game's own stored fields, not
-  // recompute anything from STATE.players.
+  // §8.1: a played game's outcome is a frozen historical fact — must be
+  // checked first, using only the game's own stored fields, never live
+  // player.unavailable data (which a later availability edit could use to
+  // silently rewrite history).
   if(game.isPlayed){
     const frozenUnavailable = (game.unavailableIds||[]).slice();
     const frozenOff = (game.rosteredOffIds||[]).slice();
@@ -235,13 +214,8 @@ function planGameAvailability(gameNum){
     // §6: don't force the normal roster-off rule; use all available regulars + fill-ins
     fixedOffIds = [];
   } else if(Array.isArray(game.rosterOffLockIds)){
-    // Array.isArray, not a truthy+length check: an explicit, empty selection
-    // ("roster nobody off this game") is a real, meaningful manual choice,
-    // distinct from `null` ("no lock — let auto-derivation decide"). A
-    // length check treated both the same, so saving the roster-off dialog
-    // with nothing ticked silently fell through to auto-derivation instead
-    // of honoring "nobody off" — indistinguishable from never having opened
-    // the dialog at all.
+    // Array.isArray, not truthy+length: an explicit empty selection ("roster
+    // nobody off") is a real manual choice, distinct from null ("no lock").
     fixedOffIds = game.rosterOffLockIds.filter(id=>availableRegulars.some(p=>p.id===id));
   } else if(Number.isFinite(game.rosterOffOverride)){
     rosterOffCount = clamp(game.rosterOffOverride,0,Math.max(0,availableRegulars.length-7));
@@ -256,11 +230,9 @@ function planGameAvailability(gameNum){
   };
 }
 
-/* This game's actual squad: available regulars minus whatever is currently
-   stored on game.rosteredOffIds (the Phase 1 decision, or a fixed value for
-   played/shortfall/locked games) plus assigned fill-ins. Used both for
-   display (dialogs, gap suggestions) and, during generation, as Phase 2's
-   input once Phase 1 has written rosteredOffIds for every game. */
+/* This game's actual squad: available regulars minus game.rosteredOffIds
+   (Phase 1's decision, or a fixed value for played/shortfall/locked games)
+   plus assigned fill-ins. Used for display and as Phase 2's input. */
 function planGameSquad(gameNum){
   const game = getGame(gameNum);
   const avail = planGameAvailability(gameNum);
@@ -301,7 +273,6 @@ function computeCoverageWarnings(plan){
   return warnings;
 }
 
-/* fill-in position gap suggestions for a shortfall game */
 function fillInGapSuggestions(gameNum){
   const avail = planGameAvailability(gameNum);
   if(!avail.shortfall) return [];
@@ -321,10 +292,9 @@ function bumpCum(cumulative, key, id, amt){
 }
 function posCountKey(id,pos){ return id+"::"+pos; }
 
-/* Add (sign=1) or remove (sign=-1) one quarter's on-court/bench outcome from
-   the season-persistent cumulative totals (posCount/onCourt/bench) that later
-   games' Phase 2a solves read. Used both for the initial forward fold and to
-   reconcile after Phase 2b changes a game's quarters post-hoc (see runGeneration). */
+/* Adds (sign=1) or removes (sign=-1) one quarter's outcome from the running
+   cumulative totals later games' Phase 2a solves read — also used to
+   reconcile after Phase 2b changes a game's quarters post-hoc (runGeneration). */
 function applyQuarterToCumulative(cumulative, q, sign){
   POSITIONS.forEach(pos=>{
     const pid = q.onCourt[pos]; if(!pid) return;
@@ -339,7 +309,6 @@ function applyQuarterToCumulative(cumulative, q, sign){
   });
 }
 
-/* Apply a game's *actual* outcome (played or freshly generated) into cumulative totals */
 function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, schedule){
   unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
   rosteredOffIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
@@ -362,16 +331,11 @@ function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, sche
   });
 }
 
-/* §5.3 asks for "which specialist(s) for that position were unavailable/
-   benched that quarter (i.e. why it was necessary)". `squadIds` covers the
-   "unavailable" half (rostered off/unavailable for the whole game, so never
-   in the squad at all); `benchIds` is this specific quarter's bench, needed
-   for the other half — a specialist who's on the bench *this quarter* was
-   previously invisible here (squadIds includes benched players, so they
-   never showed up as "unavailable"), which meant the common case of "the
-   specialist was simply rested this quarter" rendered as if no specialist
-   existed on the roster at all. Also considers fill-ins assigned to this
-   game, not just regular players. */
+/* §5.3: explains why an off-preference fill was necessary, in terms of the
+   specialist(s) who could have played it instead. `squadIds` gives the
+   "unavailable all game" half; `benchIds` (this quarter's bench specifically)
+   gives the "merely rested this quarter" half — squadIds alone can't tell
+   those apart, since it includes benched players. Considers fill-ins too. */
 function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds){
   const player = byId(STATE.players,playerId) || byId(STATE.fillIns,playerId);
   const assignedFillIns = (getGame(gameNum).fillInIds||[]).map(fid=>byId(STATE.fillIns,fid)).filter(Boolean);
@@ -386,19 +350,14 @@ function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds)
   };
 }
 
-/* Phase 1 only: run the season-wide roster-off search and write availability
-   facts + the resulting rosteredOffIds/coverageWarnings onto every game.
-   Does not touch schedules. Used by runGeneration (before Phase 2) and by
-   importFullCsv (to re-derive these display fields after loading a CSV). */
-/* `preserveExisting`: used only right after a fresh CSV import (§9 requires
-   per-game roster-off values to round-trip exactly, not just converge to the
-   same count) — a non-played, non-locked game that already has a non-empty
-   `rosteredOffIds` loaded from the file is fed into this Phase 1 call as a
-   *fixed* game (same mechanism as a played/locked game), so it comes back out
-   unchanged and every other, still-genuinely-undecided game's missed-count
-   and coverage math is computed against what's actually fixed. This is not a
-   lock: it only affects this one call — the next real Generate/Rebalance
-   (called without the flag) is free to change it, exactly as §8 intends. */
+/* Phase 1 only: runs the season-wide roster-off search and writes
+   availability facts + rosteredOffIds/coverageWarnings onto every game.
+   Doesn't touch schedules. Used by runGeneration (before Phase 2) and by
+   importFullCsv, to re-derive display fields after loading a CSV.
+   `preserveExisting`: for CSV import only (§9's exact round-trip
+   requirement) — treats a non-played, non-locked game's already-loaded
+   rosteredOffIds as fixed for this call only, so it round-trips unchanged;
+   the next real Generate/Rebalance is still free to change it. */
 function computeSeasonRosterOff(preserveExisting){
   const nums = gameNums();
   const availByNum = {};
@@ -430,12 +389,7 @@ function computeSeasonRosterOff(preserveExisting){
 
   nums.forEach(num=>{
     const game = getGame(num);
-    // §8.1: never rewrite a played game's derived display fields either — its
-    // stored rosteredOffIds/unavailableIds/etc. are already the frozen facts
-    // planGameAvailability just fed into Phase 1 above; writing them back here
-    // would be a no-op at best, but skipping outright makes the invariant
-    // ("played games are read-only, full stop") obvious from this function
-    // alone rather than relying on every upstream field happening to agree.
+    // §8.1: a played game's fields are already frozen facts — never rewrite them here.
     if(game.isPlayed) return;
     const a = availByNum[num];
     game.rosteredOffIds = a.shortfall ? [] : (phase1.rosterOffByGame[num]||[]);
@@ -470,9 +424,8 @@ function runGeneration(){
     const game = getGame(num);
 
     if(game.isPlayed){
-      // §8.1: locked — leave every stored field untouched (schedule, squadIds,
-      // coverage warnings, everything), and only fold its already-frozen
-      // result into cumulative fairness for the rest of the season.
+      // §8.1: locked — every stored field stays untouched; only fold its
+      // already-frozen result into cumulative fairness for the rest of the season.
       foldGameIntoCumulative(cumulative, game.rosteredOffIds, game.unavailableIds, game.schedule);
       return;
     }
@@ -520,10 +473,8 @@ function runGeneration(){
       });
 
       if(result.errors.length){
-        // A `null` position means a defensive SLOT_MISMATCH (caller-contract
-        // violation, not a real coach-facing scenario) rather than a genuine
-        // unfillable position — render it as a clear phrase instead of the
-        // literal string "null" from a raw array join.
+        // A null position is a defensive SLOT_MISMATCH (caller-contract bug),
+        // not a real unfillable position — render it as a phrase, not "null".
         failingQuarters.push({quarter:q+1, positions:result.errors.map(e=>e.position||"an internal slot-count mismatch")});
       }
 
@@ -539,13 +490,9 @@ function runGeneration(){
     }
 
     if(failingQuarters.length){
-      // §5.2/§6.1: with allowOffPreference off, a position that can't be filled
-      // in-preference must never be silently filled anyway (solveQuarterPositions
-      // now leaves it empty and benches the player instead), and this game's
-      // schedule must not be saved as if it were complete — undo this game's
-      // cumulative contribution and treat it the same as the "not enough
-      // players" shortfall case: no schedule, explicit error, coach action
-      // required.
+      // §5.2/§6.1: an unfillable in-preference position must not be saved as
+      // a complete schedule — undo this game's cumulative contribution and
+      // treat it like the "not enough players" shortfall case.
       quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
       const detail = failingQuarters.map(f=>`Q${f.quarter}: ${f.positions.join(", ")}`).join("; ");
       game.error = `Game ${num}: no eligible in-preference player for — ${detail}. Add/adjust a fill-in, or allow off-preference positions.`;
@@ -559,10 +506,8 @@ function runGeneration(){
       quarters, squadPool: plan.squad, cumulativeSnapshots, lockedSlotsPerQuarter, settings: STATE.settings
     });
 
-    // Reconcile: cumulative above was folded from the pre-refinement quarters
-    // (needed at the time, to see the running totals quarter-to-quarter within
-    // this game); undo that and re-fold the actual, refined outcome so later
-    // games' Phase 2a solves — and season reports — see the same numbers.
+    // Undo the pre-refinement fold and re-fold the actual refined outcome, so
+    // later games' Phase 2a solves and season reports see the same numbers.
     quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
     refined.quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, 1));
 
@@ -581,7 +526,6 @@ function runGeneration(){
   return {invalid, offPrefLog: computeOffPrefLog(), phase1Stats, elapsedMs: STATE._lastGenerationMs, cumulative};
 }
 
-/* Season-wide player summary stats (for reports) */
 function computePlayerSummaries(){
   const summary = {};
   STATE.players.forEach(p=>{ summary[p.id]={id:p.id,name:p.name,onCourt:0,bench:0,missed:0,gamesPlayedIn:0,positions:{},offPrefPositions:{},offPrefTotal:0}; POSITIONS.forEach(pos=>summary[p.id].positions[pos]=0); });
@@ -607,10 +551,9 @@ function computePlayerSummaries(){
   return Object.values(summary);
 }
 
-/* Derived fresh from each game's stored schedule every time it's requested —
-   never cached — so manual slot edits and CSV imports (which change schedules
-   without going through runGeneration) can't leave this disagreeing with the
-   Player Summary report, which also reads live schedule data. */
+/* Never cached — derived fresh from stored schedules every call, so a manual
+   slot edit or CSV import (neither goes through runGeneration) can't leave
+   this disagreeing with the Player Summary report. */
 function computeOffPrefLog(){
   const log = [];
   gameNums().forEach(num=>{
@@ -641,15 +584,13 @@ function computeOffPrefRate(){
   return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
 }
 
-/* Informational-only: how uneven total missed games (unavailable + rostered off)
-   is across the roster. Never fed back into generation — see RosterSolver.computeMissedGamesWarning. */
+/* Informational only — never fed back into generation. */
 function computeMissedGamesWarningForReports(){
   const list = computePlayerSummaries().map(s=>({id:s.id, name:s.name, missed:s.missed}));
   return RosterSolver.computeMissedGamesWarning(list);
 }
 
-/* Roster-composition-based note: positions so thin that perfectly even
-   missed-games counts are structurally out of reach, independent of settings. */
+/* Settings-independent — purely a function of roster composition. */
 function computeRosterOffAchievabilityNotesForReports(){
   return RosterSolver.computeRosterOffAchievabilityNotes(STATE.players.map(p=>({name:p.name, prefs:p.prefs})));
 }
@@ -699,10 +640,9 @@ function closeModal(){
   _modalReturnFocus = null;
 }
 let _modalTitleSeq = 0;
-/* Every dialog in this app opens through here, so focus handling, Escape-to-
-   close, Tab trapping and title association (aria-labelledby, pointed at the
-   modal's own <h3>) are all fixed in one place rather than re-implemented per
-   dialog. */
+/* Every dialog opens through here — focus handling, Escape-to-close, Tab
+   trapping, and aria-labelledby (pointed at the modal's own <h3>) are all
+   fixed in one place instead of re-implemented per dialog. */
 function openModal(html, onMount){
   closeModal();
   _modalReturnFocus = document.activeElement;
@@ -973,10 +913,8 @@ function openPlayerDialog(playerId){
       const name = nameInput.value.trim();
       if(!name){ showFieldError(modal, "#pfName", "Enter a name first."); return; }
       if(isDup(name)){ nameInput.classList.add("input-error"); modal.querySelector("#dupWarn").style.display="block"; nameInput.focus(); return; }
-      // A regular squad player with zero stated preferences has no real
-      // position identity for the solver to work with — unlike a fill-in
-      // (§6 explicitly allows a flexible/no-preference guest), a permanent
-      // roster player should list at least one position.
+      // Unlike a fill-in (§6 allows a flexible/no-preference guest), a
+      // regular player needs at least one position for the solver to work with.
       if(!draft.prefs.length){ showFieldError(modal, "#prefButtons", "Add at least one position preference."); return; }
       draft.name = name;
       draft.unavailable = sanitizeUnavailable(modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)));
@@ -1003,10 +941,7 @@ function importPlayersCsv(text){
       if(STATE.players.some(p=>p.name.toLowerCase()===name.toLowerCase())){ skipped++; continue; }
       const prefsRaw = (r[prefIdx]||"").trim();
       const prefs = sanitizePrefs(prefsRaw.split(/[|,;\s]+/));
-      // Same rule the Add-player dialog enforces (a regular squad player needs
-      // at least one real position to have any identity for the solver) —
-      // previously this path could silently create a preference-less player,
-      // which the dialog forbids.
+      // Same rule the Add-player dialog enforces — see openPlayerDialog.
       if(!prefs.length){ skippedNoPrefs++; continue; }
       STATE.players.push({id:uid("p"), name, prefs, unavailable:[]});
       added++;
@@ -1043,16 +978,12 @@ function toCsvField(v){
   if(/[",\n]/.test(v)) return '"'+v.replace(/"/g,'""')+'"';
   return v;
 }
-/* CSV/spreadsheet formula-injection guard (OWASP-recommended mitigation): a
-   free-text field beginning with =, +, -, or @ executes as a formula when
-   the exported file is opened in Excel/LibreOffice — a real concern since
-   this export is explicitly meant to be handed to a co-coach, not just kept
-   locally. Applied only to free-text name fields (not every field toCsvField
-   touches), since a leading '-' is otherwise a legitimate character in some
-   numeric columns. unguardCsvText reverses it on import — but only when what
-   follows the leading quote is itself one of the guarded characters, so a
-   name that genuinely starts with a literal apostrophe is never mistaken for
-   one we added. */
+/* CSV formula-injection guard (OWASP-recommended): a name field starting
+   with = + - @ would execute as a formula when opened in Excel/LibreOffice.
+   Applied only to free-text names, not every field (a leading '-' is
+   legitimate in numeric columns). unguardCsvText reverses it on import, but
+   only when a guarded character follows the added quote, so a name that
+   genuinely starts with an apostrophe round-trips unchanged. */
 function guardCsvText(v){
   return /^[=+\-@]/.test(v) ? "'"+v : v;
 }
@@ -1064,10 +995,7 @@ function unguardCsvText(v){
    RENDER: SCHEDULE TAB
    ============================================================ */
 let scheduleUiState = { openGame:null, filter:"all" };
-/* True whenever a setting/override has changed since the last Generate/
-   Rebalance — the schedule on screen may no longer reflect it. Deliberately
-   not persisted: it describes the gap between STATE and the last engine run
-   within this session, not a fact about the season itself. */
+// Not persisted — describes drift between STATE and the last engine run this session.
 let dirtySinceGeneration = false;
 
 function renderSchedule(root){
@@ -1099,15 +1027,10 @@ function renderSchedule(root){
   root.querySelectorAll("[data-filter]").forEach(b=>b.onclick=()=>{ scheduleUiState.filter=b.dataset.filter; renderSchedule(root); });
   renderGamesList(document.getElementById("gamesList"));
 
-  /* runGeneration() is fully synchronous — it can take up to several seconds
-     (§9) with no yield points, so the browser can't repaint mid-run. Disabling
-     both buttons and swapping in a "Generating…" label first, then deferring
-     the actual (blocking) call one tick via setTimeout, lets that state
-     actually paint before the freeze — otherwise the UI looks identical
-     right up until it unfreezes, indistinguishable from a genuine hang, and
-     a confused coach clicking again just queues a redundant (not harmful,
-     since JS is single-threaded and each run completes fully before the
-     next starts, but wasteful) re-run. */
+  /* runGeneration() is synchronous and can take seconds with no yield
+     points — deferring it one tick via setTimeout lets the disabled/
+     "Generating…" state actually paint before the freeze, so the UI doesn't
+     look identically hung the whole time. */
   function runGenerationWithBusyState(pastTenseLabel){
     const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
     const originalGenText = genBtn.textContent, originalRebalText = rebalBtn.textContent;
@@ -1334,10 +1257,9 @@ function wireGameCard(el, num){
 }
 
 /* The count the auto-deriver would pick right now, ignoring any existing
-   manual lock — used only to tell the coach what they're aiming for in
-   openRosterOffDialog. Mirrors planGameAvailability's own default-branch
-   arithmetic (it can't reuse that function's rosterOffCount directly, since
-   that field is left at 0 once a manual lock exists). */
+   manual lock — shown in openRosterOffDialog as a target. Mirrors
+   planGameAvailability's default-branch arithmetic, since that function's
+   own rosterOffCount is left at 0 once a manual lock exists. */
 function expectedRosterOffCount(num){
   const game = getGame(num);
   const avail = planGameAvailability(num);
@@ -1377,12 +1299,9 @@ function openRosterOffDialog(num){
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="clear"]').onclick=()=>{
       game.rosterOffLockIds=null;
-      // Keep in sync with the override handler's convention (app.js ~1084):
-      // the exact auto-derived pick isn't known without a fresh Phase 1
-      // solve, so this is set to null and every display that reads it
-      // (the "Rostered off" line, coverage warnings, player summaries) shows
-      // blank until the next Generate/Rebalance — not left showing the just-
-      // cleared, now-stale selection.
+      // The auto-derived pick isn't known without a fresh Phase 1 solve, so
+      // every display reading this shows blank until the next generation —
+      // not the just-cleared, now-stale selection.
       game.rosteredOffIds=null;
       saveState(); closeModal(); toast("Cleared — regenerate to auto-select.");
       scheduleUiState.openGame=num; renderMain();
@@ -1390,12 +1309,8 @@ function openRosterOffDialog(num){
     modal.querySelector('[data-act="save"]').onclick=()=>{
       const ids = Array.from(modal.querySelectorAll("#offList input:checked")).map(i=>i.value);
       game.rosterOffLockIds = ids;
-      // Unlike Clear, the exact selection here IS known — sync it into
-      // rosteredOffIds immediately so the "Rostered off" line, coverage
-      // warnings, and player-summary missed-game counts (all of which read
-      // this field directly, not through planGameSquad) reflect the manual
-      // pick right away instead of showing the previous auto-derived value
-      // until the coach happens to regenerate.
+      // Unlike Clear, this selection IS known — sync it into rosteredOffIds
+      // immediately so displays reading that field reflect it right away.
       game.rosteredOffIds = ids.slice();
       saveState(); closeModal();
       scheduleUiState.openGame=num; renderMain();
@@ -1406,11 +1321,8 @@ function openRosterOffDialog(num){
 function openAssignFillInDialog(num){
   const game = getGame(num);
   const assigned = new Set(game.fillInIds||[]);
-  // A one-off fill-in (§6: "saved for reuse" left unchecked at creation) is
-  // scoped to whichever game it was created for — it shouldn't be offered
-  // here as a candidate for a *different* game, even though it still lives
-  // in STATE.fillIns. Already-assigned-to-this-game candidates are shown
-  // regardless (including a one-off created for this same game).
+  // A one-off fill-in (§6) is scoped to the game it was created for — not
+  // offered as a candidate elsewhere, though still shown if already assigned here.
   const candidates = STATE.fillIns.filter(f=>f.saved!==false || assigned.has(f.id));
 
   function paint(modal){
@@ -1455,9 +1367,8 @@ function refreshOffPreferenceFlag(q, pos){
   q.offPreference[pos] = !!(player && player.prefs && !player.prefs.includes(pos));
 }
 
-/* A locked slot that no longer holds the player it was locked to is stale
-   (forcing that id back in on rebalance would be wrong) — drop the lock.
-   Operates on a lockedSlots draft (see openSlotEditDialog), not live state. */
+/* Drops a lock that no longer holds the player it was locked to — forcing
+   that id back in on rebalance would be wrong. Operates on a draft, not live state. */
 function clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid){
   const lockKey = qi+"-"+pos;
   if(lockedSlotsDraft[lockKey]===expectedPid) delete lockedSlotsDraft[lockKey];
@@ -1467,13 +1378,11 @@ function finishSlotEdit(num){
   saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
 }
 
-/* Single, atomic write-back point for a slot edit (see openSlotEditDialog /
-   openFillVacancyDialog). Everything before this call works on draft copies
-   of the quarter and the game's lockedSlots map — nothing touches live STATE
-   until here, so Cancel, a backdrop-dismissed modal, or simply abandoning a
-   multi-step edit midway (declining the follow-up "now empty" dialog) all
-   leave the schedule exactly as it was, by construction, with no separate
-   rollback logic needed. */
+/* The single write-back point for a slot edit. openSlotEditDialog and
+   openFillVacancyDialog both work on draft copies of the quarter and
+   lockedSlots — nothing touches live STATE until this runs, so Cancel or
+   abandoning a multi-step edit midway leaves the schedule exactly as it was,
+   by construction, with no separate rollback needed. */
 function commitSlotEdit(num, qi, qDraft, lockedSlotsDraft){
   const game = getGame(num);
   game.schedule.quarters[qi] = qDraft;
@@ -1481,18 +1390,6 @@ function commitSlotEdit(num, qi, qDraft, lockedSlotsDraft){
   finishSlotEdit(num);
 }
 
-/* Both dialogs below work on *drafts* — a deep-cloned quarter and a shallow
-   copy of the game's lockedSlots map — never the live STATE objects. Nothing
-   is written back to STATE until commitSlotEdit runs, at the single explicit
-   "Save" that finishes the whole edit. This makes every other exit path safe
-   by construction: Cancel, a backdrop-dismissed modal, or simply abandoning
-   the flow partway through the follow-up "now empty" dialog all leave the
-   schedule exactly as it was — there is no separate rollback to get right,
-   because nothing was ever mutated in place to begin with. (Previously,
-   openSlotEditDialog mutated q/game.lockedSlots directly and then opened the
-   follow-up dialog — which had no Cancel button at all — so dismissing it
-   left a real gap in the quarter and dropped the displaced player entirely,
-   with the partial state already persisted.) */
 function openSlotEditDialog(num, qi, pos){
   const game = getGame(num);
   if(game.isPlayed){ toast("This game is locked as played. Unlock it first to edit."); return; }
@@ -1561,18 +1458,14 @@ function openSlotEditDialog(num, qi, pos){
         return;
       }
 
-      // Otherwise pid should be on-court at some other position Y this quarter
-      // — moving them here vacates Y, which needs an explicit decision: fill
-      // it with the player just displaced from `pos`, or bring someone up
-      // from the bench (see openFillVacancyDialog). Both drafts are handed
-      // to it so it can finish (or abandon) the same in-flight edit.
+      // Otherwise pid is on-court at some other position this quarter — moving
+      // them here vacates it, which needs an explicit fill decision (see
+      // openFillVacancyDialog); both drafts are handed to it to finish.
       const otherPos = POSITIONS.find(p2=>p2!==pos && qDraft.onCourt[p2]===pid);
       qDraft.onCourt[pos] = pid;
       if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
       if(!otherPos){
-        // Defensive: pid wasn't actually found on-court or bench this quarter
-        // (shouldn't happen for a squad member) — nothing to vacate, so just
-        // bench whoever was displaced, same as the unassigned case.
+        // Defensive — shouldn't happen for a squad member: nothing to vacate.
         refreshOffPreferenceFlag(qDraft, pos);
         if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
         commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
@@ -1586,13 +1479,10 @@ function openSlotEditDialog(num, qi, pos){
   });
 }
 
-/* Follow-up to openSlotEditDialog: position `vacantPos` just lost its
-   occupant (they moved to fill a different slot). Ask who takes it — the
-   player displaced from that other slot (`displacedPid`), or someone from
-   the bench — so the quarter never silently ends up with a gap or a
-   duplicate player. Continues working on the same qDraft/lockedSlotsDraft
-   handed in by openSlotEditDialog; Cancel (or dismissing the modal any other
-   way) simply discards them, since nothing has touched live STATE yet. */
+/* Follow-up to openSlotEditDialog: `vacantPos` just lost its occupant (moved
+   to fill a different slot) — ask who takes it, the displaced player or a
+   bench player, so the quarter never ends up with a gap or a duplicate.
+   Continues the same qDraft/lockedSlotsDraft; Cancel discards them untouched. */
 function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedSlotsDraft){
   const displacedPlayer = displacedPid ? (byId(STATE.players,displacedPid)||byId(STATE.fillIns,displacedPid)) : null;
   const benchPlayers = (qDraft.bench||[]).map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
@@ -1678,14 +1568,10 @@ function renderFillIns(root){
   document.getElementById("addFillinBtn").onclick=()=>openFillInDialog(null);
 }
 
-/* Cancel-safe: the draft object lives only inside this closure/modal and is
-   never written into STATE until Save is clicked. Cancel (or the backdrop
-   click / re-open) simply discards it — see SS-8 / SS-9. */
-/* `contextGameNum`, when given, is the game this fill-in dialog was opened
-   from (via the "+ New fill-in" option inside Assign-a-fill-in, §6's "scoped
-   to a single game by default" flow) — a genuine one-off created there is
-   auto-assigned to that game so the coach doesn't also have to check it in
-   the assign list; `onSaved` lets the caller refresh its own view afterward. */
+/* Cancel-safe: the draft is never written into STATE until Save is clicked.
+   `contextGameNum`, when given, is the game this was opened from (the
+   "+ New fill-in" option inside Assign-a-fill-in) — a one-off created there
+   auto-assigns to that game. `onSaved` lets the caller refresh its own view. */
 function openFillInDialog(fillInId, contextGameNum, onSaved){
   const existing = fillInId ? byId(STATE.fillIns, fillInId) : null;
   const draft = existing ? deepClone(existing) : {id:uid("fi"), name:"", prefs:[], saved:true};
@@ -1721,7 +1607,6 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
       modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paintChips(); paintButtons(); });
     }
     paintChips(); paintButtons();
-    // Cancel: discard draft entirely, state untouched.
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
       clearFieldErrors(modal);
@@ -1832,10 +1717,8 @@ function renderReports(root){
 /* ============================================================
    RENDER: SETTINGS TAB
    ============================================================ */
-/* Reusable labelled-slider markup: a range input + numeric readout + a small
-   pair of end labels describing what each direction actually does. Used for
-   every priority/weight slider on this tab so they're visually and
-   structurally consistent. */
+/* Reusable labelled-slider markup — range input + numeric readout + end
+   labels — used for every priority/weight slider on this tab. */
 /* Paints the filled portion of a range input via the --range-pct custom
    property the CSS gradient reads (see styles.css) — kept as a plain DOM
    helper, not something the browser does natively for type=range. */
@@ -2058,12 +1941,10 @@ function importFullCsv(text){
       g.isPlayed = isPlayed==="1";
       g.strictSpecialistPairing = strictPairingStr==="1";
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
-      // Known, accepted limitation: the pipe-joined CSV encoding can't
-      // distinguish an explicit "lock to nobody" from "no lock at all" — both
-      // serialize to an empty string — so an explicit-empty roster-off lock
-      // degrades to "auto" across a CSV export/reimport. In-app (localStorage,
-      // via JSON) this distinction round-trips correctly; only the CSV
-      // interchange format collapses it.
+      // Known limitation: the pipe-joined encoding can't distinguish an
+      // explicit "lock to nobody" from "no lock" — both are an empty string,
+      // so an explicit-empty lock degrades to "auto" across a CSV round-trip
+      // (localStorage/JSON preserves the distinction; only CSV collapses it).
       g.rosterOffLockIds = (rosterOffLockIds||"").split("|").filter(Boolean);
       if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
       g.rosteredOffIds = (rosteredOffIds||"").split("|").filter(Boolean); // frozen historical fact for played games; recomputed for others
@@ -2097,20 +1978,14 @@ function importFullCsv(text){
     const settingsWarnings = sanitizeSettingsAndSeason(ns);
     warnings.push(...settingsWarnings);
 
-    // Commit to the live STATE only after the re-solve below succeeds. Settings
-    // are now validated above, but keeping this rollback is cheap insurance
-    // against any other bad-data path in Phase 1 — a thrown error here must
-    // never leave a half-imported, unusable state as the app's current STATE
-    // (previously it did: STATE was assigned before this solve ran, so a crash
-    // left corrupt settings live and persisted on the very next save).
+    // Roll back if the re-solve below throws, so a bad-data path never leaves
+    // a half-imported STATE live and persisted.
     const previousState = STATE;
     STATE = ns;
     try{
-      // recompute derived display-only fields without touching schedule/locks. Played games'
-      // rosteredOffIds were loaded directly from the CSV above and are treated as a frozen fact;
-      // an unplayed game's imported rosteredOffIds is preserved too (§9's exact round-trip
-      // requirement) rather than immediately overwritten by a fresh Phase 1 solve — the next
-      // real Generate/Rebalance is still free to change it, same as always.
+      // Re-derive display-only fields without touching schedule/locks.
+      // preserveExisting=true keeps each unplayed game's imported
+      // rosteredOffIds as-is (§9's exact round-trip requirement).
       computeSeasonRosterOff(true);
     }catch(err){
       STATE = previousState;
@@ -2130,13 +2005,10 @@ function importFullCsv(text){
   }
 }
 
-/* Defensive pass over a freshly-parsed import: a hand-edited or corrupted CSV
-   can reference unknown/duplicate player ids, out-of-range season params, or
-   put the same player in two slots of one quarter — none of which the parser
-   above rejects outright, since a malformed row is more often a typo than a
-   reason to discard the whole file. This drops/clamps just the bad parts and
-   returns a list of what it corrected, rather than leaving dangling ids that
-   would surface later as blank names or a duplicate on-court player. */
+/* Defensive pass over a freshly-parsed import: drops/clamps just the bad
+   parts of a hand-edited or corrupted CSV (unknown/duplicate ids,
+   out-of-range params, a duplicate on-court player) rather than discarding
+   the whole file or leaving dangling ids to surface later. Returns what it corrected. */
 function sanitizeImportedState(ns){
   const warnings = [];
 
@@ -2152,12 +2024,9 @@ function sanitizeImportedState(ns){
       return false;
     }
     if(!p.prefs || !p.prefs.length){
-      // Same rule the Add-player dialog enforces: a regular squad player
-      // needs at least one recognised position preference. Dropping here
-      // (rather than importing a preference-less player, as this path used
-      // to) also excludes them from seenPlayerIds below, so any fill-in/
-      // lock/schedule reference to them gets cleaned up the same way an
-      // invalid id would be.
+      // Same rule the Add-player dialog enforces. Dropping (not adding to
+      // seenPlayerIds) also cleans up any fill-in/lock/schedule reference to
+      // them, the same way an invalid id would be.
       warnings.push(`Dropped ${p.name} — no recognised position preference.`);
       return false;
     }
