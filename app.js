@@ -1083,8 +1083,10 @@ function renderGameCard(num){
   const game = getGame(num);
   const open = scheduleUiState.openGame===num;
   const offNames = (game.rosteredOffIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
+  const unavailNames = (planGameAvailability(num).unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
   const summaryBits = [];
   if(offNames.length) summaryBits.push(`Off: ${offNames.slice(0,3).join(", ")}${offNames.length>3?` +${offNames.length-3}`:""}`);
+  if(unavailNames.length) summaryBits.push(`Unavailable: ${unavailNames.slice(0,3).join(", ")}${unavailNames.length>3?` +${unavailNames.length-3}`:""}`);
   if(game.fillInIds && game.fillInIds.length) summaryBits.push(`${game.fillInIds.length} fill-in(s)`);
   const summaryLine = summaryBits.join(" · ");
   return `
