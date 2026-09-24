@@ -1674,7 +1674,10 @@ function renderReports(root){
             <td class="mono">${s.onCourt}</td><td class="mono">${s.bench}</td><td class="mono">${s.missed}</td>
             ${POSITIONS.map(pos=>{
               const n = s.positions[pos]||0, off = s.offPrefPositions[pos]||0;
-              return `<td class="mono">${n}${off?` <span class="offpref-dot" title="${off} off-preference quarter(s) at ${pos}">&bull;${off}</span>`:""}</td>`;
+              const count = n
+                ? `<span class="pos-badge pos-${pos}" title="${n} quarter(s) at ${esc(POS_LABEL[pos])}">${n}</span>`
+                : `<span class="hint">0</span>`;
+              return `<td class="mono">${count}${off?` <span class="offpref-dot" title="${off} off-preference quarter(s) at ${pos}">&bull;${off}</span>`:""}</td>`;
             }).join("")}
             <td class="mono">${s.offPrefTotal}</td></tr>
         `).join("") : `<tr><td colspan="13" class="hint">No players yet.</td></tr>`}
