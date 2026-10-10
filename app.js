@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 41; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 42; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -1272,7 +1272,7 @@ function renderRotationGrid(num){
       const lockedOff = !!(isLocked && isOffPref);
       const cellTitle = lockedOff ? `${name} — locked into an off-preference position` : name;
       const ariaAttr = lockedOff ? ` aria-label="${esc(cellTitle)}"` : "";
-      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"${tabAttr}${ariaAttr}>${isLocked?'<span class="cell-lock-icon" aria-hidden="true">&#128274;</span>':""}<div class="pname" title="${esc(cellTitle)}">${esc(name)}</div>${lockedOff?'<div class="cell-flag" aria-hidden="true">Locked off-pref</div>':""}</div></td>`;
+      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"${tabAttr}${ariaAttr}>${isLocked?'<span class="cell-lock-icon" aria-hidden="true">&#128274;</span>':""}<div class="pname" title="${esc(cellTitle)}">${esc(name)}</div></div></td>`;
     }).join("");
     const benchNames = (q.bench||[]).map(pid=>{
       const isFillIn = STATE.fillIns.some(f=>f.id===pid);

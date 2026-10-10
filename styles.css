@@ -195,7 +195,6 @@ tr:last-child td{border-bottom:none;}
 .cell-offpref{box-shadow:inset 0 0 0 2px var(--danger);}
 .cell-locked{box-shadow:inset 0 0 0 2px var(--accent);}
 .cell-offpref.cell-locked{box-shadow:inset 0 0 0 2px var(--danger), inset 0 0 0 4px var(--accent);}
-.cell-flag{font-size:10px;font-weight:700;color:var(--danger);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .cell-lock-icon{position:absolute;top:3px;right:5px;font-size:10px;line-height:1;opacity:.9;}
 .cell-clickable{cursor:pointer;}
 .cell-clickable:hover{border-color:var(--accent);}

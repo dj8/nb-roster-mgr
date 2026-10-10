@@ -53,7 +53,7 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
 - Cell states **stack as concentric rings**, outermost first: fill-in (dashed border) →
   off-preference (red inset ring) → locked (accent inset ring), so a locked off-preference
   cell shows both. A locked cell also gets a 🔒 icon, and a locked *off-preference* cell a
-  "Locked off-pref" text flag and a spoken `aria-label`, so the state isn't colour-only.
+  spoken `aria-label`/tooltip, so the state isn't colour-only.
   The off-preference report marks such slots "Locked by coach" (`computeOffPrefLog().locked`).
 
 ## Manual override dialogs
