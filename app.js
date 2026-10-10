@@ -6,10 +6,12 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 41; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 43; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
+/* Simple padlock; fills with currentColor so CSS (.lock-icon) sets its colour. */
+const LOCK_ICON_SVG = '<svg class="lock-icon" viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M17 9V7a5 5 0 0 0-10 0v2H5v12h14V9h-2zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg>';
 const STORAGE_KEY = "netballRosterApp_v1";
 const VALID_TABS = ["setup","schedule","fillins","reports","settings","data"];
 
@@ -1201,8 +1203,7 @@ function renderGameBody(num){
         <span><span class="swatch" style="background:var(--bg-alt);border:1px solid var(--border);"></span> Bench</span>
         <span><span class="swatch" style="box-shadow:inset 0 0 0 2px var(--danger);"></span> Off-preference</span>
         <span><span class="swatch" style="border:2px dashed var(--warn);"></span> Fill-in</span>
-        <span><span class="swatch" style="box-shadow:inset 0 0 0 2px var(--accent);"></span> Locked</span>
-        <span><span class="swatch" style="box-shadow:inset 0 0 0 2px var(--danger), inset 0 0 0 4px var(--accent);"></span> Locked off-preference</span>
+        <span>${LOCK_ICON_SVG} Locked</span>
       </div>
 
       <div class="detail-row detail-row-3" style="margin-top:14px;">
@@ -1270,9 +1271,9 @@ function renderRotationGrid(num){
       if(isLocked) classes.push("cell-locked");
       const tabAttr = editable ? ' tabindex="0" role="button"' : "";
       const lockedOff = !!(isLocked && isOffPref);
-      const cellTitle = lockedOff ? `${name} — locked into an off-preference position` : name;
-      const ariaAttr = lockedOff ? ` aria-label="${esc(cellTitle)}"` : "";
-      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"${tabAttr}${ariaAttr}>${isLocked?'<span class="cell-lock-icon" aria-hidden="true">&#128274;</span>':""}<div class="pname" title="${esc(cellTitle)}">${esc(name)}</div>${lockedOff?'<div class="cell-flag" aria-hidden="true">Locked off-pref</div>':""}</div></td>`;
+      const cellTitle = lockedOff ? `${name} — locked into an off-preference position` : isLocked ? `${name} — locked` : name;
+      const ariaAttr = isLocked ? ` aria-label="${esc(cellTitle)}"` : "";
+      return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"${tabAttr}${ariaAttr}>${isLocked?'<span class="cell-lock" aria-hidden="true">'+LOCK_ICON_SVG+'</span>':""}<div class="pname" title="${esc(cellTitle)}">${esc(name)}</div></div></td>`;
     }).join("");
     const benchNames = (q.bench||[]).map(pid=>{
       const isFillIn = STATE.fillIns.some(f=>f.id===pid);
