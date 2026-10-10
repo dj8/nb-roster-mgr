@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 35; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 36; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -1171,6 +1171,15 @@ function renderGameBody(num){
     <div style="margin-top:12px;">
       ${errorHtml}
       ${gapHtml}
+      <div class="game-meta-row">
+        <div class="field">
+          <label class="section-label" for="gameDate-${num}">Game date</label>
+          <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}" title="Optional. Shown on the schedule, reports and exports; doesn't affect the roster.">
+        </div>
+        <button class="btn btn-sm" data-toggleplayed="${num}">
+          ${game.isPlayed?"Unlock (mark not played)":"Mark game as played (lock)"}
+        </button>
+      </div>
       <div class="section-label">Rotation grid</div>
       ${renderRotationGrid(num)}
       <div class="legend">
@@ -1219,18 +1228,6 @@ function renderGameBody(num){
           <span class="cb-label">Protect position coverage</span>
           <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
         </label>
-      </div>
-
-      <div class="field" style="margin-top:14px;">
-        <label class="section-label" for="gameDate-${num}">Game date</label>
-        <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}">
-        <div class="hint" style="margin-top:4px;">Optional. Shown on the schedule, reports and exports; doesn't affect the roster.</div>
-      </div>
-
-      <div class="btn-row" style="margin-top:14px;">
-        <button class="btn btn-sm" data-toggleplayed="${num}">
-          ${game.isPlayed?"Unlock (mark not played)":"Mark game as played (lock)"}
-        </button>
       </div>
     </div>
   `;
