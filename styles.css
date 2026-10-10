@@ -187,11 +187,11 @@ tr:last-child td{border-bottom:none;}
 .cell-oncourt{background:var(--surface-3);border:1px solid var(--border-soft);}
 .cell-bench{background:var(--bg-alt);color:var(--text-dim);}
 .cell-off{background:transparent;color:var(--text-faint);font-style:italic;}
-/* Fill-in (dashed border) and off-preference (red inset ring) stack as
+/* Fill-in (dashed border) and off-preference (teal inset ring) stack as
    concentric rings so both stay visible together. A locked cell has no border
    of its own — just the padlock icon, vertically centred at its right edge. */
 .cell-fillin{border:2px dashed var(--warn);padding:5px 7px;}
-.cell-offpref{box-shadow:inset 0 0 0 2px var(--danger);}
+.cell-offpref{box-shadow:inset 0 0 0 2px var(--accent);}
 .lock-icon{color:var(--danger);flex:none;display:block;}
 .cell-lock{position:absolute;top:50%;right:6px;transform:translateY(-50%);line-height:0;}
 .cell-locked .pname{padding-right:16px;}
