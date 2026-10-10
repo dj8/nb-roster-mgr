@@ -52,7 +52,7 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
   would just reject.
 - Cell states are drawn two ways: fill-in (dashed border) and off-preference (red inset ring)
   **stack as concentric rings**, so both stay visible together; a **locked** cell has no
-  border at all, just a simple padlock SVG (`LOCK_ICON_SVG`, accent colour) vertically
+  border at all, just a simple padlock SVG (`LOCK_ICON_SVG`, red `--danger` colour) vertically
   centred at its right edge. Locked cells also carry a tooltip/`aria-label` ("… — locked",
   or "… — locked into an off-preference position"), so the state isn't visual-only.
   The off-preference report marks such slots "Locked by coach" (`computeOffPrefLog().locked`).
