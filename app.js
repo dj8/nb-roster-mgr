@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const APP_VERSION = "1.0.1";
+const BUILD_NUMBER = 32; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -772,7 +772,7 @@ function render(){
           <div class="brand-mark">GK</div>
           <div>
             <h1>Season Roster</h1>
-            <div class="sub">Netball even rotation planner · v${APP_VERSION}</div>
+            <div class="sub">Netball even rotation planner · build ${BUILD_NUMBER}</div>
           </div>
         </div>
         <div class="topbar-actions">
@@ -1920,7 +1920,7 @@ function downloadBlob(filename, blob){
 function exportFullCsv(){
   const lines = [];
   const row = (...fields)=>lines.push(fields.map(toCsvField).join(","));
-  row("#META"); row("version",1); row("appVersion",APP_VERSION); row("exportedAt",todayIso());
+  row("#META"); row("version",1); row("buildNumber",BUILD_NUMBER); row("exportedAt",todayIso());
   row("#SEASON"); row("numGames",STATE.season.numGames); row("desiredBenchSize",STATE.season.desiredBenchSize);
   row("#SETTINGS");
   row("preferenceSlider",STATE.settings.preferenceSlider);

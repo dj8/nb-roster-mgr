@@ -82,3 +82,4 @@ Worked example: per-game `allowOffPreference` (`null` = follow Settings, else bo
 - Escape every user-supplied string with `esc()` when building HTML; sanitize CSV text with the existing
   guard/unguard helpers.
 - Create a new branch off an up-to-date `main` for each new set of features or fixes (named succinctly for the update, e.g. `per-game-off-preference` or `fix-roster-off-dialog`); don't commit feature work directly to `main`. Merge via PR (`gh pr create --base main`) and delete the branch afterwards. There is no long-lived `dev` branch.
+- Bump `BUILD_NUMBER` (top of `app.js`) by 1 in every commit, as part of that commit. It's a plain integer shown in the app header and written to CSV exports as `buildNumber`; it replaced the old `APP_VERSION` string.
