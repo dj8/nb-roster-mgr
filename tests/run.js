@@ -1211,6 +1211,27 @@ test("DATE-2: game time and location are sanitized and survive a backup round-tr
   assert.strictEqual(g2.location, "=Court 3, Riverside", "location must round-trip exactly");
 });
 
+test("OP-13: an off-preference slot the coach locked is flagged in the off-preference log", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 0;
+  st.settings.allowOffPreference = true;
+  ["GS","GA","WA","C","WD","GD"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  addPlayer(engine, "P6", ["GS"]); // nobody lists GK, so someone must be placed there off-preference
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const before = engine.computeOffPrefLog();
+  assert.ok(before.length>0 && before.every(o=>o.locked===false), "sanity: unlocked off-preference fills are not flagged locked");
+  const first = before[0];
+  engine.getGame(1).lockedSlots[(first.quarter-1)+"-"+first.position] = first.playerId;
+  const after = engine.computeOffPrefLog();
+  const hit = after.find(o=>o.quarter===first.quarter && o.position===first.position);
+  assert.strictEqual(hit.locked, true, "the locked off-preference slot must be flagged");
+  assert.ok(/^Locked by coach/.test(engine.describeOffPrefReason(hit)), "the report reason should say it was locked: "+engine.describeOffPrefReason(hit));
+  after.filter(o=>o!==hit).forEach(o=>assert.strictEqual(o.locked, false, "other slots stay unflagged"));
+});
+
 test("OP-12: per-game allowOffPreference overrides the season-wide setting in both directions", ()=>{
   const build = (globalAllow, gameAllow)=>{
     const engine = freshEngine();

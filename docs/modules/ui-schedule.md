@@ -50,6 +50,11 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
   `role="button"`) when the game **isn't** played — a locked/played game's cells render
   `.cell-readonly` instead, so they don't visually invite a click `openSlotEditDialog`
   would just reject.
+- Cell states **stack as concentric rings**, outermost first: fill-in (dashed border) →
+  off-preference (red inset ring) → locked (accent inset ring), so a locked off-preference
+  cell shows both. A locked cell also gets a 🔒 icon, and a locked *off-preference* cell a
+  "Locked off-pref" text flag and a spoken `aria-label`, so the state isn't colour-only.
+  The off-preference report marks such slots "Locked by coach" (`computeOffPrefLog().locked`).
 
 ## Manual override dialogs
 
