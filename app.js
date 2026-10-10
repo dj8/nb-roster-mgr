@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 33; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 34; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -1167,10 +1167,22 @@ function renderGameBody(num){
   }
   const errorHtml = game.error ? `<div class="alert alert-danger" style="margin-top:12px;">${esc(game.error)}</div>` : "";
 
+  const offPrefSel = game.allowOffPreference===true?"1":game.allowOffPreference===false?"0":"";
   return `
     <div style="margin-top:12px;">
       ${errorHtml}
-      <div class="detail-row">
+      ${gapHtml}
+      <div class="section-label">Rotation grid</div>
+      ${renderRotationGrid(num)}
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--surface-3);border:1px solid var(--border-soft);"></span> On court</span>
+        <span><span class="swatch" style="background:var(--bg-alt);border:1px solid var(--border);"></span> Bench</span>
+        <span><span class="swatch" style="outline:2px solid var(--danger);"></span> Off-preference</span>
+        <span><span class="swatch" style="outline:2px dashed var(--warn);"></span> Fill-in</span>
+        <span><span class="swatch" style="outline:2px solid var(--accent);"></span> Locked</span>
+      </div>
+
+      <div class="detail-row detail-row-3" style="margin-top:14px;">
         <div>
           <div class="section-label">Rostered off</div>
           <div class="hint">${esc(rosteredOffNames)}</div>
@@ -1181,44 +1193,39 @@ function renderGameBody(num){
           <div class="hint">${esc(unavailNames)}</div>
         </div>
         <div>
+          <div class="section-label">Fill-ins assigned to this game</div>
+          <div>${fillinChips||'<span class="hint">None yet.</span>'}</div>
+          <button class="btn btn-sm" data-assignfillin="${num}" style="margin-top:6px;" ${game.isPlayed?"disabled":""}>Assign a fill-in</button>
+        </div>
+      </div>
+
+      <div class="detail-row detail-row-3" style="margin-top:14px;">
+        <div>
           <label class="section-label" for="rosterOffOverride-${num}">Roster-off count override</label>
           <input type="number" class="mono" id="rosterOffOverride-${num}" placeholder="auto" min="0"
             value="${Number.isFinite(game.rosterOffOverride)?game.rosterOffOverride:''}" ${game.isPlayed?"disabled":""}>
           <div class="hint" style="margin-top:4px;">How many players to roster off this game (auto-derived from desired bench size unless set here).</div>
         </div>
+        <div>
+          <label class="section-label" for="allowOffPref-${num}">Off-preference positions</label>
+          <select id="allowOffPref-${num}" ${game.isPlayed?"disabled":""}>
+            <option value="" ${offPrefSel===""?"selected":""}>Follow Settings (${STATE.settings.allowOffPreference?"allowed":"not allowed"})</option>
+            <option value="1" ${offPrefSel==="1"?"selected":""}>Allowed this game</option>
+            <option value="0" ${offPrefSel==="0"?"selected":""}>Not allowed this game</option>
+          </select>
+          <div class="hint" style="margin-top:4px;">Overrides the Settings toggle for this game only.</div>
+        </div>
+        <label class="checkbox-row detail-checkbox">
+          <input type="checkbox" id="strictPairing-${num}" ${game.strictSpecialistPairing?"checked":""} ${game.isPlayed?"disabled":""}>
+          <span class="cb-label">Protect position coverage</span>
+          <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
+        </label>
       </div>
-      ${gapHtml}
-      <div class="field" style="margin-top:10px;">
+
+      <div class="field" style="margin-top:14px;">
         <label class="section-label" for="gameDate-${num}">Game date</label>
         <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}">
         <div class="hint" style="margin-top:4px;">Optional. Shown on the schedule, reports and exports; doesn't affect the roster.</div>
-      </div>
-      <div class="field" style="margin-top:10px;">
-        <label class="section-label" for="allowOffPref-${num}">Off-preference positions</label>
-        <select id="allowOffPref-${num}" ${game.isPlayed?"disabled":""}>
-          <option value="" ${game.allowOffPreference===null||game.allowOffPreference===undefined?"selected":""}>Follow Settings (${STATE.settings.allowOffPreference?"allowed":"not allowed"})</option>
-          <option value="1" ${game.allowOffPreference===true?"selected":""}>Allowed this game</option>
-          <option value="0" ${game.allowOffPreference===false?"selected":""}>Not allowed this game</option>
-        </select>
-        <div class="hint" style="margin-top:4px;">Overrides the Settings toggle for this game only.</div>
-      </div>
-      <label class="checkbox-row" style="margin-top:10px;">
-        <input type="checkbox" id="strictPairing-${num}" ${game.strictSpecialistPairing?"checked":""} ${game.isPlayed?"disabled":""}>
-        <span class="cb-label">Protect position coverage</span>
-        <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
-      </label>
-      <div class="section-label" style="margin-top:10px;">Fill-ins assigned to this game</div>
-      <div>${fillinChips||'<span class="hint">None yet.</span>'}</div>
-      <button class="btn btn-sm" data-assignfillin="${num}" style="margin-top:6px;" ${game.isPlayed?"disabled":""}>Assign a fill-in</button>
-
-      <div class="section-label" style="margin-top:14px;">Rotation grid</div>
-      ${renderRotationGrid(num)}
-      <div class="legend">
-        <span><span class="swatch" style="background:var(--surface-3);border:1px solid var(--border-soft);"></span> On court</span>
-        <span><span class="swatch" style="background:var(--bg-alt);border:1px solid var(--border);"></span> Bench</span>
-        <span><span class="swatch" style="outline:2px solid var(--danger);"></span> Off-preference</span>
-        <span><span class="swatch" style="outline:2px dashed var(--warn);"></span> Fill-in</span>
-        <span><span class="swatch" style="outline:2px solid var(--accent);"></span> Locked</span>
       </div>
 
       <div class="btn-row" style="margin-top:14px;">
