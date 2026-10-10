@@ -58,14 +58,14 @@ Fill-ins are excluded from all of this — see
 
 | Function | Params | Returns | Side effects |
 |---|---|---|---|
-| `computeSeasonRosterOff(preserveExisting?)` | optional boolean | Phase 1 `stats` object | **Phase 1 only.** Builds `RosterSolver.solveSeasonRosterOff` input from every game's `planGameAvailability`, calls it, writes `rosteredOffIds`/`unavailableIds`/`shortfall`/`minFillIns`/`recommendedFillIns`/`coverageWarnings`/`noBenchOnly`/`squadIds` onto every non-played game. `preserveExisting=true` (used only by CSV import) treats a non-played, non-locked game that already has a non-empty `rosteredOffIds` as fixed, so re-deriving display fields after a CSV load doesn't silently pick a different roster-off set than what was exported. |
+| `computeSeasonRosterOff(preserveExisting?)` | optional boolean | Phase 1 `stats` object | **Phase 1 only.** Builds `RosterSolver.solveSeasonRosterOff` input from every game's `planGameAvailability`, calls it, writes `rosteredOffIds`/`unavailableIds`/`shortfall`/`minFillIns`/`recommendedFillIns`/`coverageWarnings`/`noBenchOnly`/`squadIds` onto every non-played game. `preserveExisting=true` (used only by backup import) treats a non-played, non-locked game that already has a non-empty `rosteredOffIds` as fixed, so re-deriving display fields after a backup load doesn't silently pick a different roster-off set than what was exported. |
 | `runGeneration()` | — | `{invalid, offPrefLog, phase1Stats, elapsedMs, cumulative}` | **The full pipeline** — see [`flows.md`](../flows.md#1-season-generation-generate-season--rebalance-remaining-games). Calls `computeSeasonRosterOff()`, then for every non-played game: `planGameSquad` → 4× `RosterSolver.solveQuarterPositions` (folding cumulative after each) → `RosterSolver.refineGameQuarters` → reconcile cumulative → write `game.schedule`/`generated`/`error`. Ends with `saveState()`. This is fully synchronous and can take several seconds — the caller (`renderSchedule`) defers it one tick via `setTimeout(fn, 0)` so a "Generating…" busy state can actually paint first. |
 
 ## Report aggregations
 
 Read by the Reports tab ([`ui-reports-and-settings.md`](ui-reports-and-settings.md)) and
 by `exportXlsx` ([`csv-xlsx-io.md`](csv-xlsx-io.md)). All derived **fresh from stored
-schedules on every call** — never cached — specifically so a manual slot edit or a CSV
+schedules on every call** — never cached — specifically so a manual slot edit or a backup
 import (neither of which goes through `runGeneration`) can't leave these disagreeing with
 what's actually in `STATE.games[...].schedule`.
 
@@ -81,7 +81,7 @@ what's actually in `STATE.games[...].schedule`.
 ## Callers
 
 `runGeneration()` and `computeSeasonRosterOff()` are called from the Schedule tab
-(`renderSchedule`'s Generate/Rebalance buttons) and from `importFullCsv`. The
+(`renderSchedule`'s Generate/Rebalance buttons) and from `importBackup`. The
 availability/squad planners (`planGameAvailability`, `planGameSquad`,
 `fillInGapSuggestions`) are read constantly by the Schedule tab's rendering and dialogs to
 display current facts without needing a fresh generation. The report functions are called

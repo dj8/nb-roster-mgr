@@ -57,8 +57,8 @@ function makeFakeLocalStorage(){
   };
 }
 
-/* Captures the text passed to `new Blob([text])` so CSV export can be inspected
-   without a real download — exportFullCsv() itself is never modified for this. */
+/* Captures the text passed to `new Blob([text])` so the backup export can be inspected
+   without a real download — exportBackup() itself is never modified for this. */
 class CapturingBlob {
   constructor(parts){ this.__text = (parts||[]).join(""); CapturingBlob.last = this.__text; }
 }
@@ -92,6 +92,8 @@ if(typeof module!=="undefined" && module.exports){
     emptyCumulative: emptyCumulative,
     getGame: getGame,
     sanitizeGameDate: sanitizeGameDate,
+    sanitizeGameTime: sanitizeGameTime,
+    sanitizeGameLocation: sanitizeGameLocation,
     formatGameDate: formatGameDate,
     gameLabel: gameLabel,
     gameTag: gameTag,
@@ -100,8 +102,9 @@ if(typeof module!=="undefined" && module.exports){
     POSITIONS: POSITIONS,
     uid: uid,
     byId: byId,
-    exportFullCsv: exportFullCsv,
-    importFullCsv: importFullCsv,
+    exportBackup: exportBackup,
+    importBackup: importBackup,
+    buildBackup: buildBackup,
     saveState: saveState,
     loadState: loadState
   };

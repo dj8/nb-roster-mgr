@@ -12,8 +12,8 @@ mutates one of these directly and then explicitly calls `saveState()` and/or a
 
 | Variable | Persisted? | Purpose |
 |---|---|---|
-| `STATE` | Yes (`localStorage`) | The entire app: players, fill-ins, season, settings, games. Reassigned wholesale in a couple of places — CSV import (rollback-on-failure pattern) and "Clear all data" (`STATE = defaultState()`) — not just mutated in place. |
-| `STATE._lastGeneratedAt`, `STATE._lastGenerationMs` | Yes, incidentally | Set by `runGeneration()`, read by `exportFullCsv()`'s filename and (previously) a UI hint. They're plain properties on `STATE`, so they ride along in the `localStorage` JSON blob even though they're derived/telemetry data, not season data. Harmless — `loadState()`'s merge doesn't validate unknown fields — but not intentionally part of the persisted schema either. |
+| `STATE` | Yes (`localStorage`) | The entire app: players, fill-ins, season, settings, games. Reassigned wholesale in a couple of places — backup import (rollback-on-failure pattern) and "Clear all data" (`STATE = defaultState()`) — not just mutated in place. |
+| `STATE._lastGeneratedAt`, `STATE._lastGenerationMs` | Yes, incidentally | Set by `runGeneration()`, read by `exportBackup()`'s filename and (previously) a UI hint. They're plain properties on `STATE`, so they ride along in the `localStorage` JSON blob even though they're derived/telemetry data, not season data. Harmless — `loadState()`'s merge doesn't validate unknown fields — but not intentionally part of the persisted schema either. |
 | `scheduleUiState` (`{openGame, filter}`) | No | Which game card is expanded and which Schedule-tab filter is active. Purely a view-state convenience; lost on reload. |
 | `dirtySinceGeneration` | **No, deliberately** | True whenever a setting/override has changed since the last Generate/Rebalance — drives the persistent "stale schedule" banner. Explicitly *not* saved: it describes drift between `STATE` and the last engine run *within this session*, not a fact about the season. A page reload resets it to `false` even if the schedule genuinely doesn't reflect current settings. |
 | `_modalReturnFocus`, `_modalTitleSeq` | No | Modal focus-management bookkeeping (`openModal`/`closeModal`). |
@@ -23,8 +23,8 @@ mutates one of these directly and then explicitly calls `saveState()` and/or a
 - **One `localStorage` key**, `netballRosterApp_v1` (`STORAGE_KEY`), holding the entire
   `STATE` as JSON. There is no server and no cross-device sync — a season lives in one
   browser's storage on one device.
-- **CSV is the only way to move data between devices/coaches**, and it's a fully manual,
-  explicit action (`exportFullCsv` / `importFullCsv` on the Data tab). XLSX export is
+- **The JSON backup is the only way to move data between devices/coaches**, and it's a fully manual,
+  explicit action (`exportBackup` / `importBackup` on the Data tab). XLSX export is
   one-way (report output only, not re-importable).
 - **`loadState()` runs a migration pass on every load**, not just a raw `JSON.parse`:
   merges parsed data onto `defaultState()` (so a field added in a later version gets its
@@ -103,19 +103,11 @@ legitimately repeat every quarter with nothing to swap against. This is tested,
 documented behavior (`RO-4`/`QR-5`), not a bug, but it reads as "rotation isn't working"
 to a coach who doesn't expect it.
 
-### CSV can't distinguish "explicit empty lock" from "no lock"
-The `#GAMES` section's `rosterOffLockIds` column is a `|`-joined string; both `null`
-(no lock) and `[]` (explicit "nobody off," see above) serialize to an empty string. An
-explicit-empty lock survives a CSV export/reimport as if it had never been set. This
-distinction round-trips correctly through `localStorage` (real JSON, `null` vs `[]` are
-distinguishable) — it's specifically the CSV interchange format that collapses it.
-Documented inline in `importFullCsv`.
-
 ### Hardcoded season shape: 4 quarters, 7 on-court positions
 Neither is a setting. `for(let q=0;q<4;q++)` in `runGeneration`, the `qIdx>3` bounds
-check in CSV import, and every `7 + desiredBenchSize` squad-size calculation all assume
+check in backup import, and every `7 + desiredBenchSize` squad-size calculation all assume
 exactly 4 quarters and exactly the 7 `POSITIONS`. Changing either would touch the engine,
-the CSV format, and the rotation-grid rendering — not a config flag anywhere.
+the backup format, and the rotation-grid rendering — not a config flag anywhere.
 
 ### `BIG_M`, not `Infinity`, marks a disqualified Hungarian cell
 `hungarian.js`'s potential-based algorithm (`u`/`v` arrays) does arithmetic on cost
@@ -153,10 +145,11 @@ that needs a unit test must be added to the export list in `tests/harness.js`**,
 exported from `app.js` — and nothing enforces that the two stay in sync besides tests
 failing to find the function.
 
-### Two different CSV imports, easy to conflate
+### Two different imports, easy to conflate
 - **Setup tab → "Import CSV"** (`importPlayersCsv`): players only, additive — skips a
-  name that's already on the roster, doesn't touch games/settings/schedule.
-- **Data tab → "Import full CSV"** (`importFullCsv`): full state — replaces `STATE`
-  wholesale (players, fill-ins, season, settings, every game and its schedule).
+  name that's already on the roster, doesn't touch games/settings/schedule. The only
+  remaining CSV code path.
+- **Data tab → "Import backup"** (`importBackup`): full state from a JSON backup — replaces
+  `STATE` wholesale (players, fill-ins, season, settings, every game and its schedule).
 
-They read different (though overlapping) CSV shapes and are not interchangeable.
+They read completely different file formats and are not interchangeable.

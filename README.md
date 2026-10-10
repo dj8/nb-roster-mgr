@@ -19,8 +19,8 @@ short-staffed games. Runs entirely in the browser — no server, no build step, 
   the season around it. Mark a game "played" to freeze its lineup permanently.
 - **Reports** — season-wide fairness stats, an off-preference log, and warnings when
   perfectly even missed-games isn't achievable given the roster's position depth.
-- **CSV import/export** — full round-trip of players, preferences, settings, and the
-  generated schedule, for backing up or sharing between coaches.
+- **JSON backup/restore** — a single versioned file with the roster, preferences, settings,
+  per-game details and the generated schedule, for backing up or sharing between coaches.
 - **XLSX export** — rotation grid, player summary, and short-staffed-game notes as
   spreadsheet tabs.
 
@@ -51,7 +51,7 @@ npm run test:ui # headless browser smoke test (tests/ui-smoke.js, needs Playwrig
 
 ```
 index.html    entry point
-app.js        UI + application state + CSV/XLSX import-export
+app.js        UI + application state + JSON backup and XLSX/players-CSV import-export
 solver.js     roster-off search (Phase 1) and cost model (Phase 2)
 hungarian.js  the Hungarian algorithm, standalone and unit-testable
 styles.css    styling

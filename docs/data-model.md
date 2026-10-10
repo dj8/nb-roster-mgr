@@ -57,6 +57,8 @@ erDiagram
         string_array fillInIds FK "-> FILLIN.id, assigned to this game"
         object lockedSlots "'qi-pos' -> playerId|fillInId, manual per-slot lock"
         string date "optional YYYY-MM-DD label; never read by generation"
+        string time "optional HH:MM (24h) label"
+        string location "optional free-text label, max 80 chars"
         boolean strictSpecialistPairing "per-game coverage-protection toggle"
         boolean allowOffPreference "per-game override of settings.allowOffPreference; null follows the season-wide setting"
         boolean shortfall "available regulars + fill-ins < 7"
@@ -104,7 +106,7 @@ erDiagram
   size varies with roster-off/unavailability/fill-ins), and can be `0` (`noBenchOnly`).
 - **A player never appears twice across `onCourt` + `bench` in the same quarter.** This
   invariant is maintained by construction in every write path (`solveQuarterPositions`,
-  `refineGameQuarters`, and the manual-edit dialogs in `ui-schedule.md`) — CSV import is
+  `refineGameQuarters`, and the manual-edit dialogs in `ui-schedule.md`) — backup import is
   the one place it's re-checked defensively (`sanitizeImportedState`), since an
   externally-edited file could violate it.
 - **`PLAYER` and `FILLIN` share an id-space concept but not a table.** A quarter's

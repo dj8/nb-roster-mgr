@@ -746,25 +746,35 @@ test("OFFPREF-LOG-BENCHED-1 (I4 regression): the off-preference log names a spec
   assert.deepStrictEqual([...log[0].benchedSpecialists], ["Bea"]);
 });
 
-test("CSV-IMPORT-SANITIZE-1: a corrupted CSV is sanitized rather than corrupting app state", ()=>{
-  const engine = freshEngine();
-  const csv = [
-    "#META", "version,1",
-    "#SEASON", "numGames,500", "desiredBenchSize,2",
-    "#SETTINGS", "preferenceSlider,9",
-    "#PLAYERS",
-    "p1,Amy,GS|GA,",
-    "p1,AmyDupe,WA|C,",   // duplicate id — should be dropped
-    "p2,Bea,WD|GD,",
-    "#FILLINS",
-    "#GAMES",
-    "1,0,,,,,0-GS=ghost123,",  // locked slot references an unknown player
-    "#SCHEDULE",
-    "1,0,GS,p2,0",
-    "1,0,GA,ghost456,0"        // unknown player id in the schedule
-  ].join("\n");
+/* Builds a minimal valid backup file as text, merging `plan`/`results` overrides in. */
+function makeBackup(planOverrides, results){
+  return JSON.stringify({
+    format:"netball-roster-backup", schemaVersion:1,
+    plan: Object.assign({season:{numGames:1, desiredBenchSize:0}, settings:{}, players:[], fillIns:[], games:{}}, planOverrides||{}),
+    results: results || {games:{}}
+  });
+}
+function backupRoundTrip(engine){
+  engine.exportBackup();
+  const text = engine.CapturingBlob.last;
+  engine.importBackup(text);
+  return JSON.parse(text);
+}
 
-  engine.importFullCsv(csv);
+test("BACKUP-IMPORT-SANITIZE-1: a corrupted backup is sanitized rather than corrupting app state", ()=>{
+  const engine = freshEngine();
+  engine.importBackup(makeBackup({
+    season:{numGames:500, desiredBenchSize:2},
+    players:[
+      {id:"p1", name:"Amy", prefs:["GS","GA"], unavailable:[]},
+      {id:"p1", name:"AmyDupe", prefs:["WA","C"], unavailable:[]},   // duplicate id — should be dropped
+      {id:"p2", name:"Bea", prefs:["WD","GD"], unavailable:[]}
+    ],
+    games:{"1":{lockedSlots:{"0-GS":"ghost123"}}}                    // locked slot references an unknown player
+  }, {games:{"1":{schedule:{quarters:[
+    {onCourt:{GS:"p2", GA:"ghost456"}, bench:[], offPreference:{}},  // unknown player id in the schedule
+    {onCourt:{}, bench:[]}, {onCourt:{}, bench:[]}, {onCourt:{}, bench:[]}
+  ]}}}}));
   const st = engine._getState();
 
   assert.strictEqual(st.season.numGames, 60, "numGames should be clamped to the app's supported range, not left at 500");
@@ -777,21 +787,31 @@ test("CSV-IMPORT-SANITIZE-1: a corrupted CSV is sanitized rather than corrupting
   assert.ok(!g.schedule.quarters[0].onCourt.GA, "an unknown player id in the schedule should be dropped, not left dangling: "+JSON.stringify(g.schedule.quarters[0].onCourt));
 });
 
-test("CSV-IMPORT-VALIDATE-1 (E5/E6/E7 regression): full-CSV player import applies the same rules as the Add-player dialog", ()=>{
+test("BACKUP-IMPORT-REJECT-1: non-backup, malformed and too-new files are refused without touching state", ()=>{
   const engine = freshEngine();
-  const csv = [
-    "#META", "version,1",
-    "#SEASON", "numGames,5", "desiredBenchSize,2",
-    "#SETTINGS", "preferenceSlider,9",
-    "#PLAYERS",
-    "p1,Dupe,GS|GS|GS|GA,3|abc|-2|99|0",   // duplicated prefs + garbage/invalid unavailable values
-    "p2,NoPrefs,,",                          // no recognised preference at all
-    "#FILLINS",
-    "#GAMES",
-    "#SCHEDULE"
-  ].join("\n");
+  const st = engine._getState();
+  addPlayer(engine, "Keeper", ["GS"]);
+  const before = JSON.stringify(engine._getState().players);
+  ["not json at all", "[]", "{}", JSON.stringify({format:"something-else", plan:{}}),
+   JSON.stringify({format:"netball-roster-backup", schemaVersion:99, plan:{}}),
+   JSON.stringify({format:"netball-roster-backup", schemaVersion:1}),
+   "#META\nversion,1\n#PLAYERS\np1,Amy,GS,"   // the retired CSV format
+  ].forEach(bad=>{
+    engine.importBackup(bad);
+    assert.strictEqual(JSON.stringify(engine._getState().players), before, "a refused import must leave state untouched: "+bad.slice(0,40));
+  });
+  assert.strictEqual(engine._getState(), st, "state object itself must not be swapped by a refused import");
+});
 
-  engine.importFullCsv(csv);
+test("BACKUP-IMPORT-VALIDATE-1 (E5/E6/E7 regression): backup player import applies the same rules as the Add-player dialog", ()=>{
+  const engine = freshEngine();
+  engine.importBackup(makeBackup({
+    season:{numGames:5, desiredBenchSize:2},
+    players:[
+      {id:"p1", name:"Dupe", prefs:["GS","GS","GS","GA"], unavailable:[3,"abc",-2,99,0]},  // duplicated prefs + garbage/invalid unavailable values
+      {id:"p2", name:"NoPrefs", prefs:[], unavailable:[]}                                   // no recognised preference at all
+    ]
+  }));
   const st = engine._getState();
 
   const dupe = st.players.find(p=>p.name==="Dupe");
@@ -806,30 +826,18 @@ test("CSV-IMPORT-VALIDATE-1 (E5/E6/E7 regression): full-CSV player import applie
   assert.ok(!st.players.some(p=>p.name==="NoPrefs"), "E7: a player with zero recognised preferences must be dropped, not imported with an empty list");
 });
 
-test("CSV-FORMULA-GUARD-1 (I10 regression): a name starting with =, +, -, or @ is neutralised on export and restored on import", ()=>{
-  // OWASP CSV-injection mitigation: a cell beginning with one of these
-  // characters executes as a formula when opened in Excel/LibreOffice — a
-  // real concern since this export is explicitly meant to be handed to a
-  // co-coach. guardCsvText/unguardCsvText must round-trip exactly through
-  // this app's own export→import, not just escape on the way out.
+test("BACKUP-ROUNDTRIP-NAMES-1: awkward names (formula characters, quotes, commas, unicode) round-trip exactly", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
-  const dangerousName = "=1+1";
-  st.players.push({id: engine.uid("p"), name: dangerousName, prefs:["GS"], unavailable:[]});
+  const names = ["=1+1", "+cmd", "-x", "@sum", "'quoted'", 'He said "hi", ok', "Zoë 🏐"];
+  names.forEach(name=>st.players.push({id: engine.uid("p"), name, prefs:["GS"], unavailable:[]}));
   engine.ensureGamesExist();
-
-  engine.exportFullCsv();
-  const csvText = engine.CapturingBlob.last;
-  assert.ok(!csvText.includes(",=1+1,") , "the raw dangerous value must not appear unescaped in the exported CSV");
-  assert.ok(csvText.includes(",'=1+1,"), "the exported CSV should carry the neutralised, quote-prefixed value");
-
-  engine.importFullCsv(csvText);
-  const st2 = engine._getState();
-  assert.strictEqual(st2.players[0].name, dangerousName, "the original name must be restored exactly on import, not left with a stray leading quote");
+  backupRoundTrip(engine);
+  assert.deepStrictEqual([...engine._getState().players.map(p=>p.name)], names, "names must come back byte-for-byte, with no CSV-style escaping artefacts");
 });
 
-test("CSV-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped, not left as NaN", ()=>{
+test("BACKUP-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped, not left as NaN", ()=>{
   // Previously: Number("abc") -> NaN flowed into the cost model, every
   // candidate scored NaN, and solveSeasonRosterOff crashed pushing a null
   // candidate onto the picked list.
@@ -839,16 +847,11 @@ test("CSV-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped, n
     ["Eve",["WD","GD"]], ["Fay",["GD","WD"]], ["Gia",["GK","GD"]], ["Hal",["GS","WA"]],
     ["Ivy",["WA","C"]], ["Jaz",["C","WD"]]
   ];
-  const rows = [
-    "#META","version,1",
-    "#SEASON","numGames,3","desiredBenchSize,2",
-    "#SETTINGS","preferenceSlider,abc","rosterOffWeight,abc","weight_bench,nope","weight_positionPurity,",
-    "#PLAYERS",
-    ...defs.map(([name,prefs],i)=>`p${i},${name},${prefs.join("|")},`),
-    "#FILLINS","#GAMES","#SCHEDULE"
-  ].join("\n");
-
-  engine.importFullCsv(rows);
+  engine.importBackup(makeBackup({
+    season:{numGames:3, desiredBenchSize:2},
+    settings:{preferenceSlider:"abc", rosterOffWeight:"abc", fairnessWeights:{bench:"nope", positionPurity:null}},
+    players: defs.map(([name,prefs],i)=>({id:"p"+i, name, prefs, unavailable:[]}))
+  }));
   const st = engine._getState();
   assert.ok(Number.isFinite(st.settings.preferenceSlider), "preferenceSlider must be a finite number after import: "+st.settings.preferenceSlider);
   assert.ok(Number.isFinite(st.settings.rosterOffWeight), "rosterOffWeight must be a finite number after import: "+st.settings.rosterOffWeight);
@@ -882,28 +885,14 @@ test("SETTINGS-SANITIZE-1 (C1 regression): a corrupted localStorage blob is clam
   assert.ok(Number.isFinite(reloaded.settings.fairnessWeights.bench), "a non-numeric bench weight should fall back to a finite default");
 });
 
-test("CSV-IMPORT-XSS-1 (C2 regression): imported preferences are filtered to real positions only", ()=>{
-  // Previously: importFullCsv took the "prefs" column verbatim with no check
-  // against POSITIONS, and those strings were later interpolated into HTML
-  // unescaped — a crafted CSV from a co-coach could inject markup.
+test("BACKUP-IMPORT-XSS-1 (C2 regression): imported preferences are filtered to real positions only", ()=>{
+  // Prefs strings are later interpolated into HTML, so a crafted backup from a
+  // co-coach must not be able to smuggle markup through them.
   const engine = freshEngine();
-  // Each field is quoted exactly once (toCsvField-style) — quoting twice would
-  // corrupt the field content itself (stray literal quote characters) and mask
-  // the thing under test, which is import-time filtering, not CSV escaping.
-  const csvField = v => /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v;
-  const rows = [
-    ["#META"],["version","1"],
-    ["#SEASON"],["numGames","1"],["desiredBenchSize","0"],
-    ["#SETTINGS"],["preferenceSlider","9"],
-    ["#PLAYERS"],
-    ["p1","Amy",'GS|"><img src=x onerror=alert(1)>',""],
-    ["#FILLINS"],
-    ["f1","Guest",'"><svg onload=alert(2)>'],
-    ["#GAMES"],["#SCHEDULE"]
-  ];
-  const csv = rows.map(r=>r.map(csvField).join(",")).join("\n");
-
-  engine.importFullCsv(csv);
+  engine.importBackup(makeBackup({
+    players:[{id:"p1", name:"Amy", prefs:["GS",'"><img src=x onerror=alert(1)>'], unavailable:[]}],
+    fillIns:[{id:"f1", name:"Guest", prefs:['"><svg onload=alert(2)>'], saved:true}]
+  }));
   const st = engine._getState();
   // st.players/fillIns live in the harness's separate vm realm (see the note on
   // PHASE1-TOGGLE-1 above) — spread into a same-realm array before comparing.
@@ -911,55 +900,74 @@ test("CSV-IMPORT-XSS-1 (C2 regression): imported preferences are filtered to rea
   assert.deepStrictEqual([...st.fillIns[0].prefs], [], "a fill-in preference string with no real position tokens should end up empty, not carry the markup through: "+JSON.stringify(st.fillIns[0].prefs));
 });
 
+test("BACKUP-IMPORT-KEYS-1: unexpected game/slot keys (including __proto__) are ignored, not applied", ()=>{
+  const engine = freshEngine();
+  engine.importBackup(`{"format":"netball-roster-backup","schemaVersion":1,"plan":{"season":{"numGames":2,"desiredBenchSize":0},
+    "players":[{"id":"p1","name":"Amy","prefs":["GS"],"unavailable":[]}],
+    "games":{"__proto__":{"isPlayed":true},"constructor":{"isPlayed":true},"0":{},"1":{"lockedSlots":{"0-GS":"p1","9-XX":"p1","__proto__":"p1"}}}}}`);
+  assert.strictEqual(({}).isPlayed, undefined, "Object.prototype must not be polluted");
+  assert.deepStrictEqual([...engine.gameNums()], [1,2], "only real game numbers should exist");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(engine.getGame(1).lockedSlots)), {"0-GS":"p1"}, "only well-formed slot keys survive");
+});
+
 /* ============================================================
-   7. CSV round-trip
+   7. Backup round-trip
    ============================================================ */
-test("CSV-ROUNDTRIP-1: settings CSV no longer emits weight_missed/weight_onCourt", ()=>{
+test("BACKUP-ROUNDTRIP-1: the file is versioned, split into plan/results, and omits retired and device-only fields", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
   ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
   engine.ensureGamesExist();
   engine.runGeneration();
-  engine.exportFullCsv();
-  const csvText = engine.CapturingBlob.last;
-  assert.ok(!csvText.includes("weight_missed"), "weight_missed should not be exported");
-  assert.ok(!csvText.includes("weight_onCourt"), "weight_onCourt should not be exported (merged into weight_bench)");
+  engine.exportBackup();
+  const text = engine.CapturingBlob.last;
+  const b = JSON.parse(text);
+  assert.strictEqual(b.format, "netball-roster-backup");
+  assert.strictEqual(b.schemaVersion, 1);
+  assert.ok(Number.isInteger(b.buildNumber) && b.buildNumber>0, "buildNumber should be recorded");
+  assert.ok(b.plan && b.results, "plan and results sections should both be present");
+  assert.strictEqual(b.plan.players.length, 7);
+  assert.ok(b.results.games["1"].schedule, "the generated schedule belongs under results");
+  assert.ok(!("schedule" in b.plan.games["1"]), "results must not leak into plan");
+  assert.ok(!text.includes("weight_missed") && !text.includes("onCourt\":1"), "retired settings must not be exported");
+  assert.ok(!("theme" in b) && !("theme" in b.plan), "device-only theme must not be exported");
   assert.ok(!("missed" in engine._getState().settings.fairnessWeights));
   assert.ok(!("onCourt" in engine._getState().settings.fairnessWeights));
 });
 
-test("CSV-ROUNDTRIP-2: a played game's rosteredOffIds survive export/import as a frozen fact", ()=>{
+test("BACKUP-ROUNDTRIP-2: a played game's rosteredOffIds and unavailableIds survive export/import as frozen facts", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
   st.season.desiredBenchSize = 2;
-  ["GS","GA","WA","C","WD","GD","GK","GA","GD","WA"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos])); // 10 players, bench 2 -> 1 roster-off
+  ["GS","GA","WA","C","WD","GD","GK","GA","GD","WA","C"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos])); // 11 players, 1 unavailable, bench 2 -> 1 roster-off
+  st.players[0].unavailable = [1];
   engine.ensureGamesExist();
   engine.runGeneration();
   const g1 = engine.getGame(1);
   assert.strictEqual(g1.rosteredOffIds.length, 1, "sanity: exactly one roster-off expected");
   g1.isPlayed = true;
-  const rosteredOffBefore = g1.rosteredOffIds.slice().sort();
+  const rosteredOffBefore = [...g1.rosteredOffIds].sort();
+  const unavailBefore = [...g1.unavailableIds];
+  assert.strictEqual(unavailBefore.length, 1, "sanity: one unavailable player recorded");
 
-  engine.exportFullCsv();
-  const csvText = engine.CapturingBlob.last;
-  assert.ok(csvText.includes("rosteredOffIds"), "exported CSV should carry the rosteredOffIds column");
-  engine.importFullCsv(csvText);
+  backupRoundTrip(engine);
 
   const st2 = engine._getState();
-  assert.deepStrictEqual(st2.games["1"].rosteredOffIds.slice().sort(), rosteredOffBefore,
-    "played game's roster-off decision should be frozen and survive CSV round-trip exactly");
-  assert.strictEqual(st2.games["1"].isPlayed, true, "CSV-8: played/locked status must survive export/import, not reset to false");
+  // Cross-realm arrays (see harness.js) — spread before deepStrictEqual.
+  assert.deepStrictEqual([...st2.games["1"].rosteredOffIds].sort(), rosteredOffBefore,
+    "played game's roster-off decision should be frozen and survive the round-trip exactly");
+  assert.deepStrictEqual([...st2.games["1"].unavailableIds], unavailBefore, "played game's unavailable list must survive too");
+  assert.strictEqual(st2.games["1"].isPlayed, true, "played/locked status must survive export/import, not reset to false");
 });
 
-test("CSV-ROUNDTRIP-3 (M5 regression): an unplayed game's exact rosteredOffIds survive import even when Phase 1 would pick differently", ()=>{
-  // Previously: importFullCsv unconditionally called computeSeasonRosterOff(),
-  // which re-ran Phase 1 fresh, overwriting rosteredOffIds — it only *looked*
-  // like a round-trip since the solver is deterministic on identical input.
-  // The CSV here is hand-edited to a selection Phase 1 would never produce on
-  // its own, so preservation can only be verified by the import path
-  // actually trusting the file.
+test("BACKUP-ROUNDTRIP-3 (M5 regression): an unplayed game's exact rosteredOffIds survive import even when Phase 1 would pick differently", ()=>{
+  // Previously the import unconditionally re-ran Phase 1, overwriting
+  // rosteredOffIds — it only *looked* like a round-trip since the solver is
+  // deterministic on identical input. The file here is hand-edited to a
+  // selection Phase 1 would never produce on its own, so preservation can only
+  // be verified by the import path actually trusting the file.
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
@@ -969,19 +977,14 @@ test("CSV-ROUNDTRIP-3 (M5 regression): an unplayed game's exact rosteredOffIds s
   engine.runGeneration();
   assert.strictEqual(engine.getGame(1).rosteredOffIds.length, 1, "sanity: natural roster-off for this squad is exactly 1 player");
 
-  engine.exportFullCsv();
-  const lines = engine.CapturingBlob.last.split("\r\n");
-  const gamesIdx = lines.findIndex(l=>l.startsWith("#GAMES"));
+  engine.exportBackup();
+  const b = JSON.parse(engine.CapturingBlob.last);
   const ids = engine._getState().players.map(p=>p.id);
-  const forcedPair = [ids[2], ids[3]].sort().join("|"); // force 2 players off, not the natural 1
-  for(let i=gamesIdx+1;i<lines.length;i++){
-    if(lines[i].startsWith("#")) break;
-    const cols = lines[i].split(",");
-    if(cols[0]==="1"){ cols[4] = forcedPair; lines[i]=cols.join(","); break; }
-  }
-  engine.importFullCsv(lines.join("\r\n"));
+  const forcedPair = [ids[2], ids[3]].sort(); // force 2 players off, not the natural 1
+  b.results.games["1"].rosteredOffIds = forcedPair;
+  engine.importBackup(JSON.stringify(b));
 
-  assert.strictEqual(engine.getGame(1).rosteredOffIds.slice().sort().join("|"), forcedPair,
+  assert.deepStrictEqual([...engine.getGame(1).rosteredOffIds].sort(), forcedPair,
     "the imported (hand-edited) roster-off selection must be preserved exactly, not silently recomputed by a fresh Phase 1 solve");
 
   // A subsequent real Generate/Rebalance must still be free to change it —
@@ -991,17 +994,54 @@ test("CSV-ROUNDTRIP-3 (M5 regression): an unplayed game's exact rosteredOffIds s
     "a later Generate/Rebalance must still recompute freely and is not stuck honoring the imported value as a lock");
 });
 
-test("FILLIN-SAVED-ROUNDTRIP-1 (M4 regression): a one-off fill-in's saved:false flag survives CSV export/import", ()=>{
+test("BACKUP-ROUNDTRIP-4: an explicit empty roster-off lock ([] = nobody off) stays distinct from no lock (null)", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 2;
+  ["GS","GA","WA","C","WD","GD","GK","GA"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  engine.getGame(1).rosterOffLockIds = [];
+  engine.getGame(2).rosterOffLockIds = null;
+  backupRoundTrip(engine);
+  assert.deepStrictEqual([...engine.getGame(1).rosterOffLockIds], [], "explicit 'nobody off' must survive (the old CSV format collapsed it to null)");
+  assert.strictEqual(engine.getGame(2).rosterOffLockIds, null, "no lock must stay no lock");
+});
+
+test("BACKUP-ROUNDTRIP-5: schedule, locks, off-preference flags and every per-game setting survive a round-trip", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 2;
+  st.season.desiredBenchSize = 1;
+  ["GS","GA","WA","C","WD","GD","GK","GS"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  const g1 = engine.getGame(1);
+  g1.date = "2026-03-14"; g1.time = "10:30"; g1.location = "=Court 3, \"Main\" Hall";
+  g1.rosterOffOverride = 0; g1.allowOffPreference = false; g1.strictSpecialistPairing = true;
+  engine.runGeneration();
+  g1.lockedSlots["0-GS"] = st.players[0].id;
+  const scheduleBefore = JSON.parse(JSON.stringify(g1.schedule));
+  backupRoundTrip(engine);
+  const g = engine.getGame(1);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(g.schedule)), scheduleBefore, "schedule must round-trip exactly");
+  assert.strictEqual(g.lockedSlots["0-GS"], st.players[0].id);
+  assert.strictEqual(g.date, "2026-03-14");
+  assert.strictEqual(g.time, "10:30");
+  assert.strictEqual(g.location, "=Court 3, \"Main\" Hall", "free text must come back exactly");
+  assert.strictEqual(g.rosterOffOverride, 0);
+  assert.strictEqual(g.allowOffPreference, false);
+  assert.strictEqual(g.strictSpecialistPairing, true);
+  assert.strictEqual(g.generated, true);
+  assert.strictEqual(engine.getGame(2).allowOffPreference, null, "an unset per-game override stays null (follow Settings)");
+});
+
+test("FILLIN-SAVED-ROUNDTRIP-1 (M4 regression): a one-off fill-in's saved:false flag survives export/import", ()=>{
   // §6: saving for reuse is an explicit opt-in choice that must persist
   // (§9), or a one-off would silently become reusable on next import.
   const engine = freshEngine();
   const st = engine._getState();
   st.fillIns.push({id: engine.uid("fi"), name:"Guest One-off", prefs:["GK"], saved:false});
   st.fillIns.push({id: engine.uid("fi"), name:"Guest Reusable", prefs:["GS"], saved:true});
-  engine.exportFullCsv();
-  const csvText = engine.CapturingBlob.last;
-  assert.ok(csvText.includes("saved"), "exported CSV should carry the fill-in saved column");
-  engine.importFullCsv(csvText);
+  backupRoundTrip(engine);
   const st2 = engine._getState();
   const oneOff = st2.fillIns.find(f=>f.name==="Guest One-off");
   const reusable = st2.fillIns.find(f=>f.name==="Guest Reusable");
@@ -1009,7 +1049,7 @@ test("FILLIN-SAVED-ROUNDTRIP-1 (M4 regression): a one-off fill-in's saved:false 
   assert.strictEqual(reusable.saved, true, "a reusable fill-in must stay saved:true on import");
 });
 
-test("STRICT-PAIRING-APP-1 (M3): the per-game toggle reaches computeSeasonRosterOff and survives CSV round-trip", ()=>{
+test("STRICT-PAIRING-APP-1 (M3): the per-game toggle reaches computeSeasonRosterOff and survives the backup round-trip", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
@@ -1029,12 +1069,9 @@ test("STRICT-PAIRING-APP-1 (M3): the per-game toggle reaches computeSeasonRoster
   assert.notDeepStrictEqual(offNames, ["Z","W"],
     "with strict pairing on for this game, both WD specialists should not be rostered off together: "+JSON.stringify(offNames));
 
-  engine.exportFullCsv();
-  const csvText = engine.CapturingBlob.last;
-  assert.ok(csvText.includes("strictSpecialistPairing"), "exported CSV should carry the strict-pairing column");
-  engine.importFullCsv(csvText);
+  backupRoundTrip(engine);
   assert.strictEqual(engine.getGame(1).strictSpecialistPairing, true,
-    "the per-game strict-pairing flag must survive CSV export/import");
+    "the per-game strict-pairing flag must survive export/import");
 });
 
 /* ============================================================
@@ -1137,7 +1174,7 @@ test("OP-9: toggling allowOffPreference off raises an error instead of an off-pr
   assert.strictEqual(engine.computeOffPrefLog().length, 0, "no off-preference fill should ever be logged when the toggle is off");
 });
 
-test("DATE-1: game dates are validated, labelled, and survive a CSV round-trip", ()=>{
+test("DATE-1: game dates are validated, labelled, and survive a backup round-trip", ()=>{
   const engine = freshEngine();
   assert.strictEqual(engine.sanitizeGameDate("2026-03-14"), "2026-03-14");
   ["", null, undefined, "2026-02-30", "14/03/2026", "2026-3-4", "garbage"].forEach(bad=>
@@ -1148,12 +1185,30 @@ test("DATE-1: game dates are validated, labelled, and survive a CSV round-trip",
   assert.strictEqual(engine.gameLabel(1), "Game 1", "an undated game keeps its plain label");
   engine.getGame(1).date = "2026-03-14";
   assert.ok(/^Game 1 · .*14/.test(engine.gameLabel(1)), "a dated game's label includes the formatted date: "+engine.gameLabel(1));
-  engine.exportFullCsv();
-  engine.importFullCsv(engine.CapturingBlob.last);
+  backupRoundTrip(engine);
   assert.strictEqual(engine.getGame(1).date, "2026-03-14");
   assert.ok(/^G1 \(.*14.*\)$/.test(engine.gameTag(1)), "tag links the game number to its date: "+engine.gameTag(1));
   assert.strictEqual(engine.gameTag(2), "G2");
   assert.strictEqual(engine.getGame(2).date, "");
+});
+
+test("DATE-2: game time and location are sanitized and survive a backup round-trip", ()=>{
+  const engine = freshEngine();
+  assert.strictEqual(engine.sanitizeGameTime("09:05"), "09:05");
+  ["", null, "24:00", "9:05", "12:60", "noon"].forEach(bad=>
+    assert.strictEqual(engine.sanitizeGameTime(bad), "", `${JSON.stringify(bad)} must collapse to an empty time`));
+  assert.strictEqual(engine.sanitizeGameLocation("  Court   3 \n Riverside "), "Court 3 Riverside");
+  assert.strictEqual(engine.sanitizeGameLocation("x".repeat(200)).length, 80);
+  const st = engine._getState();
+  st.season.numGames = 1;
+  engine.ensureGamesExist();
+  const g = engine.getGame(1);
+  g.date = "2026-03-14"; g.time = "10:30"; g.location = "=Court 3, Riverside";
+  assert.ok(/10/.test(engine.gameLabel(1)), "label includes the time: "+engine.gameLabel(1));
+  backupRoundTrip(engine);
+  const g2 = engine.getGame(1);
+  assert.strictEqual(g2.time, "10:30");
+  assert.strictEqual(g2.location, "=Court 3, Riverside", "location must round-trip exactly");
 });
 
 test("OP-12: per-game allowOffPreference overrides the season-wide setting in both directions", ()=>{
