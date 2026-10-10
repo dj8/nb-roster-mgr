@@ -69,8 +69,13 @@ matching `docs/modules/*.md` / `data-model.md`.
    up via the merge in `loadState()`. Per-game fields must tolerate `undefined` on old saves.
 2. Sanitize if it can arrive from an untrusted source (`sanitizeSettingsAndSeason`, `sanitizePrefs`, …).
 3. If it should survive export/import, add it to **both** `buildBackup` and `importBackup` (under `plan` if the
-   coach sets it, `results` if the engine produces it), validating its type on import. Bump
-   `BACKUP_SCHEMA_VERSION` only for a change old files can't be read under.
+   coach sets it, `results` if the engine produces it), validating its type on import. Adding an
+   *optional* field needs no schema bump (a missing value falls back to its default on import).
+   Renaming, removing or changing the meaning of a field **does**: bump `BACKUP_SCHEMA_VERSION` in
+   `app.js`, add a migration in `importBackup` that upgrades each older `schemaVersion` to the current
+   shape before it's read (today there are none — files are only checked as `<=` current), and add a
+   test that imports a saved old-format file. Also update the example file in
+   `docs/modules/csv-xlsx-io.md`.
 4. If the engine consumes it, thread it through `app.js` into the plain-data input of `solver.js`.
 5. Add a test in `tests/run.js` and update `docs/data-model.md` plus the relevant `docs/modules/*.md`.
 
