@@ -57,6 +57,8 @@ erDiagram
         string_array fillInIds FK "-> FILLIN.id, assigned to this game"
         object lockedSlots "'qi-pos' -> playerId|fillInId, manual per-slot lock"
         string date "optional YYYY-MM-DD label; never read by generation"
+        string time "optional HH:MM (24h) label"
+        string location "optional free-text label, max 80 chars"
         boolean strictSpecialistPairing "per-game coverage-protection toggle"
         boolean allowOffPreference "per-game override of settings.allowOffPreference; null follows the season-wide setting"
         boolean shortfall "available regulars + fill-ins < 7"

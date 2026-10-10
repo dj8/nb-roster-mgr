@@ -6,9 +6,10 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 36; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 37; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
+const MAX_LOCATION_LEN = 80;
 const STORAGE_KEY = "netballRosterApp_v1";
 const VALID_TABS = ["setup","schedule","fillins","reports","settings","data"];
 
@@ -48,6 +49,19 @@ function sanitizeGameDate(s){
   const d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
   return (d.getFullYear()===Number(m[1]) && d.getMonth()===Number(m[2])-1 && d.getDate()===Number(m[3])) ? m[0] : "";
 }
+function sanitizeGameTime(s){
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(s==null?"":s).trim());
+  return m ? m[0] : "";
+}
+function sanitizeGameLocation(s){
+  return String(s==null?"":s).replace(/\s+/g," ").trim().slice(0,MAX_LOCATION_LEN);
+}
+function formatGameTime(t){
+  const clean = sanitizeGameTime(t);
+  if(!clean) return "";
+  const [h,m] = clean.split(":").map(Number);
+  return new Date(2000,0,1,h,m).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"});
+}
 /* Parsed as a local date (not new Date(iso), which is UTC and can show the previous day). */
 function formatGameDate(iso){
   const clean = sanitizeGameDate(iso);
@@ -64,8 +78,11 @@ function gameTag(num){
   return `G${num} (${new Date(y,mo-1,d).toLocaleDateString(undefined,{day:"numeric",month:"short"})})`;
 }
 function gameLabel(num){
-  const d = formatGameDate(getGame(num).date);
-  return d ? `Game ${num} · ${d}` : `Game ${num}`;
+  const g = getGame(num);
+  const d = formatGameDate(g.date);
+  if(!d) return `Game ${num}`;
+  const t = formatGameTime(g.time);
+  return t ? `Game ${num} · ${d} · ${t}` : `Game ${num} · ${d}`;
 }
 
 /* Effective off-preference rule for one game: its own override if set,
@@ -77,6 +94,8 @@ function newGameState(){
   return {
     isPlayed:false,
     date:"",                    // "YYYY-MM-DD" or "" — display/export label only; never affects generation
+    time:"",                    // "HH:MM" (24h) or "" — label only, like date
+    location:"",                // free text (<= MAX_LOCATION_LEN chars) — label only
     rosterOffOverride:null,     // number|null - overrides derived roster_off_count
     rosterOffLockIds:null,      // array of playerIds|null - manual explicit roster-off selection (locked)
     allowOffPreference:null,    // boolean|null - per-game override of settings.allowOffPreference; null follows the season-wide setting
@@ -160,6 +179,8 @@ function loadState(){
     Object.values(merged.games||{}).forEach(g=>{
       delete g.strictSpecialistMode;
       g.date = sanitizeGameDate(g.date);
+      g.time = sanitizeGameTime(g.time);
+      g.location = sanitizeGameLocation(g.location);
       if(!Array.isArray(g.coverageWarnings)) g.coverageWarnings=[];
     });
     merged.players.forEach(p=>{ p.prefs = sanitizePrefs(p.prefs); });
@@ -1134,6 +1155,7 @@ function renderGameCard(num){
   if(offNames.length) summaryBits.push(`Off: ${offNames.slice(0,3).join(", ")}${offNames.length>3?` +${offNames.length-3}`:""}`);
   if(unavailNames.length) summaryBits.push(`Unavailable: ${unavailNames.slice(0,3).join(", ")}${unavailNames.length>3?` +${unavailNames.length-3}`:""}`);
   if(game.fillInIds && game.fillInIds.length) summaryBits.push(`${game.fillInIds.length} fill-in(s)`);
+  if(game.location) summaryBits.unshift(`@ ${game.location}`);
   const summaryLine = summaryBits.join(" · ");
   return `
   <div class="game-card ${game.isPlayed?'game-card-locked':''}" data-game="${num}">
@@ -1173,8 +1195,15 @@ function renderGameBody(num){
       ${gapHtml}
       <div class="game-meta-row">
         <div class="field">
-          <label class="section-label" for="gameDate-${num}">Game date</label>
-          <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}" title="Optional. Shown on the schedule, reports and exports; doesn't affect the roster.">
+          <label class="section-label" for="gameDate-${num}">Game date and time</label>
+          <div class="date-time-pair">
+            <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}" title="Optional. Shown on the schedule, reports and exports; doesn't affect the roster.">
+            <input type="time" id="gameTime-${num}" value="${esc(game.time||"")}" aria-label="Game time">
+          </div>
+        </div>
+        <div class="field game-location">
+          <label class="section-label" for="gameLocation-${num}">Game location</label>
+          <input type="text" id="gameLocation-${num}" maxlength="${MAX_LOCATION_LEN}" value="${esc(game.location||"")}" placeholder="e.g. Court 3, Riverside Centre">
         </div>
         <button class="btn btn-sm" data-toggleplayed="${num}">
           ${game.isPlayed?"Unlock (mark not played)":"Mark game as played (lock)"}
@@ -1291,9 +1320,21 @@ function wireGameCard(el, num){
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
   const dateInput = card.querySelector(`#gameDate-${num}`);
+  const refreshHeading = ()=>{ const h = card.querySelector(".game-card-head h4"); if(h) h.textContent = gameLabel(num); };
   if(dateInput) dateInput.onchange=e=>{
     getGame(num).date = sanitizeGameDate(e.target.value);
-    saveState(); renderGamesList(el);
+    saveState(); refreshHeading();
+  };
+  const timeInput = card.querySelector(`#gameTime-${num}`);
+  if(timeInput) timeInput.onchange=e=>{
+    getGame(num).time = sanitizeGameTime(e.target.value);
+    saveState(); refreshHeading();
+  };
+  const locationInput = card.querySelector(`#gameLocation-${num}`);
+  if(locationInput) locationInput.onchange=e=>{
+    getGame(num).location = sanitizeGameLocation(e.target.value);
+    e.target.value = getGame(num).location;
+    saveState();
   };
   const allowOffPrefSel = card.querySelector(`#allowOffPref-${num}`);
   if(allowOffPrefSel) allowOffPrefSel.onchange=e=>{
@@ -1953,13 +1994,13 @@ function exportFullCsv(){
   STATE.players.forEach(p=>row(p.id,guardCsvText(p.name),(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
   row("#FILLINS","id","name","prefs","saved");
   STATE.fillIns.forEach(f=>row(f.id,guardCsvText(f.name),(f.prefs||[]).join("|"),f.saved===false?0:1));
-  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing","allowOffPreference","date");
+  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing","allowOffPreference","date","time","location");
   gameNums().forEach(n=>{
     const g = getGame(n);
     const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
     row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
       (g.rosterOffLockIds||[]).join("|"), (g.rosteredOffIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"",
-      g.strictSpecialistPairing?1:0, g.allowOffPreference===null||g.allowOffPreference===undefined?"":(g.allowOffPreference?1:0), g.date||"");
+      g.strictSpecialistPairing?1:0, g.allowOffPreference===null||g.allowOffPreference===undefined?"":(g.allowOffPreference?1:0), g.date||"", g.time||"", guardCsvText(g.location||""));
   });
   row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
   gameNums().forEach(n=>{
@@ -2016,11 +2057,13 @@ function importFullCsv(text){
 
     ns.games = {};
     (sections.GAMES||[]).filter(r=>r[0]).forEach(r=>{
-      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr,allowOffPrefStr,dateStr] = r;
+      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr,allowOffPrefStr,dateStr,timeStr,locationStr] = r;
       const g = newGameState();
       g.isPlayed = isPlayed==="1";
       g.strictSpecialistPairing = strictPairingStr==="1";
       g.date = sanitizeGameDate(dateStr);
+      g.time = sanitizeGameTime(timeStr);
+      g.location = sanitizeGameLocation(unguardCsvText(locationStr||""));
       g.allowOffPreference = allowOffPrefStr==="1" ? true : allowOffPrefStr==="0" ? false : null;
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
       // Known limitation: the pipe-joined encoding can't distinguish an
@@ -2179,7 +2222,7 @@ function exportXlsx(){
   if(typeof XLSX==="undefined"){ toast("Spreadsheet library failed to load — check your connection."); return; }
   const wb = XLSX.utils.book_new();
 
-  const gridRows = [["Game","Date","Quarter",...POSITIONS,"Bench"]];
+  const gridRows = [["Game","Date","Time","Location","Quarter",...POSITIONS,"Bench"]];
   gameNums().forEach(n=>{
     const g = getGame(n); if(!g.schedule) return;
     g.schedule.quarters.forEach((q,qi)=>{
@@ -2190,7 +2233,7 @@ function exportXlsx(){
         return p.name + (offpref?" (off-pref)":"");
       });
       const benchNames = (q.bench||[]).map(pid=>{ const p=byId(STATE.players,pid)||byId(STATE.fillIns,pid); return p?p.name:pid; }).join(", ");
-      gridRows.push([n,g.date||"",qi+1,...posCells,benchNames]);
+      gridRows.push([n,g.date||"",g.time||"",g.location||"",qi+1,...posCells,benchNames]);
     });
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(gridRows), "Rotation Grid");
@@ -2200,16 +2243,16 @@ function exportXlsx(){
   summaries.forEach(s=> sumRows.push([s.name,s.gamesPlayedIn,s.onCourt,s.bench,s.missed, ...POSITIONS.map(p=>s.positions[p]||0), s.offPrefTotal]));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sumRows), "Player Summary");
 
-  const noteRows = [["Game","Date","Unavailable","Min Fill-ins","Recommended Fill-ins","Coverage Gaps"]];
+  const noteRows = [["Game","Date","Time","Location","Unavailable","Min Fill-ins","Recommended Fill-ins","Coverage Gaps"]];
   gameNums().filter(n=>getGame(n).shortfall).forEach(n=>{
     const g = getGame(n);
     const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
-    noteRows.push([n, g.date||"", unavail, g.minFillIns, g.recommendedFillIns, fillInGapSuggestions(n).join(", ")]);
+    noteRows.push([n, g.date||"", g.time||"", g.location||"", unavail, g.minFillIns, g.recommendedFillIns, fillInGapSuggestions(n).join(", ")]);
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), "Short-Staffed Notes");
 
-  const offRows = [["Game","Date","Quarter","Player","Position","Why (Specialists Unavailable/Benched)"]];
-  computeOffPrefLog().forEach(o=> offRows.push([o.game,getGame(o.game).date||"",o.quarter,o.playerName,o.position,describeOffPrefReason(o)]));
+  const offRows = [["Game","Date","Time","Location","Quarter","Player","Position","Why (Specialists Unavailable/Benched)"]];
+  computeOffPrefLog().forEach(o=> offRows.push([o.game,getGame(o.game).date||"",getGame(o.game).time||"",getGame(o.game).location||"",o.quarter,o.playerName,o.position,describeOffPrefReason(o)]));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(offRows), "Off-Preference Log");
 
   XLSX.writeFile(wb, `netball-roster-${new Date().toISOString().slice(0,10)}.xlsx`);

@@ -92,6 +92,8 @@ if(typeof module!=="undefined" && module.exports){
     emptyCumulative: emptyCumulative,
     getGame: getGame,
     sanitizeGameDate: sanitizeGameDate,
+    sanitizeGameTime: sanitizeGameTime,
+    sanitizeGameLocation: sanitizeGameLocation,
     formatGameDate: formatGameDate,
     gameLabel: gameLabel,
     gameTag: gameTag,

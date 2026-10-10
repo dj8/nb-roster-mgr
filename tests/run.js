@@ -1156,6 +1156,26 @@ test("DATE-1: game dates are validated, labelled, and survive a CSV round-trip",
   assert.strictEqual(engine.getGame(2).date, "");
 });
 
+test("DATE-2: game time and location are sanitized and survive a CSV round-trip", ()=>{
+  const engine = freshEngine();
+  assert.strictEqual(engine.sanitizeGameTime("09:05"), "09:05");
+  ["", null, "24:00", "9:05", "12:60", "noon"].forEach(bad=>
+    assert.strictEqual(engine.sanitizeGameTime(bad), "", `${JSON.stringify(bad)} must collapse to an empty time`));
+  assert.strictEqual(engine.sanitizeGameLocation("  Court   3 \n Riverside "), "Court 3 Riverside");
+  assert.strictEqual(engine.sanitizeGameLocation("x".repeat(200)).length, 80);
+  const st = engine._getState();
+  st.season.numGames = 1;
+  engine.ensureGamesExist();
+  const g = engine.getGame(1);
+  g.date = "2026-03-14"; g.time = "10:30"; g.location = "=Court 3, Riverside";
+  assert.ok(/10/.test(engine.gameLabel(1)), "label includes the time: "+engine.gameLabel(1));
+  engine.exportFullCsv();
+  engine.importFullCsv(engine.CapturingBlob.last);
+  const g2 = engine.getGame(1);
+  assert.strictEqual(g2.time, "10:30");
+  assert.strictEqual(g2.location, "=Court 3, Riverside", "location must round-trip exactly, including the formula guard");
+});
+
 test("OP-12: per-game allowOffPreference overrides the season-wide setting in both directions", ()=>{
   const build = (globalAllow, gameAllow)=>{
     const engine = freshEngine();
