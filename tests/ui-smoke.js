@@ -121,7 +121,6 @@ async function shot(page, name){
   const firstSlot = page.locator("#gameBody-1 [data-slot]").first();
   await firstSlot.click();
   await page.waitForSelector(".modal #slotSelect");
-  const lockedPlayerId = await page.locator(".modal #slotSelect").inputValue();
   await page.check(".modal #slotLock");
   await page.click('.modal [data-act="save"]');
   await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});

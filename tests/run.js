@@ -1110,7 +1110,7 @@ test("OP-5: off-preference fill is allowed and used when allowOffPreference is o
   ["GS","GA","WA","C","WD","GD"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
   addPlayer(engine, "P6", ["GS"]); // 7th player — nobody in this roster lists GK at all
   engine.ensureGamesExist();
-  const r = engine.runGeneration();
+  engine.runGeneration();
   const g = engine.getGame(1);
   assert.strictEqual(g.error, null, "should not error when off-preference is allowed: "+g.error);
   assert.ok(g.schedule.quarters[0].onCourt.GK, "GK should still be filled by someone, off-preference");
@@ -1150,7 +1150,6 @@ test("DATE-1: game dates are validated, labelled, and survive a CSV round-trip",
   assert.ok(/^Game 1 · .*14/.test(engine.gameLabel(1)), "a dated game's label includes the formatted date: "+engine.gameLabel(1));
   engine.exportFullCsv();
   engine.importFullCsv(engine.CapturingBlob.last);
-  const st2 = engine._getState();
   assert.strictEqual(engine.getGame(1).date, "2026-03-14");
   assert.ok(/^G1 \(.*14.*\)$/.test(engine.gameTag(1)), "tag links the game number to its date: "+engine.gameTag(1));
   assert.strictEqual(engine.gameTag(2), "G2");

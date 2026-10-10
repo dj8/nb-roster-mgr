@@ -42,6 +42,7 @@ The `package.json` in this repo is dev-tooling only (tests), not required to run
 
 ```bash
 npm install
+npm run lint    # ESLint (must be clean before committing)
 npm test        # unit tests for the roster/assignment engine (tests/run.js)
 npm run test:ui # headless browser smoke test (tests/ui-smoke.js, needs Playwright)
 ```

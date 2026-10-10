@@ -7,6 +7,7 @@ who's rostered off. State lives in `localStorage`. `package.json` is dev tooling
 ## Commands
 
 ```bash
+npm run lint      # ESLint over all JS (eslint.config.js) — must be clean before every commit
 npm test          # tests/run.js — unit tests against the engine (Node only, no browser)
 npm run test:ui   # tests/ui-smoke.js — headless Playwright walk-through (needs `npx playwright install chromium` once)
 npx serve .       # or just open index.html
@@ -82,4 +83,5 @@ Worked example: per-game `allowOffPreference` (`null` = follow Settings, else bo
 - Escape every user-supplied string with `esc()` when building HTML; sanitize CSV text with the existing
   guard/unguard helpers.
 - Create a new branch off an up-to-date `main` for each new set of features or fixes (named succinctly for the update, e.g. `per-game-off-preference` or `fix-roster-off-dialog`); don't commit feature work directly to `main`. Merge via PR (`gh pr create --base main`) and delete the branch afterwards. There is no long-lived `dev` branch.
+- **Before every commit:** run `npm run lint` and `npm test` and fix anything they report (lint must be clean, not just "no new errors"); run `npm run test:ui` too if you touched the UI. Don't commit while either fails.
 - Bump `BUILD_NUMBER` (top of `app.js`) by 1 in every commit, as part of that commit. It's a plain integer shown in the app header and written to CSV exports as `buildNumber`; it replaced the old `APP_VERSION` string.

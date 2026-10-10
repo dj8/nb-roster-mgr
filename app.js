@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 34; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 35; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -1080,7 +1080,6 @@ function renderSchedule(root){
      look identically hung the whole time. */
   function runGenerationWithBusyState(pastTenseLabel){
     const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
-    const originalGenText = genBtn.textContent, originalRebalText = rebalBtn.textContent;
     genBtn.disabled = true; rebalBtn.disabled = true;
     genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
     setTimeout(()=>{
@@ -1414,7 +1413,7 @@ function openAssignFillInDialog(num){
       : `<div class="empty-state"><div class="glyph">&#128100;</div><div>No saved fill-ins yet.</div><div class="cta">Add one below.</div></div>`;
   }
 
-  const modal = openModal(`
+  openModal(`
     <h3>Assign fill-in — ${esc(gameLabel(num))}</h3>
     <p class="modal-sub">Choose which saved fill-ins are available for this game.</p>
     <div id="finList" class="scroll-list"></div>
