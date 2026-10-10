@@ -2,7 +2,7 @@
 
 Sequence diagrams for the flows most likely to trip up a new contributor — full season
 generation (where availability, roster-off, and position assignment all interact), the
-manual slot-edit cascade, the manual roster-off override, and CSV import. Function names
+manual slot-edit cascade, the manual roster-off override, and backup import. Function names
 match `app.js`/`solver.js`/`hungarian.js` exactly; see [`modules/`](modules/) for what
 each one does in isolation.
 
@@ -171,21 +171,21 @@ sequenceDiagram
 The override-*count* path and the manual-*selection* path leave `STATE` in different
 states of freshness — see [`gotchas.md`](gotchas.md#roster-off-dirty-flag-asymmetry).
 
-## 4. Full CSV import (Data tab)
+## 4. Backup import (Data tab)
 
 ```mermaid
 sequenceDiagram
     actor Coach
     participant UI as renderData
-    participant Import as importFullCsv
+    participant Import as importBackup
     participant Sanitize as sanitizeImportedState
     participant P1 as computeSeasonRosterOff(preserveExisting=true)
     participant State as STATE
 
-    Coach->>UI: choose file → "Import full CSV"
-    UI->>Import: importFullCsv(text)
-    Import->>Import: parseCsv() → split into #SECTION blocks (META/SEASON/SETTINGS/PLAYERS/FILLINS/GAMES/SCHEDULE)
-    Import->>Import: build a fresh `ns` state object from the sections
+    Coach->>UI: choose file → "Import backup"
+    UI->>Import: importBackup(text)
+    Import->>Import: JSON.parse; reject unless format/schemaVersion are recognised (state untouched)
+    Import->>Import: type-check plan + results into a fresh `ns` state object
     Import->>Sanitize: sanitizeImportedState(ns)
     Sanitize->>Sanitize: drop unknown/duplicate player & fill-in rows,<br/>strip dangling id references from locks/schedule/bench,<br/>clamp season/settings numerics
     Sanitize-->>Import: warnings[]

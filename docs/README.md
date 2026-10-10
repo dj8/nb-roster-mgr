@@ -24,7 +24,7 @@ the bench, and who's rostered off. Generation is two coupled problems, solved in
 
 Everything runs client-side. No build step, no server, no account — `index.html` loads
 three plain `<script>` tags and the whole app boots from `DOMContentLoaded`. State lives
-in `localStorage`; CSV export/import is the only way to move a season between devices or
+in `localStorage`; the JSON backup export/import is the only way to move a season between devices or
 coaches.
 
 ## Runtime file map
@@ -34,7 +34,7 @@ coaches.
 | `index.html` | Entry point — loads fonts, `vendor/xlsx.full.min.js`, then the three scripts below in order | — |
 | `hungarian.js` | Standalone Kuhn-Munkres (Hungarian) minimum-cost bipartite matching. Pure math, no app knowledge. | nothing |
 | `solver.js` | `RosterSolver` — the season-wide roster-off search (Phase 1) and the per-quarter cost model + Hungarian invocation (Phase 2). Pure: takes plain data in, returns plain data out; no DOM, no `localStorage`. | `hungarian.js` (via the shared global `Hungarian`) |
-| `app.js` | Everything else: application state (`STATE`), the generation *orchestration* (turning `STATE` into the plain-data inputs `solver.js` expects and writing its outputs back), all UI rendering/event wiring, and CSV/XLSX import-export. One IIFE. | `solver.js`, `hungarian.js` (both attached to `window`) |
+| `app.js` | Everything else: application state (`STATE`), the generation *orchestration* (turning `STATE` into the plain-data inputs `solver.js` expects and writing its outputs back), all UI rendering/event wiring, and JSON backup + XLSX/players-CSV import-export. One IIFE. | `solver.js`, `hungarian.js` (both attached to `window`) |
 | `styles.css` | All styling, theme tokens (`html[data-theme]`) | — |
 | `vendor/xlsx.full.min.js` | Vendored SheetJS build (not a CDN dependency) — exposes global `XLSX`, used only by `exportXlsx()` | — |
 
@@ -51,7 +51,7 @@ flowchart TB
     UI["UI layer\nrender*, open*Dialog, wire*Card\n(app.js)"]
     Engine["Generation orchestration\nplanGame*, computeSeasonRosterOff,\nrunGeneration (app.js)"]
     StateMod["Application state\nSTATE, loadState/saveState,\nsanitize* (app.js)"]
-    IO["Import / export\nCSV + XLSX (app.js)"]
+    IO["Import / export\nJSON backup + XLSX (app.js)"]
   end
 
   Solver["solver.js\nRosterSolver\nPhase 1 search + Phase 2 cost model"]
@@ -61,7 +61,7 @@ flowchart TB
 
   UI -->|reads/writes| StateMod
   UI -->|"Generate / Rebalance click"| Engine
-  UI -->|CSV/XLSX buttons| IO
+  UI -->|backup/XLSX buttons| IO
   Engine -->|reads/writes| StateMod
   Engine -->|plain data in/out| Solver
   Solver -->|cost matrix| Hungarian
@@ -92,7 +92,7 @@ boundaries. See [`docs/modules/`](modules/) for a per-area breakdown of that sam
 | [`modules/ui-setup-and-fillins.md`](modules/ui-setup-and-fillins.md) | Setup tab (season params, player roster) and Fill-ins tab |
 | [`modules/ui-schedule.md`](modules/ui-schedule.md) | Schedule tab — game cards, rotation grid, roster-off/fill-in/slot-edit dialogs (the biggest and trickiest UI surface) |
 | [`modules/ui-reports-and-settings.md`](modules/ui-reports-and-settings.md) | Reports tab, Settings tab |
-| [`modules/csv-xlsx-io.md`](modules/csv-xlsx-io.md) | CSV parse/export/import round-trip, XLSX report export |
+| [`modules/csv-xlsx-io.md`](modules/csv-xlsx-io.md) | JSON backup export/import, players-only CSV, XLSX report export |
 
 ## Other docs in this folder
 

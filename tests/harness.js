@@ -102,8 +102,9 @@ if(typeof module!=="undefined" && module.exports){
     POSITIONS: POSITIONS,
     uid: uid,
     byId: byId,
-    exportFullCsv: exportFullCsv,
-    importFullCsv: importFullCsv,
+    exportBackup: exportBackup,
+    importBackup: importBackup,
+    buildBackup: buildBackup,
     saveState: saveState,
     loadState: loadState
   };

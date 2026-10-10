@@ -4,7 +4,7 @@
 
 Defines the shape of `STATE`, loads/saves it from `localStorage`, and sanitizes anything
 that enters it from an untrusted source (a stored blob from an older app version, a
-hand-edited CSV). Every other part of `app.js` reads/writes the module-level `STATE`
+hand-edited backup file). Every other part of `app.js` reads/writes the module-level `STATE`
 object this section owns. See [`data-model.md`](../data-model.md) for the full shape.
 
 ## Key functions
@@ -16,7 +16,7 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
 | `loadState()` | — | a validated/migrated `STATE` object | Reads `localStorage`; on any parse/validation failure, logs a warning and falls back to `defaultState()` |
 | `saveState()` | — | — | Writes `JSON.stringify(STATE)` to `localStorage`; on failure (quota, private mode), toasts and swallows the error |
 | `sanitizeSettingsAndSeason(state)` | a state object (mutated in place) | array of correction descriptions | Clamps `season.numGames`/`desiredBenchSize` and every `settings.*` numeric via `RosterSolver.clampSetting`; coerces `allowOffPreference`/`topTwoOnly` to real booleans |
-| `sanitizePrefs(prefs)` | raw array (possibly from CSV) | array of valid position codes, deduped, order-preserved | None — pure |
+| `sanitizePrefs(prefs)` | raw array (possibly from an imported file) | array of valid position codes, deduped, order-preserved | None — pure |
 | `sanitizeUnavailable(nums)` | raw array | array of finite positive integers | None — pure |
 | `gameNums()` | — | `[1..STATE.season.numGames]` | None |
 | `getGame(num)` | game number | that game's state object | **Lazily creates** `STATE.games[num]` via `newGameState()` if it doesn't exist yet — this is the only accessor used anywhere for reading or writing a game |
@@ -31,7 +31,7 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
   re-sanitizes every player's/fill-in's `prefs`, and validates `activeTab` against
   `VALID_TABS` (falls back to `"setup"` — an unrecognized tab would otherwise crash
   `renderMain`'s dispatch outright on next load).
-- **`sanitizePrefs` exists because CSV-imported preference strings are untrusted twice
+- **`sanitizePrefs` exists because imported preference strings are untrusted twice
   over**: they're rendered directly into the DOM (so unfiltered input would be a stored
   XSS vector) and used as cost-matrix keys in `solver.js` (so a bogus position code would
   be meaningless to the solver). It filters to the real 7 `POSITIONS` and de-duplicates,

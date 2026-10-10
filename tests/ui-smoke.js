@@ -333,27 +333,27 @@ async function shot(page, name){
   const xlsxStat = fs.statSync(xlsxPath);
   check(xlsxStat.size > 1000, `XLSX export downloads a non-trivial file (${xlsxStat.size} bytes)`);
 
-  // ---- CSV export -> reset -> import round trip ----
+  // ---- Backup export -> reset -> import round trip ----
   await page.click('.tab-btn[data-tab="data"]');
   const [download] = await Promise.all([
     page.waitForEvent("download"),
-    page.click("#exportCsvBtn")
+    page.click("#exportBackupBtn")
   ]);
-  const csvPath = path.join(SCREENSHOT_DIR, "export.csv");
-  await download.saveAs(csvPath);
-  const csvText = fs.readFileSync(csvPath, "utf8");
-  check(csvText.includes("#PLAYERS") && csvText.includes("Amy") && csvText.includes("rosteredOffIds"),
-    "exported CSV contains expected sections and the new rosteredOffIds column");
+  const backupPath = path.join(SCREENSHOT_DIR, "export.json");
+  await download.saveAs(backupPath);
+  const backup = JSON.parse(fs.readFileSync(backupPath, "utf8"));
+  check(backup.format==="netball-roster-backup" && backup.plan.players.some(p=>p.name==="Amy") && backup.results.games["1"] && "rosteredOffIds" in backup.results.games["1"],
+    "exported backup is versioned JSON with plan and results sections");
 
   await page.click("#resetBtn");
   await page.click('.modal [data-act="yes"]');
   await page.waitForSelector(".empty-state");
   await page.click('.tab-btn[data-tab="data"]');
-  await page.setInputFiles("#csvFullInput", csvPath);
+  await page.setInputFiles("#backupFileInput", backupPath);
   await page.waitForTimeout(100);
   await page.click('.tab-btn[data-tab="setup"]');
   const restoredCount = await page.locator(".list-row").count();
-  check(restoredCount===PLAYERS.length, `CSV import restored all ${PLAYERS.length} players (got ${restoredCount})`);
+  check(restoredCount===PLAYERS.length, `backup import restored all ${PLAYERS.length} players (got ${restoredCount})`);
 
   check(consoleErrors.length===0, `no console/page errors during the whole flow (found: ${JSON.stringify(consoleErrors)})`);
 

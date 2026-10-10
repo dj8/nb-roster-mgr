@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 37; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 38; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -117,7 +117,7 @@ function newGameState(){
 }
 
 /* Clamps season/settings numerics for both untrusted entry points (loadState,
-   importFullCsv) — an unclamped NaN would propagate into the solver's cost
+   importBackup) — an unclamped NaN would propagate into the solver's cost
    model, where every comparison against it is false. Returns the corrections made. */
 function sanitizeSettingsAndSeason(state){
   const corrected = [];
@@ -411,8 +411,8 @@ function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds)
 /* Phase 1 only: runs the season-wide roster-off search and writes
    availability facts + rosteredOffIds/coverageWarnings onto every game.
    Doesn't touch schedules. Used by runGeneration (before Phase 2) and by
-   importFullCsv, to re-derive display fields after loading a CSV.
-   `preserveExisting`: for CSV import only (§9's exact round-trip
+   importBackup, to re-derive display fields after loading a backup.
+   `preserveExisting`: for backup import only (§9's exact round-trip
    requirement) — treats a non-played, non-locked game's already-loaded
    rosteredOffIds as fixed for this call only, so it round-trips unchanged;
    the next real Generate/Rebalance is still free to change it. */
@@ -1040,23 +1040,6 @@ function parseCsv(text){
   }
   if(field.length||row.length){ row.push(field); rows.push(row); }
   return rows.filter(r=>r.some(f=>f.trim()!==""));
-}
-function toCsvField(v){
-  v = v==null?"":String(v);
-  if(/[",\n]/.test(v)) return '"'+v.replace(/"/g,'""')+'"';
-  return v;
-}
-/* CSV formula-injection guard (OWASP-recommended): a name field starting
-   with = + - @ would execute as a formula when opened in Excel/LibreOffice.
-   Applied only to free-text names, not every field (a leading '-' is
-   legitimate in numeric columns). unguardCsvText reverses it on import, but
-   only when a guarded character follows the added quote, so a name that
-   genuinely starts with an apostrophe round-trips unchanged. */
-function guardCsvText(v){
-  return /^[=+\-@]/.test(v) ? "'"+v : v;
-}
-function unguardCsvText(v){
-  return (v[0]==="'" && /^[=+\-@]/.test(v.slice(1))) ? v.slice(1) : v;
 }
 
 /* ============================================================
@@ -1937,13 +1920,13 @@ function renderSettings(root){
 function renderData(root){
   root.innerHTML = `
     <div class="card">
-      <div class="card-head"><div><h2>Share / back up (CSV)</h2><p>Full round-trip of every field — players, preferences, availability, fill-ins, per-game roster-off values, locks, played status and the generated schedule.</p></div></div>
+      <div class="card-head"><div><h2>Share / back up (.json)</h2><p>Full round-trip of every field — players, preferences, availability, fill-ins, per-game roster-off values, locks, played status and the generated schedule.</p></div></div>
       <div class="btn-row">
-        <button class="btn btn-primary" id="exportCsvBtn">Export full CSV</button>
-        <button class="btn" id="importCsvFullBtn">Import full CSV</button>
-        <input type="file" id="csvFullInput" accept=".csv" hidden>
+        <button class="btn btn-primary" id="exportBackupBtn">Export backup</button>
+        <button class="btn" id="importBackupBtn">Import backup</button>
+        <input type="file" id="backupFileInput" accept=".json,application/json" hidden>
       </div>
-      <p class="hint" style="margin-top:10px;">Export this file and send it to a co-coach — importing it on another device or browser continues editing exactly where you left off. This app has no server, so CSV is the only way to move data between devices.</p>
+      <p class="hint" style="margin-top:10px;">Export this file and send it to a co-coach — importing it on another device or browser continues editing exactly where you left off. This app has no server, so this file is the only way to move data between devices.</p>
     </div>
     <div class="card">
       <div class="card-head"><div><h2>Export report (.xlsx)</h2><p>Rotation grid, player summary, and short-staffed notes as spreadsheet tabs.</p></div></div>
@@ -1954,12 +1937,12 @@ function renderData(root){
       <button class="btn btn-danger" id="resetBtn">Clear all data</button>
     </div>
   `;
-  document.getElementById("exportCsvBtn").onclick=exportFullCsv;
-  document.getElementById("importCsvFullBtn").onclick=()=>document.getElementById("csvFullInput").click();
-  document.getElementById("csvFullInput").onchange=e=>{
+  document.getElementById("exportBackupBtn").onclick=exportBackup;
+  document.getElementById("importBackupBtn").onclick=()=>document.getElementById("backupFileInput").click();
+  document.getElementById("backupFileInput").onchange=e=>{
     const f=e.target.files[0]; if(!f) return;
     const reader=new FileReader();
-    reader.onload=ev=>importFullCsv(ev.target.result);
+    reader.onload=ev=>importBackup(ev.target.result);
     reader.readAsText(f); e.target.value="";
   };
   document.getElementById("exportXlsxBtn").onclick=exportXlsx;
@@ -1977,126 +1960,148 @@ function downloadBlob(filename, blob){
   setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },1000);
 }
 
-function exportFullCsv(){
-  const lines = [];
-  const row = (...fields)=>lines.push(fields.map(toCsvField).join(","));
-  row("#META"); row("version",1); row("buildNumber",BUILD_NUMBER); row("exportedAt",todayIso());
-  row("#SEASON"); row("numGames",STATE.season.numGames); row("desiredBenchSize",STATE.season.desiredBenchSize);
-  row("#SETTINGS");
-  row("preferenceSlider",STATE.settings.preferenceSlider);
-  row("allowOffPreference",STATE.settings.allowOffPreference?1:0);
-  row("topTwoOnly",STATE.settings.topTwoOnly?1:0);
-  row("rosterOffWeight",STATE.settings.rosterOffWeight);
-  row("weight_bench",STATE.settings.fairnessWeights.bench);
-  row("weight_positionPurity",STATE.settings.fairnessWeights.positionPurity);
-  row("theme",STATE.theme);
-  row("#PLAYERS","id","name","prefs","unavailable");
-  STATE.players.forEach(p=>row(p.id,guardCsvText(p.name),(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
-  row("#FILLINS","id","name","prefs","saved");
-  STATE.fillIns.forEach(f=>row(f.id,guardCsvText(f.name),(f.prefs||[]).join("|"),f.saved===false?0:1));
-  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing","allowOffPreference","date","time","location");
+/* ---------------- Backup / restore / share (JSON) ----------------
+   One self-describing file: `plan` holds everything a coach enters (roster,
+   settings, per-game labels/overrides/locks); `results` holds what the engine
+   produced (schedule, roster-off decisions) plus frozen facts for played
+   games. Keyed by name, not position, so adding a field never shifts anything.
+   Device-only state (theme, active tab) is deliberately not exported. */
+const BACKUP_FORMAT = "netball-roster-backup";
+const BACKUP_SCHEMA_VERSION = 1;
+
+function buildBackup(){
+  const planGames = {}, resultGames = {};
   gameNums().forEach(n=>{
     const g = getGame(n);
-    const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
-    row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
-      (g.rosterOffLockIds||[]).join("|"), (g.rosteredOffIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"",
-      g.strictSpecialistPairing?1:0, g.allowOffPreference===null||g.allowOffPreference===undefined?"":(g.allowOffPreference?1:0), g.date||"", g.time||"", guardCsvText(g.location||""));
+    planGames[n] = {
+      isPlayed: !!g.isPlayed, date: g.date||"", time: g.time||"", location: g.location||"",
+      rosterOffOverride: Number.isFinite(g.rosterOffOverride) ? g.rosterOffOverride : null,
+      rosterOffLockIds: Array.isArray(g.rosterOffLockIds) ? g.rosterOffLockIds.slice() : null,
+      fillInIds: (g.fillInIds||[]).slice(),
+      lockedSlots: Object.assign({}, g.lockedSlots||{}),
+      strictSpecialistPairing: !!g.strictSpecialistPairing,
+      allowOffPreference: typeof g.allowOffPreference==="boolean" ? g.allowOffPreference : null
+    };
+    resultGames[n] = {
+      rosteredOffIds: (g.rosteredOffIds||[]).slice(),
+      unavailableIds: (g.unavailableIds||[]).slice(),
+      error: g.error||null,
+      schedule: g.schedule ? deepClone(g.schedule) : null
+    };
   });
-  row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
-  gameNums().forEach(n=>{
-    const g = getGame(n);
-    if(!g.schedule) return;
-    g.schedule.quarters.forEach((q,qi)=>{
-      POSITIONS.forEach(pos=>{
-        if(q.onCourt[pos]) row(n,qi,pos,q.onCourt[pos], (q.offPreference&&q.offPreference[pos])?1:0);
-      });
-      (q.bench||[]).forEach(pid=>row(n,qi,"BENCH",pid,0));
-    });
-  });
-  const csv = lines.join("\r\n");
-  downloadBlob(`netball-roster-season-${STATE._lastGeneratedAt?"":"draft-"}${new Date().toISOString().slice(0,10)}.csv`, new Blob([csv],{type:"text/csv"}));
-  toast("CSV exported.");
+  const s = STATE.settings;
+  return {
+    format: BACKUP_FORMAT,
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    buildNumber: BUILD_NUMBER,
+    exportedAt: todayIso(),
+    plan: {
+      season: {numGames: STATE.season.numGames, desiredBenchSize: STATE.season.desiredBenchSize},
+      settings: {
+        preferenceSlider: s.preferenceSlider, allowOffPreference: !!s.allowOffPreference, topTwoOnly: !!s.topTwoOnly,
+        rosterOffWeight: s.rosterOffWeight,
+        fairnessWeights: {bench: s.fairnessWeights.bench, positionPurity: s.fairnessWeights.positionPurity}
+      },
+      players: STATE.players.map(p=>({id:p.id, name:p.name, prefs:(p.prefs||[]).slice(), unavailable:(p.unavailable||[]).slice()})),
+      fillIns: STATE.fillIns.map(f=>({id:f.id, name:f.name, prefs:(f.prefs||[]).slice(), saved:f.saved!==false})),
+      games: planGames
+    },
+    results: {games: resultGames}
+  };
 }
 
-function importFullCsv(text){
+function exportBackup(){
+  const json = JSON.stringify(buildBackup(), null, 2);
+  downloadBlob(`netball-roster-season-${STATE._lastGeneratedAt?"":"draft-"}${new Date().toISOString().slice(0,10)}.json`, new Blob([json],{type:"application/json"}));
+  toast("Backup exported.");
+}
+
+/* Untrusted-input helpers for importBackup: coerce to the expected shape, never throw. */
+const isPlainObject = v => v!==null && typeof v==="object" && !Array.isArray(v);
+const toStringArray = v => (Array.isArray(v)?v:[]).filter(x=>typeof x==="string" && x);
+const GAME_KEY_RE = /^[1-9]\d{0,2}$/;
+const SLOT_KEY_RE = new RegExp("^[0-3]-("+POSITIONS.join("|")+")$");
+
+function importBackup(text){
   try{
-    const rows = parseCsv(text);
-    const sections = {};
-    let cur = null;
-    rows.forEach(r=>{
-      if(r[0] && r[0].startsWith("#")){ cur = r[0].slice(1); sections[cur]=sections[cur]||[]; return; }
-      if(cur) sections[cur].push(r);
-    });
-    if(!sections.PLAYERS && !sections.SEASON){ toast("This doesn't look like a season export CSV."); return; }
+    let data;
+    try{ data = JSON.parse(text); }
+    catch{ toast("That file isn't valid JSON — choose a backup exported from this app."); return; }
+    if(!isPlainObject(data) || data.format!==BACKUP_FORMAT || !isPlainObject(data.plan)){
+      toast("This doesn't look like a season backup file."); return;
+    }
+    if(!Number.isInteger(data.schemaVersion) || data.schemaVersion<1 || data.schemaVersion>BACKUP_SCHEMA_VERSION){
+      toast(`This backup uses a newer file format (v${data.schemaVersion}) than this app understands — update the app first.`); return;
+    }
 
+    const plan = data.plan;
+    const results = isPlainObject(data.results) ? data.results : {};
     const ns = defaultState();
-    // META/SEASON/SETTINGS come as key/value pairs (skip header-less; each row is [key,value...])
-    const kv = (sectionRows)=>{ const o={}; (sectionRows||[]).forEach(r=>{ o[r[0]]=r[1]; }); return o; };
-    const season = kv(sections.SEASON);
-    if(season.numGames) ns.season.numGames = parseInt(season.numGames,10)||1;
-    if(season.desiredBenchSize!==undefined) ns.season.desiredBenchSize = parseInt(season.desiredBenchSize,10)||0;
+    ns.theme = STATE.theme; // device preference — not part of the backup
 
-    const set = kv(sections.SETTINGS);
-    if(set.preferenceSlider!==undefined) ns.settings.preferenceSlider = Number(set.preferenceSlider);
-    if(set.allowOffPreference!==undefined) ns.settings.allowOffPreference = set.allowOffPreference==="1";
-    if(set.topTwoOnly!==undefined) ns.settings.topTwoOnly = set.topTwoOnly==="1";
-    if(set.rosterOffWeight!==undefined) ns.settings.rosterOffWeight = Number(set.rosterOffWeight);
-    ["bench","positionPurity"].forEach(k=>{
-      const v = set["weight_"+k]; if(v!==undefined) ns.settings.fairnessWeights[k]=Number(v);
-    });
-    if(set.theme) ns.theme = set.theme;
+    const planSeason = isPlainObject(plan.season) ? plan.season : {};
+    if(typeof planSeason.numGames==="number") ns.season.numGames = planSeason.numGames;
+    if(typeof planSeason.desiredBenchSize==="number") ns.season.desiredBenchSize = planSeason.desiredBenchSize;
 
-    ns.players = (sections.PLAYERS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:unguardCsvText(r[1]||""), prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
-      unavailable:sanitizeUnavailable((r[3]||"").split("|").filter(Boolean).map(Number))
+    const set = isPlainObject(plan.settings) ? plan.settings : {};
+    ["preferenceSlider","rosterOffWeight"].forEach(k=>{ if(typeof set[k]==="number") ns.settings[k] = set[k]; });
+    ["allowOffPreference","topTwoOnly"].forEach(k=>{ if(typeof set[k]==="boolean") ns.settings[k] = set[k]; });
+    const weights = isPlainObject(set.fairnessWeights) ? set.fairnessWeights : {};
+    ["bench","positionPurity"].forEach(k=>{ if(typeof weights[k]==="number") ns.settings.fairnessWeights[k] = weights[k]; });
+
+    ns.players = (Array.isArray(plan.players)?plan.players:[]).filter(isPlainObject).map(p=>({
+      id:String(p.id==null?"":p.id), name:String(p.name==null?"":p.name), prefs:sanitizePrefs(p.prefs),
+      unavailable:sanitizeUnavailable(p.unavailable)
     }));
-    ns.fillIns = (sections.FILLINS||[]).filter(r=>r[0]).map(r=>({
-      id:r[0], name:unguardCsvText(r[1]||""), prefs:sanitizePrefs((r[2]||"").split("|").filter(Boolean)),
-      saved: r[3]===undefined ? true : r[3]!=="0"
+    ns.fillIns = (Array.isArray(plan.fillIns)?plan.fillIns:[]).filter(isPlainObject).map(f=>({
+      id:String(f.id==null?"":f.id), name:String(f.name==null?"":f.name), prefs:sanitizePrefs(f.prefs), saved:f.saved!==false
     }));
 
-    ns.games = {};
-    (sections.GAMES||[]).filter(r=>r[0]).forEach(r=>{
-      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr,allowOffPrefStr,dateStr,timeStr,locationStr] = r;
+    const planGames = isPlainObject(plan.games) ? plan.games : {};
+    Object.keys(planGames).filter(k=>GAME_KEY_RE.test(k) && isPlainObject(planGames[k])).forEach(key=>{
+      const src = planGames[key];
       const g = newGameState();
-      g.isPlayed = isPlayed==="1";
-      g.strictSpecialistPairing = strictPairingStr==="1";
-      g.date = sanitizeGameDate(dateStr);
-      g.time = sanitizeGameTime(timeStr);
-      g.location = sanitizeGameLocation(unguardCsvText(locationStr||""));
-      g.allowOffPreference = allowOffPrefStr==="1" ? true : allowOffPrefStr==="0" ? false : null;
-      g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
-      // Known limitation: the pipe-joined encoding can't distinguish an
-      // explicit "lock to nobody" from "no lock" — both are an empty string,
-      // so an explicit-empty lock degrades to "auto" across a CSV round-trip
-      // (localStorage/JSON preserves the distinction; only CSV collapses it).
-      g.rosterOffLockIds = (rosterOffLockIds||"").split("|").filter(Boolean);
-      if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
-      g.rosteredOffIds = (rosteredOffIds||"").split("|").filter(Boolean); // frozen historical fact for played games; recomputed for others
-      g.fillInIds = (fillInIds||"").split("|").filter(Boolean);
-      g.lockedSlots = {};
-      (lockedSlotsStr||"").split("|").filter(Boolean).forEach(pair=>{
-        const eq = pair.indexOf("="); if(eq<0) return;
-        g.lockedSlots[pair.slice(0,eq)] = pair.slice(eq+1);
-      });
-      g.error = errorStr||null;
-      ns.games[String(num)] = g;
+      g.isPlayed = src.isPlayed===true;
+      g.date = sanitizeGameDate(src.date);
+      g.time = sanitizeGameTime(src.time);
+      g.location = sanitizeGameLocation(src.location);
+      g.rosterOffOverride = typeof src.rosterOffOverride==="number" && Number.isFinite(src.rosterOffOverride) ? src.rosterOffOverride : null;
+      g.rosterOffLockIds = Array.isArray(src.rosterOffLockIds) ? toStringArray(src.rosterOffLockIds) : null; // [] (explicit "nobody off") is preserved, distinct from null
+      g.fillInIds = toStringArray(src.fillInIds);
+      g.strictSpecialistPairing = src.strictSpecialistPairing===true;
+      g.allowOffPreference = typeof src.allowOffPreference==="boolean" ? src.allowOffPreference : null;
+      if(isPlainObject(src.lockedSlots)){
+        Object.keys(src.lockedSlots).forEach(k=>{
+          if(SLOT_KEY_RE.test(k) && typeof src.lockedSlots[k]==="string") g.lockedSlots[k] = src.lockedSlots[k];
+        });
+      }
+      ns.games[key] = g;
     });
 
-    (sections.SCHEDULE||[]).filter(r=>r[0]!==undefined && r[0]!=="").forEach(r=>{
-      const [num,qi,slot,playerId,offPref] = r;
-      if(!playerId) return;
-      const qIdx = Number(qi);
-      if(!Number.isInteger(qIdx) || qIdx<0 || qIdx>3) return; // malformed quarter index
-      if(slot!=="BENCH" && !POSITIONS.includes(slot)) return; // malformed/unknown slot
-      const g = ns.games[String(num)] || (ns.games[String(num)]=newGameState());
-      if(!g.schedule) g.schedule = {quarters:[0,1,2,3].map(()=>({onCourt:{},bench:[],offPreference:{}}))};
-      const q = g.schedule.quarters[qIdx];
-      if(!q) return;
-      if(slot==="BENCH") q.bench.push(playerId);
-      else { q.onCourt[slot]=playerId; q.offPreference[slot]= offPref==="1"; }
-      g.generated = true;
-      g.squadIds = Array.from(new Set([...(g.squadIds||[]), playerId]));
+    const resultGames = isPlainObject(results.games) ? results.games : {};
+    Object.keys(resultGames).filter(k=>GAME_KEY_RE.test(k) && isPlainObject(resultGames[k])).forEach(key=>{
+      const src = resultGames[key];
+      const g = ns.games[key] || (ns.games[key]=newGameState());
+      if(Array.isArray(src.rosteredOffIds)) g.rosteredOffIds = toStringArray(src.rosteredOffIds); // frozen fact for played games; recomputed for others
+      if(Array.isArray(src.unavailableIds)) g.unavailableIds = toStringArray(src.unavailableIds);
+      g.error = typeof src.error==="string" && src.error ? src.error : null;
+      if(isPlainObject(src.schedule) && Array.isArray(src.schedule.quarters) && src.schedule.quarters.length===4){
+        const squad = new Set();
+        const quarters = src.schedule.quarters.map(q=>{
+          const qs = isPlainObject(q) ? q : {};
+          const onCourt = {}, offPreference = {};
+          POSITIONS.forEach(pos=>{
+            const pid = isPlainObject(qs.onCourt) ? qs.onCourt[pos] : null;
+            if(typeof pid==="string" && pid){ onCourt[pos]=pid; if(isPlainObject(qs.offPreference) && qs.offPreference[pos]===true) offPreference[pos]=true; squad.add(pid); }
+          });
+          const bench = toStringArray(qs.bench);
+          bench.forEach(pid=>squad.add(pid));
+          return {onCourt, bench, offPreference};
+        });
+        g.schedule = {quarters};
+        g.generated = true;
+        g.squadIds = Array.from(squad);
+      }
     });
 
     const warnings = sanitizeImportedState(ns);
@@ -2119,7 +2124,7 @@ function importFullCsv(text){
     saveState();
     render();
     if(warnings.length){
-      console.warn("CSV import auto-corrected "+warnings.length+" issue(s):", warnings);
+      console.warn("Backup import auto-corrected "+warnings.length+" issue(s):", warnings);
       toast(`Imported ${STATE.players.length} player(s), ${gameNums().length} game(s) — ${warnings.length} issue(s) auto-corrected (see console).`);
     } else {
       toast(`Imported ${STATE.players.length} player(s), ${gameNums().length} game(s).`);
@@ -2131,7 +2136,7 @@ function importFullCsv(text){
 }
 
 /* Defensive pass over a freshly-parsed import: drops/clamps just the bad
-   parts of a hand-edited or corrupted CSV (unknown/duplicate ids,
+   parts of a hand-edited or corrupted backup (unknown/duplicate ids,
    out-of-range params, a duplicate on-court player) rather than discarding
    the whole file or leaving dangling ids to surface later. Returns what it corrected. */
 function sanitizeImportedState(ns){
@@ -2175,8 +2180,9 @@ function sanitizeImportedState(ns){
       const before = g.rosterOffLockIds.length;
       g.rosterOffLockIds = g.rosterOffLockIds.filter(id=>seenPlayerIds.has(id));
       if(g.rosterOffLockIds.length!==before) warnings.push(`Game ${key}: dropped unknown player id(s) from a manual roster-off lock.`);
-      if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null;
+      if(before>0 && !g.rosterOffLockIds.length) g.rosterOffLockIds = null; // every locked player was unknown; an explicit [] (nobody off) is kept
     }
+    if(Array.isArray(g.unavailableIds)) g.unavailableIds = g.unavailableIds.filter(id=>seenPlayerIds.has(id));
     const rosteredOffBefore = (g.rosteredOffIds||[]).length;
     g.rosteredOffIds = (g.rosteredOffIds||[]).filter(id=>seenPlayerIds.has(id));
     if(g.rosteredOffIds.length!==rosteredOffBefore) warnings.push(`Game ${key}: dropped unknown player id(s) from the recorded roster-off list.`);
