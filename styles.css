@@ -94,6 +94,9 @@ input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{
 .field-compact{flex:none;min-width:0;}
 .field-compact input{max-width:120px;}
 .detail-row{display:grid;grid-template-columns:2fr 2fr 1fr;gap:16px;align-items:start;}
+.detail-row-3{grid-template-columns:repeat(3,1fr);}
+.detail-checkbox{align-items:flex-start;flex-wrap:wrap;padding:0;}
+.detail-checkbox .cb-desc{flex-basis:100%;margin-left:26px;}
 .checkbox-row{display:flex;align-items:center;gap:9px;padding:10px 0;}
 .checkbox-row input{width:17px;height:17px;accent-color:var(--accent);flex:none;}
 .checkbox-row .cb-label{font-size:13px;font-weight:600;}
@@ -236,7 +239,7 @@ tr:last-child td{border-bottom:none;}
   main{padding:14px 12px 60px;}
   .card{padding:14px;}
   .row > *{min-width:100%;}
-  .detail-row{grid-template-columns:1fr;}
+  .detail-row,.detail-row-3{grid-template-columns:1fr;}
   .checkbox-row{flex-wrap:wrap;}
   .checkbox-row .cb-desc{flex-basis:100%;margin-left:26px;}
 }

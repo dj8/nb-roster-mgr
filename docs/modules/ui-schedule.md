@@ -26,12 +26,15 @@ Neither is persisted — see [`gotchas.md`](../gotchas.md#global--module-level-s
 | `renderGamesList(el)` | — | Filters `gameNums()` by `scheduleUiState.filter` ("attention" = not played AND (error OR shortfall OR coverage warnings OR not yet generated)), renders each as a card via `renderGameCard`, wires each via `wireGameCard`. |
 | `statusPillsForGame(game)` | HTML string | Builds the small pill row shown in a card's header: "Played & locked", a short generic "Error"/"Shortfall" pill (full text is a `title` attribute — the full message lives in the card *body* instead, not the header, to avoid squeezing/wrapping the header on mobile), "Generated"/"Not yet generated", and one pill per coverage warning. |
 | `renderGameCard(num)` | HTML string | Collapsed: game number, a one-line summary ("Off: Amy, Bea · 2 fill-in(s)") when collapsed and non-empty, status pills, Details/Hide toggle (`aria-expanded`). Expanded: calls `renderGameBody`. |
-| `renderGameBody(num)` | HTML string | The full per-game editor — see below. |
+| `renderGameBody(num)` | HTML string | The full per-game editor — see below. Includes an optional **Game date** input (`game.date`, `YYYY-MM-DD`); changing it just saves and re-renders the list — it's a label only and doesn't mark the schedule stale. |
+| `gameLabel(num)` | string | `"Game N"` or `"Game N · Sat 14 Mar"`; used in card headings, dialog titles and reports. `formatGameDate`/`sanitizeGameDate` parse as a *local* date so no timezone shift. |
 | `renderRotationGrid(num)` | HTML string | The quarter × position table — see below. |
 | `wireGameCard(el, num)` | — | Attaches every event handler for one card: toggle, roster-off override input, "Set roster-off manually", "Protect position coverage" checkbox, "Assign a fill-in", fill-in-chip removal, "Mark as played" toggle, and per-cell click/keyboard handlers on the rotation grid. Early-returns before wiring the body's internals if this card isn't the currently-open one. |
 
-`renderGameBody`'s three-column detail row (Rostered off / Unavailable / Roster-off count
-override) reads live from `planGameAvailability(num)` and `getGame(num)` — it's always
+`renderGameBody` lays out, top to bottom: any error/shortfall alerts, the rotation grid and
+its legend, a three-column row (Rostered off / Unavailable / Fill-ins assigned), a second
+three-column row (Roster-off count override / Off-preference positions / Protect position
+coverage), the Game date field, and the played-lock button. The detail rows read live from `planGameAvailability(num)` and `getGame(num)` — it's always
 in sync with `STATE`, it just may be **stale relative to the actual rotation grid** until
 the next Generate/Rebalance if a roster-off override or checkbox was just changed (see
 [`gotchas.md`](../gotchas.md#roster-off-dirty-flag-asymmetry)).
