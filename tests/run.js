@@ -1137,6 +1137,24 @@ test("OP-9: toggling allowOffPreference off raises an error instead of an off-pr
   assert.strictEqual(engine.computeOffPrefLog().length, 0, "no off-preference fill should ever be logged when the toggle is off");
 });
 
+test("DATE-1: game dates are validated, labelled, and survive a CSV round-trip", ()=>{
+  const engine = freshEngine();
+  assert.strictEqual(engine.sanitizeGameDate("2026-03-14"), "2026-03-14");
+  ["", null, undefined, "2026-02-30", "14/03/2026", "2026-3-4", "garbage"].forEach(bad=>
+    assert.strictEqual(engine.sanitizeGameDate(bad), "", `${JSON.stringify(bad)} must collapse to an empty date`));
+  const st = engine._getState();
+  st.season.numGames = 2;
+  engine.ensureGamesExist();
+  assert.strictEqual(engine.gameLabel(1), "Game 1", "an undated game keeps its plain label");
+  engine.getGame(1).date = "2026-03-14";
+  assert.ok(/^Game 1 · .*14/.test(engine.gameLabel(1)), "a dated game's label includes the formatted date: "+engine.gameLabel(1));
+  engine.exportFullCsv();
+  engine.importFullCsv(engine.CapturingBlob.last);
+  const st2 = engine._getState();
+  assert.strictEqual(engine.getGame(1).date, "2026-03-14");
+  assert.strictEqual(engine.getGame(2).date, "");
+});
+
 test("OP-12: per-game allowOffPreference overrides the season-wide setting in both directions", ()=>{
   const build = (globalAllow, gameAllow)=>{
     const engine = freshEngine();

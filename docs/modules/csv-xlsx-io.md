@@ -26,7 +26,7 @@ is a `confirmDialog(..., {confirmLabel:"Clear all data", danger:true})` that run
 
 | Function | Direction | Notes |
 |---|---|---|
-| `exportFullCsv()` | out | Writes `#META`/`#SEASON`/`#SETTINGS`/`#PLAYERS`/`#FILLINS`/`#GAMES`/`#SCHEDULE` sections. `lockedSlots` serializes as `key=value` pairs joined by `\|`; array fields (`prefs`, `unavailable`, `rosterOffLockIds`, etc.) join with `\|`. |
+| `exportFullCsv()` | out | Writes `#META`/`#SEASON`/`#SETTINGS`/`#PLAYERS`/`#FILLINS`/`#GAMES`/`#SCHEDULE` sections. `lockedSlots` serializes as `key=value` pairs joined by `\|`; array fields (`prefs`, `unavailable`, `rosterOffLockIds`, etc.) join with `\|`. `#GAMES` ends with the optional `allowOffPreference` and `date` columns (appended so older files still import). |
 | `importFullCsv(text)` | in | Parses into named sections, builds a fresh state object (`ns`), runs it through `sanitizeImportedState` then `sanitizeSettingsAndSeason`, swaps it in as `STATE`, then re-runs `computeSeasonRosterOff(true)` to recompute display-only derived fields **without** overwriting the imported `rosteredOffIds` (see [`engine.md`](engine.md)). If the re-solve throws, `STATE` is rolled back to its pre-import value before the error propagates — an import can fail loudly without corrupting the live app state. |
 | `sanitizeImportedState(ns)` | — | Defensive pass over freshly-parsed data: drops player/fill-in rows with a missing/duplicate id or (for players) no recognized preference; strips locked-slot/roster-off/fill-in/schedule references to ids that don't exist; removes a player appearing twice in one quarter's on-court+bench. Returns a list of what it corrected (surfaced via `console.warn` + a toast, not silently). |
 
@@ -51,7 +51,7 @@ from the same aggregation functions the Reports tab uses
 
 | Sheet | Source |
 |---|---|
-| Rotation Grid | every game's `schedule.quarters`, one row per game×quarter |
+| Rotation Grid | every game's `schedule.quarters`, one row per game×quarter (with a Date column; the Short-Staffed Notes and Off-Preference Log sheets also carry one) |
 | Player Summary | `computePlayerSummaries()` |
 | Short-Staffed Notes | every shortfall game, via `fillInGapSuggestions()` |
 | Off-Preference Log | `computeOffPrefLog()` + `describeOffPrefReason()` |

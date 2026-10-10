@@ -56,6 +56,7 @@ erDiagram
         string_array squadIds FK "-> PLAYER.id | FILLIN.id, this game's on-court+bench pool"
         string_array fillInIds FK "-> FILLIN.id, assigned to this game"
         object lockedSlots "'qi-pos' -> playerId|fillInId, manual per-slot lock"
+        string date "optional YYYY-MM-DD label; never read by generation"
         boolean strictSpecialistPairing "per-game coverage-protection toggle"
         boolean allowOffPreference "per-game override of settings.allowOffPreference; null follows the season-wide setting"
         boolean shortfall "available regulars + fill-ins < 7"

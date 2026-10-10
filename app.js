@@ -39,6 +39,27 @@ function defaultState(){
     activeTab:"setup"
   };
 }
+/* Game dates are labels only (nothing in generation reads them), stored as
+   ISO "YYYY-MM-DD" strings so they round-trip through JSON/CSV unchanged.
+   Anything that isn't a real calendar date collapses to "". */
+function sanitizeGameDate(s){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s==null?"":s).trim());
+  if(!m) return "";
+  const d = new Date(Number(m[1]), Number(m[2])-1, Number(m[3]));
+  return (d.getFullYear()===Number(m[1]) && d.getMonth()===Number(m[2])-1 && d.getDate()===Number(m[3])) ? m[0] : "";
+}
+/* Parsed as a local date (not new Date(iso), which is UTC and can show the previous day). */
+function formatGameDate(iso){
+  const clean = sanitizeGameDate(iso);
+  if(!clean) return "";
+  const [y,mo,d] = clean.split("-").map(Number);
+  return new Date(y,mo-1,d).toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"});
+}
+function gameLabel(num){
+  const d = formatGameDate(getGame(num).date);
+  return d ? `Game ${num} · ${d}` : `Game ${num}`;
+}
+
 /* Effective off-preference rule for one game: its own override if set,
    otherwise the season-wide Settings toggle. */
 function gameAllowsOffPreference(game){
@@ -47,6 +68,7 @@ function gameAllowsOffPreference(game){
 function newGameState(){
   return {
     isPlayed:false,
+    date:"",                    // "YYYY-MM-DD" or "" — display/export label only; never affects generation
     rosterOffOverride:null,     // number|null - overrides derived roster_off_count
     rosterOffLockIds:null,      // array of playerIds|null - manual explicit roster-off selection (locked)
     allowOffPreference:null,    // boolean|null - per-game override of settings.allowOffPreference; null follows the season-wide setting
@@ -129,6 +151,7 @@ function loadState(){
     delete merged.settings.fairnessWeights.onCourt; // merged into the single "bench" playing-time-evenness weight
     Object.values(merged.games||{}).forEach(g=>{
       delete g.strictSpecialistMode;
+      g.date = sanitizeGameDate(g.date);
       if(!Array.isArray(g.coverageWarnings)) g.coverageWarnings=[];
     });
     merged.players.forEach(p=>{ p.prefs = sanitizePrefs(p.prefs); });
@@ -856,7 +879,7 @@ function renderPlayerList(el){
         <div class="player-name">${esc(p.name)}</div>
         <div class="player-meta">
           ${p.prefs.map((pos,i)=>`<span class="pref-item"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}" title="${esc(POS_LABEL[pos])}">${esc(pos)}</span></span>`).join(" ")}
-          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn pill-inline">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
+          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn pill-inline" title="${esc(p.unavailable.map(g=>gameLabel(g)).join("; "))}">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
         </div>
       </div>
       <div class="btn-row btn-row-tight">
@@ -1101,7 +1124,7 @@ function renderGameCard(num){
   <div class="game-card ${game.isPlayed?'game-card-locked':''}" data-game="${num}">
     <div class="game-card-head">
       <div>
-        <h4>Game ${num}</h4>
+        <h4>${esc(gameLabel(num))}</h4>
         ${!open && summaryLine? `<div class="hint" style="margin-top:2px;">${esc(summaryLine)}</div>`:""}
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
@@ -1149,6 +1172,11 @@ function renderGameBody(num){
         </div>
       </div>
       ${gapHtml}
+      <div class="field" style="margin-top:10px;">
+        <label class="section-label" for="gameDate-${num}">Game date</label>
+        <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}">
+        <div class="hint" style="margin-top:4px;">Optional. Shown on the schedule, reports and exports; doesn't affect the roster.</div>
+      </div>
       <div class="field" style="margin-top:10px;">
         <label class="section-label" for="allowOffPref-${num}">Off-preference positions</label>
         <select id="allowOffPref-${num}" ${game.isPlayed?"disabled":""}>
@@ -1243,6 +1271,11 @@ function wireGameCard(el, num){
   };
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
+  const dateInput = card.querySelector(`#gameDate-${num}`);
+  if(dateInput) dateInput.onchange=e=>{
+    getGame(num).date = sanitizeGameDate(e.target.value);
+    saveState(); renderGamesList(el);
+  };
   const allowOffPrefSel = card.querySelector(`#allowOffPref-${num}`);
   if(allowOffPrefSel) allowOffPrefSel.onchange=e=>{
     const v = e.target.value;
@@ -1300,7 +1333,7 @@ function openRosterOffDialog(num){
   const current = new Set(game.rosterOffLockIds || game.rosteredOffIds || []);
   const expected = expectedRosterOffCount(num);
   openModal(`
-    <h3>Roster off — Game ${num}</h3>
+    <h3>Roster off — ${esc(gameLabel(num))}</h3>
     <p class="modal-sub">Manually choose who's rostered off. Leave unset to let the engine auto-select for fairness.</p>
     <p class="hint" id="offCountLine" style="margin-bottom:8px;"></p>
     <div id="offList" class="scroll-list"></div>
@@ -1359,7 +1392,7 @@ function openAssignFillInDialog(num){
   }
 
   const modal = openModal(`
-    <h3>Assign fill-in — Game ${num}</h3>
+    <h3>Assign fill-in — ${esc(gameLabel(num))}</h3>
     <p class="modal-sub">Choose which saved fill-ins are available for this game.</p>
     <div id="finList" class="scroll-list"></div>
     <div class="btn-row" style="margin-top:10px;">
@@ -1427,7 +1460,7 @@ function openSlotEditDialog(num, qi, pos){
   const oldPid = q.onCourt[pos]||null;
 
   openModal(`
-    <h3>Game ${num} · Q${qi+1} · ${pos}</h3>
+    <h3>${esc(gameLabel(num))} · Q${qi+1} · ${pos}</h3>
     <p class="modal-sub">${POS_LABEL[pos]}</p>
     <div class="field"><label>Assign player</label>
       <select id="slotSelect">
@@ -1514,7 +1547,7 @@ function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedS
 
   const optionHtml = p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
   openModal(`
-    <h3>Game ${num} · Q${qi+1} · ${vacantPos} is now empty</h3>
+    <h3>${esc(gameLabel(num))} · Q${qi+1} · ${vacantPos} is now empty</h3>
     <p class="modal-sub">${POS_LABEL[vacantPos]} — who fills it? Cancelling discards this whole edit — nothing has been saved yet.</p>
     <div class="field"><label>Assign player</label>
       <select id="vacantSelect">
@@ -1719,7 +1752,7 @@ function renderReports(root){
         <thead><tr><th>Game</th><th>Qtr</th><th>Player</th><th>Position</th><th>Why (specialists unavailable/benched)</th></tr></thead>
         <tbody>
         ${offPref.length? offPref.map(o=>`
-          <tr><td class="mono">${o.game}</td><td class="mono">${o.quarter}</td><td>${esc(o.playerName)}</td>
+          <tr><td class="mono">${o.game}${getGame(o.game).date?`<div class="hint">${esc(formatGameDate(getGame(o.game).date))}</div>`:""}</td><td class="mono">${o.quarter}</td><td>${esc(o.playerName)}</td>
             <td><span class="pos-badge pos-${o.position}">${o.position}</span></td>
             <td class="hint">${esc(describeOffPrefReason(o))}</td></tr>
         `).join("") : `<tr><td colspan="5" class="hint">None yet — generate the season to populate this log.</td></tr>`}
@@ -1732,7 +1765,7 @@ function renderReports(root){
       ${shortGames.length? shortGames.map(({n,g})=>{
         const gaps = fillInGapSuggestions(n);
         const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
-        return `<div class="game-card"><div class="game-card-head"><h4>Game ${n}</h4>
+        return `<div class="game-card"><div class="game-card-head"><h4>${esc(gameLabel(n))}</h4>
           <span class="pill pill-danger">${g.minFillIns} min / ${g.recommendedFillIns} recommended fill-ins</span></div>
           <p class="hint" style="margin:8px 0 4px;">Unavailable: ${esc(unavail)||"—"}</p>
           ${gaps.length?`<p class="hint">Coverage gaps: ${gaps.join(", ")}</p>`:""}</div>`;
@@ -1901,13 +1934,13 @@ function exportFullCsv(){
   STATE.players.forEach(p=>row(p.id,guardCsvText(p.name),(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
   row("#FILLINS","id","name","prefs","saved");
   STATE.fillIns.forEach(f=>row(f.id,guardCsvText(f.name),(f.prefs||[]).join("|"),f.saved===false?0:1));
-  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing","allowOffPreference");
+  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing","allowOffPreference","date");
   gameNums().forEach(n=>{
     const g = getGame(n);
     const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
     row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
       (g.rosterOffLockIds||[]).join("|"), (g.rosteredOffIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"",
-      g.strictSpecialistPairing?1:0, g.allowOffPreference===null||g.allowOffPreference===undefined?"":(g.allowOffPreference?1:0));
+      g.strictSpecialistPairing?1:0, g.allowOffPreference===null||g.allowOffPreference===undefined?"":(g.allowOffPreference?1:0), g.date||"");
   });
   row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
   gameNums().forEach(n=>{
@@ -1964,10 +1997,11 @@ function importFullCsv(text){
 
     ns.games = {};
     (sections.GAMES||[]).filter(r=>r[0]).forEach(r=>{
-      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr,allowOffPrefStr] = r;
+      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr,allowOffPrefStr,dateStr] = r;
       const g = newGameState();
       g.isPlayed = isPlayed==="1";
       g.strictSpecialistPairing = strictPairingStr==="1";
+      g.date = sanitizeGameDate(dateStr);
       g.allowOffPreference = allowOffPrefStr==="1" ? true : allowOffPrefStr==="0" ? false : null;
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
       // Known limitation: the pipe-joined encoding can't distinguish an
@@ -2126,7 +2160,7 @@ function exportXlsx(){
   if(typeof XLSX==="undefined"){ toast("Spreadsheet library failed to load — check your connection."); return; }
   const wb = XLSX.utils.book_new();
 
-  const gridRows = [["Game","Quarter",...POSITIONS,"Bench"]];
+  const gridRows = [["Game","Date","Quarter",...POSITIONS,"Bench"]];
   gameNums().forEach(n=>{
     const g = getGame(n); if(!g.schedule) return;
     g.schedule.quarters.forEach((q,qi)=>{
@@ -2137,7 +2171,7 @@ function exportXlsx(){
         return p.name + (offpref?" (off-pref)":"");
       });
       const benchNames = (q.bench||[]).map(pid=>{ const p=byId(STATE.players,pid)||byId(STATE.fillIns,pid); return p?p.name:pid; }).join(", ");
-      gridRows.push([n,qi+1,...posCells,benchNames]);
+      gridRows.push([n,g.date||"",qi+1,...posCells,benchNames]);
     });
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(gridRows), "Rotation Grid");
@@ -2147,16 +2181,16 @@ function exportXlsx(){
   summaries.forEach(s=> sumRows.push([s.name,s.gamesPlayedIn,s.onCourt,s.bench,s.missed, ...POSITIONS.map(p=>s.positions[p]||0), s.offPrefTotal]));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sumRows), "Player Summary");
 
-  const noteRows = [["Game","Unavailable","Min Fill-ins","Recommended Fill-ins","Coverage Gaps"]];
+  const noteRows = [["Game","Date","Unavailable","Min Fill-ins","Recommended Fill-ins","Coverage Gaps"]];
   gameNums().filter(n=>getGame(n).shortfall).forEach(n=>{
     const g = getGame(n);
     const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
-    noteRows.push([n, unavail, g.minFillIns, g.recommendedFillIns, fillInGapSuggestions(n).join(", ")]);
+    noteRows.push([n, g.date||"", unavail, g.minFillIns, g.recommendedFillIns, fillInGapSuggestions(n).join(", ")]);
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), "Short-Staffed Notes");
 
-  const offRows = [["Game","Quarter","Player","Position","Why (Specialists Unavailable/Benched)"]];
-  computeOffPrefLog().forEach(o=> offRows.push([o.game,o.quarter,o.playerName,o.position,describeOffPrefReason(o)]));
+  const offRows = [["Game","Date","Quarter","Player","Position","Why (Specialists Unavailable/Benched)"]];
+  computeOffPrefLog().forEach(o=> offRows.push([o.game,getGame(o.game).date||"",o.quarter,o.playerName,o.position,describeOffPrefReason(o)]));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(offRows), "Off-Preference Log");
 
   XLSX.writeFile(wb, `netball-roster-${new Date().toISOString().slice(0,10)}.xlsx`);
