@@ -39,11 +39,17 @@ function defaultState(){
     activeTab:"setup"
   };
 }
+/* Effective off-preference rule for one game: its own override if set,
+   otherwise the season-wide Settings toggle. */
+function gameAllowsOffPreference(game){
+  return typeof game.allowOffPreference==="boolean" ? game.allowOffPreference : !!STATE.settings.allowOffPreference;
+}
 function newGameState(){
   return {
     isPlayed:false,
     rosterOffOverride:null,     // number|null - overrides derived roster_off_count
     rosterOffLockIds:null,      // array of playerIds|null - manual explicit roster-off selection (locked)
+    allowOffPreference:null,    // boolean|null - per-game override of settings.allowOffPreference; null follows the season-wide setting
     strictSpecialistPairing:false, // §5.5 - this game's roster-off pick may deviate from strict fairness ordering to protect position coverage, without changing the season-wide balance for other games
     fillInIds:[],               // fill-ins assigned to this game
     lockedSlots:{},             // "q-pos" -> playerId (manual lock, survives rebalance)
@@ -378,7 +384,8 @@ function computeSeasonRosterOff(preserveExisting){
       availableIds: a.availableRegularIds,
       rosterOffCount: fixedOffIds!=null ? fixedOffIds.length : a.rosterOffCount,
       fixedOffIds,
-      strictSpecialistPairing: !!game.strictSpecialistPairing
+      strictSpecialistPairing: !!game.strictSpecialistPairing,
+      allowOffPreference: gameAllowsOffPreference(game)
     };
   });
   const phase1 = RosterSolver.solveSeasonRosterOff({
@@ -444,6 +451,7 @@ function runGeneration(){
     game.error = null;
 
     const benchCount = plan.squad.length-7;
+    const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
     const gameBenchSoFar = {};
     let benchedLastQuarter = new Set();
     const quarters = [];
@@ -469,7 +477,7 @@ function runGeneration(){
 
       const result = RosterSolver.solveQuarterPositions({
         players: plan.squad, benchSlotCount: benchCount, lockedSlots,
-        cumulative: snapshot, settings: STATE.settings
+        cumulative: snapshot, settings: gameSettings
       });
 
       if(result.errors.length){
@@ -495,7 +503,7 @@ function runGeneration(){
       // treat it like the "not enough players" shortfall case.
       quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
       const detail = failingQuarters.map(f=>`Q${f.quarter}: ${f.positions.join(", ")}`).join("; ");
-      game.error = `Game ${num}: no eligible in-preference player for — ${detail}. Add/adjust a fill-in, or allow off-preference positions.`;
+      game.error = `Game ${num}: no eligible in-preference player for — ${detail}. Add/adjust a fill-in, or allow off-preference positions for this game.`;
       game.schedule = null; game.generated = false;
       foldGameIntoCumulative(cumulative, plan.rosteredOffIds, plan.unavailableIds, null);
       return;
@@ -503,7 +511,7 @@ function runGeneration(){
 
     // Phase 2b: bounded local-search refinement across this game's own 4 quarters only.
     const refined = RosterSolver.refineGameQuarters({
-      quarters, squadPool: plan.squad, cumulativeSnapshots, lockedSlotsPerQuarter, settings: STATE.settings
+      quarters, squadPool: plan.squad, cumulativeSnapshots, lockedSlotsPerQuarter, settings: gameSettings
     });
 
     // Undo the pre-refinement fold and re-fold the actual refined outcome, so
@@ -1141,6 +1149,15 @@ function renderGameBody(num){
         </div>
       </div>
       ${gapHtml}
+      <div class="field" style="margin-top:10px;">
+        <label class="section-label" for="allowOffPref-${num}">Off-preference positions</label>
+        <select id="allowOffPref-${num}" ${game.isPlayed?"disabled":""}>
+          <option value="" ${game.allowOffPreference===null||game.allowOffPreference===undefined?"selected":""}>Follow Settings (${STATE.settings.allowOffPreference?"allowed":"not allowed"})</option>
+          <option value="1" ${game.allowOffPreference===true?"selected":""}>Allowed this game</option>
+          <option value="0" ${game.allowOffPreference===false?"selected":""}>Not allowed this game</option>
+        </select>
+        <div class="hint" style="margin-top:4px;">Overrides the Settings toggle for this game only.</div>
+      </div>
       <label class="checkbox-row" style="margin-top:10px;">
         <input type="checkbox" id="strictPairing-${num}" ${game.strictSpecialistPairing?"checked":""} ${game.isPlayed?"disabled":""}>
         <span class="cb-label">Protect position coverage</span>
@@ -1226,6 +1243,12 @@ function wireGameCard(el, num){
   };
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
+  const allowOffPrefSel = card.querySelector(`#allowOffPref-${num}`);
+  if(allowOffPrefSel) allowOffPrefSel.onchange=e=>{
+    const v = e.target.value;
+    getGame(num).allowOffPreference = v==="" ? null : v==="1";
+    saveState(); dirtySinceGeneration = true; toast("Regenerate to apply.");
+  };
   const strictPairing = card.querySelector(`#strictPairing-${num}`);
   if(strictPairing) strictPairing.onchange=e=>{
     getGame(num).strictSpecialistPairing = e.target.checked;
@@ -1878,13 +1901,13 @@ function exportFullCsv(){
   STATE.players.forEach(p=>row(p.id,guardCsvText(p.name),(p.prefs||[]).join("|"),(p.unavailable||[]).join("|")));
   row("#FILLINS","id","name","prefs","saved");
   STATE.fillIns.forEach(f=>row(f.id,guardCsvText(f.name),(f.prefs||[]).join("|"),f.saved===false?0:1));
-  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing");
+  row("#GAMES","gameNum","isPlayed","rosterOffOverride","rosterOffLockIds","rosteredOffIds","fillInIds","lockedSlots","error","strictSpecialistPairing","allowOffPreference");
   gameNums().forEach(n=>{
     const g = getGame(n);
     const lockedSlotsStr = Object.entries(g.lockedSlots||{}).map(([k,v])=>k+"="+v).join("|");
     row(n, g.isPlayed?1:0, Number.isFinite(g.rosterOffOverride)?g.rosterOffOverride:"",
       (g.rosterOffLockIds||[]).join("|"), (g.rosteredOffIds||[]).join("|"), (g.fillInIds||[]).join("|"), lockedSlotsStr, g.error||"",
-      g.strictSpecialistPairing?1:0);
+      g.strictSpecialistPairing?1:0, g.allowOffPreference===null||g.allowOffPreference===undefined?"":(g.allowOffPreference?1:0));
   });
   row("#SCHEDULE","gameNum","quarter","slot","playerId","offPreference");
   gameNums().forEach(n=>{
@@ -1941,10 +1964,11 @@ function importFullCsv(text){
 
     ns.games = {};
     (sections.GAMES||[]).filter(r=>r[0]).forEach(r=>{
-      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr] = r;
+      const [num,isPlayed,rosterOffOverride,rosterOffLockIds,rosteredOffIds,fillInIds,lockedSlotsStr,errorStr,strictPairingStr,allowOffPrefStr] = r;
       const g = newGameState();
       g.isPlayed = isPlayed==="1";
       g.strictSpecialistPairing = strictPairingStr==="1";
+      g.allowOffPreference = allowOffPrefStr==="1" ? true : allowOffPrefStr==="0" ? false : null;
       g.rosterOffOverride = rosterOffOverride!==""&&rosterOffOverride!==undefined ? Number(rosterOffOverride) : null;
       // Known limitation: the pipe-joined encoding can't distinguish an
       // explicit "lock to nobody" from "no lock" — both are an empty string,

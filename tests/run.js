@@ -1137,6 +1137,29 @@ test("OP-9: toggling allowOffPreference off raises an error instead of an off-pr
   assert.strictEqual(engine.computeOffPrefLog().length, 0, "no off-preference fill should ever be logged when the toggle is off");
 });
 
+test("OP-12: per-game allowOffPreference overrides the season-wide setting in both directions", ()=>{
+  const build = (globalAllow, gameAllow)=>{
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 1;
+    st.season.desiredBenchSize = 0;
+    st.settings.allowOffPreference = globalAllow;
+    ["GS","GA","WA","C","WD","GD"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+    addPlayer(engine, "P6", ["GS"]); // no one lists GK
+    engine.ensureGamesExist();
+    engine.getGame(1).allowOffPreference = gameAllow;
+    engine.runGeneration();
+    return engine.getGame(1);
+  };
+  const blocked = build(true, false);
+  assert.ok(blocked.error && /GK/.test(blocked.error), "game override 'not allowed' must error even though Settings allows: "+blocked.error);
+  const allowed = build(false, true);
+  assert.strictEqual(allowed.error, null, "game override 'allowed' must schedule even though Settings disallows");
+  assert.strictEqual(allowed.generated, true);
+  const followed = build(false, null);
+  assert.ok(followed.error, "null override must follow the Settings toggle (off)");
+});
+
 test("OP-11: with allowOffPreference off, the preference slider has no effect (no off-preference fills regardless of value)", ()=>{
   const engine = freshEngine();
   const st = engine._getState();

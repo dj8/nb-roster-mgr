@@ -17,7 +17,7 @@ the results back onto `STATE.games[...]`.
 
 | Function | Params (shape) | Returns | Notes |
 |---|---|---|---|
-| `solveSeasonRosterOff(input)` | `{players:[{id,prefs,unavailableCount}], games:[{num,availableIds,rosterOffCount,fixedOffIds,strictSpecialistPairing}], weights:{fairness,coverage}, allowOffPreference, timeBudgetMs}` | `{rosterOffByGame:{num:[ids]}, stats:{passes,elapsedMs,finalCost,timedOut,attempts}}` | Phase 1. See below for the search itself. |
+| `solveSeasonRosterOff(input)` | `{players:[{id,prefs,unavailableCount}], games:[{num,availableIds,rosterOffCount,fixedOffIds,strictSpecialistPairing,allowOffPreference?}], weights:{fairness,coverage}, allowOffPreference, timeBudgetMs}` | `{rosterOffByGame:{num:[ids]}, stats:{passes,elapsedMs,finalCost,timedOut,attempts}}` | Phase 1. See below for the search itself. |
 | `solveQuarterPositions(input)` | `{players:[{id,name,prefs,isFillIn}], benchSlotCount, lockedSlots:{pos:id}, cumulative, settings}` | `{onCourt:{pos:id}, bench:[ids], offPreference:{pos:true}, errors:[{position,reason}]}` | Phase 2a, one quarter. Builds a cost matrix and calls `Hungarian.solve`. |
 | `refineGameQuarters(input)` | `{quarters, squadPool, cumulativeSnapshots, lockedSlotsPerQuarter, settings, timeBudgetMs}` | `{quarters, stats:{swaps,elapsedMs}}` | Phase 2b, one game's 4 quarters together. |
 | `buildQuarterCostFns(cumulative, settings)` | cumulative snapshot + settings | `{positionCellCost(p,pos), benchCellCost(p), isDisqualified(p,pos)}` | The cost model, exposed directly — used by both 2a and 2b so they score identically. |
@@ -26,7 +26,7 @@ the results back onto `STATE.games[...]`.
 | `computeRosterOffAchievabilityNotes(players)` | `[{name,prefs}]` | `[{position,players,message}]` | Roster-composition note: a position with ≤1 preferrer can't be rested without risking zero coverage, independent of any setting. |
 | `clampSetting(v, lo, hi, fallback)` | untrusted value + bounds | number in `[lo,hi]` | Used everywhere an untrusted numeric setting (localStorage, CSV) needs coercing — `NaN` in used to poison every downstream comparison silently. |
 | `gameCoveragePenalty(squadAfterOff)` | squad remaining after roster-off | number | Rank-weighted penalty: heavy at 0 remaining covering players for a position, moderate at exactly 1. |
-| `hasZeroCoverage(squadAfter)` | squad remaining | boolean | The *hard* version of the above — used to disqualify a Phase 1 move outright when `allowOffPreference` is off. |
+| `hasZeroCoverage(squadAfter)` | squad remaining | boolean | The *hard* version of the above — used to disqualify a Phase 1 move outright when `allowOffPreference` is off (a game's own `allowOffPreference` boolean, when set, overrides the season-wide value for that game's moves). |
 | `variance(nums)` | array of numbers | population variance | Phase 1's fairness term. |
 
 `CONSTANTS` (exported object) holds every tunable — weights, time budgets, penalty

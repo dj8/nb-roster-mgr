@@ -57,6 +57,7 @@ erDiagram
         string_array fillInIds FK "-> FILLIN.id, assigned to this game"
         object lockedSlots "'qi-pos' -> playerId|fillInId, manual per-slot lock"
         boolean strictSpecialistPairing "per-game coverage-protection toggle"
+        boolean allowOffPreference "per-game override of settings.allowOffPreference; null follows the season-wide setting"
         boolean shortfall "available regulars + fill-ins < 7"
         number minFillIns
         number recommendedFillIns

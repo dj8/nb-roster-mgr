@@ -106,7 +106,7 @@ function deriveRosterOffWeights(rosterOffWeight){
    PHASE 1 — season-wide roster-off allocation
    ============================================================
    input.players: [{id, prefs, unavailableCount}]  (season-total known unavailability)
-   input.games:   [{num, availableIds:[id...], rosterOffCount, fixedOffIds:[id...]|null}]
+   input.games:   [{num, availableIds:[id...], rosterOffCount, fixedOffIds:[id...]|null, allowOffPreference?:boolean}]
                   fixedOffIds !== null means this game's roster-off is not decided here
                   (played / shortfall / manually locked) — it still counts toward fairness.
    input.weights: {fairness, coverage} (optional overrides)
@@ -122,6 +122,9 @@ function solveSeasonRosterOff(input){
   const fairnessWeight = (input.weights && input.weights.fairness!=null) ? input.weights.fairness : PHASE1_FAIRNESS_WEIGHT;
   const coverageWeight = (input.weights && input.weights.coverage!=null) ? input.weights.coverage : PHASE1_COVERAGE_WEIGHT;
   const allowOffPreference = input.allowOffPreference !== false;
+  /* A game may override the season-wide toggle with its own boolean
+     (g.allowOffPreference); null/undefined follows the season-wide value. */
+  const allowOffFor = g=> (typeof g.allowOffPreference==="boolean") ? g.allowOffPreference : allowOffPreference;
   const timeBudgetMs = input.timeBudgetMs!=null ? input.timeBudgetMs : PHASE1_TIME_BUDGET_MS;
   const start = Date.now();
   const deadline = start + timeBudgetMs;
@@ -181,7 +184,7 @@ function solveSeasonRosterOff(input){
           const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
           const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
           if(score<bestSafeScore){ bestSafeScore=score; bestSafe=cand; }
-          const disqualified = !allowOffPreference && hasZeroCoverage(squadAfter);
+          const disqualified = !allowOffFor(g) && hasZeroCoverage(squadAfter);
           if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
         });
         const chosen = best!==null ? best : bestSafe;
@@ -226,7 +229,7 @@ function solveSeasonRosterOff(input){
             const candidateOffIds = current[g.num].map(id=>id===offP.id?onP.id:id);
             const candidateOffSet = new Set(candidateOffIds);
             const squadAfterSwap = pool.filter(p=>!candidateOffSet.has(p.id));
-            if(!allowOffPreference && hasZeroCoverage(squadAfterSwap)) continue; // hard rule: never swap into a zero-coverage state
+            if(!allowOffFor(g) && hasZeroCoverage(squadAfterSwap)) continue; // hard rule: never swap into a zero-coverage state
             current[g.num] = candidateOffIds;
             const newObjective = totalObjectiveOf(current);
             if(newObjective < bestObjective-1e-9){
@@ -262,10 +265,8 @@ function solveSeasonRosterOff(input){
               if(off1.has(B.id) || !pool1.some(p=>p.id===B.id)) continue; // must be on-court (available, not off) in g1
               const newOff1 = new Set(off1); newOff1.delete(A.id); newOff1.add(B.id);
               const newOff2 = new Set(off2); newOff2.delete(B.id); newOff2.add(A.id);
-              const blocked = !allowOffPreference && (
-                hasZeroCoverage(pool1.filter(p=>!newOff1.has(p.id))) ||
-                hasZeroCoverage(pool2.filter(p=>!newOff2.has(p.id)))
-              );
+              const blocked = (!allowOffFor(g1) && hasZeroCoverage(pool1.filter(p=>!newOff1.has(p.id)))) ||
+                (!allowOffFor(g2) && hasZeroCoverage(pool2.filter(p=>!newOff2.has(p.id))));
               current[g1.num] = current[g1.num].map(id=>id===A.id?B.id:id);
               current[g2.num] = current[g2.num].map(id=>id===B.id?A.id:id);
               const newObjective = blocked ? Infinity : totalObjectiveOf(current);
@@ -316,10 +317,8 @@ function solveSeasonRosterOff(input){
                 if(offB.has(L) || !poolB.some(p=>p.id===L)) continue; // L must be on in gB
                 const newOffA = new Set(offA); newOffA.delete(H); newOffA.add(X.id);
                 const newOffB = new Set(offB); newOffB.delete(X.id); newOffB.add(L);
-                const blocked = !allowOffPreference && (
-                  hasZeroCoverage(poolA.filter(p=>!newOffA.has(p.id))) ||
-                  hasZeroCoverage(poolB.filter(p=>!newOffB.has(p.id)))
-                );
+                const blocked = (!allowOffFor(gA) && hasZeroCoverage(poolA.filter(p=>!newOffA.has(p.id)))) ||
+                  (!allowOffFor(gB) && hasZeroCoverage(poolB.filter(p=>!newOffB.has(p.id))));
                 if(blocked) continue;
                 current[gA.num] = current[gA.num].map(id=>id===H?X.id:id);
                 current[gB.num] = current[gB.num].map(id=>id===X.id?L:id);
