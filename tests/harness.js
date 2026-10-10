@@ -57,8 +57,8 @@ function makeFakeLocalStorage(){
   };
 }
 
-/* Captures the text passed to `new Blob([text])` so CSV export can be inspected
-   without a real download — exportFullCsv() itself is never modified for this. */
+/* Captures the text passed to `new Blob([text])` so the backup export can be inspected
+   without a real download — exportBackup() itself is never modified for this. */
 class CapturingBlob {
   constructor(parts){ this.__text = (parts||[]).join(""); CapturingBlob.last = this.__text; }
 }

@@ -81,7 +81,7 @@ what's actually in `STATE.games[...].schedule`.
 ## Callers
 
 `runGeneration()` and `computeSeasonRosterOff()` are called from the Schedule tab
-(`renderSchedule`'s Generate/Rebalance buttons) and from `importFullCsv`. The
+(`renderSchedule`'s Generate/Rebalance buttons) and from `importBackup`. The
 availability/squad planners (`planGameAvailability`, `planGameSquad`,
 `fillInGapSuggestions`) are read constantly by the Schedule tab's rendering and dialogs to
 display current facts without needing a fresh generation. The report functions are called

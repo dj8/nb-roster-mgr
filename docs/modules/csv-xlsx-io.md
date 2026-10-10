@@ -86,12 +86,12 @@ what the JSON backup is for).
 ## Shared download mechanism
 
 `downloadBlob(filename, blob)` — creates an object URL, synthesizes an `<a download>`
-click, revokes the URL after 1s. Used by both `exportFullCsv` and (indirectly, via
+click, revokes the URL after 1s. Used by both `exportBackup` and (indirectly, via
 `XLSX.writeFile`) `exportXlsx`.
 
 ## Called by
 
-`importPlayersCsv` ← Setup tab file input. `exportFullCsv`/`importFullCsv`/`exportXlsx` ←
+`importPlayersCsv` ← Setup tab file input. `exportBackup`/`importBackup`/`exportXlsx` ←
 Data tab buttons ([`ui-reports-and-settings.md`](ui-reports-and-settings.md) covers the
 rest of that tab's siblings, but these three live in `renderData`, documented for scope
 reasons in this file instead since they're I/O, not report display).
