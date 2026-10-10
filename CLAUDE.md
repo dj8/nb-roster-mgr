@@ -81,4 +81,4 @@ Worked example: per-game `allowOffPreference` (`null` = follow Settings, else bo
 - Plain ES (no modules, no transpiling, no new runtime dependencies); `vendor/` holds the only third-party code.
 - Escape every user-supplied string with `esc()` when building HTML; sanitize CSV text with the existing
   guard/unguard helpers.
-- Create a new branch off an up-to-date `main` for each new set of features or fixes (e.g. `feature/per-game-off-preference`); don't commit feature work directly to `main`. Merge via PR (`gh pr create --base main`) and delete the branch afterwards. There is no long-lived `dev` branch.
+- Create a new branch off an up-to-date `main` for each new set of features or fixes (named succinctly for the update, e.g. `per-game-off-preference` or `fix-roster-off-dialog`); don't commit feature work directly to `main`. Merge via PR (`gh pr create --base main`) and delete the branch afterwards. There is no long-lived `dev` branch.
