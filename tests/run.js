@@ -1152,6 +1152,8 @@ test("DATE-1: game dates are validated, labelled, and survive a CSV round-trip",
   engine.importFullCsv(engine.CapturingBlob.last);
   const st2 = engine._getState();
   assert.strictEqual(engine.getGame(1).date, "2026-03-14");
+  assert.ok(/^G1 \(.*14.*\)$/.test(engine.gameTag(1)), "tag links the game number to its date: "+engine.gameTag(1));
+  assert.strictEqual(engine.gameTag(2), "G2");
   assert.strictEqual(engine.getGame(2).date, "");
 });
 

@@ -94,6 +94,7 @@ if(typeof module!=="undefined" && module.exports){
     sanitizeGameDate: sanitizeGameDate,
     formatGameDate: formatGameDate,
     gameLabel: gameLabel,
+    gameTag: gameTag,
     ensureGamesExist: ensureGamesExist,
     gameNums: gameNums,
     POSITIONS: POSITIONS,

@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 32; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 33; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -54,6 +54,14 @@ function formatGameDate(iso){
   if(!clean) return "";
   const [y,mo,d] = clean.split("-").map(Number);
   return new Date(y,mo-1,d).toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"});
+}
+/* Compact tag for tight spots (pills, lists): "G3" or "G3 (14 Mar)". */
+function gameTag(num){
+  const g = STATE.games[num];
+  const clean = g ? sanitizeGameDate(g.date) : "";
+  if(!clean) return "G"+num;
+  const [y,mo,d] = clean.split("-").map(Number);
+  return `G${num} (${new Date(y,mo-1,d).toLocaleDateString(undefined,{day:"numeric",month:"short"})})`;
 }
 function gameLabel(num){
   const d = formatGameDate(getGame(num).date);
@@ -879,7 +887,7 @@ function renderPlayerList(el){
         <div class="player-name">${esc(p.name)}</div>
         <div class="player-meta">
           ${p.prefs.map((pos,i)=>`<span class="pref-item"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}" title="${esc(POS_LABEL[pos])}">${esc(pos)}</span></span>`).join(" ")}
-          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn pill-inline" title="${esc(p.unavailable.map(g=>gameLabel(g)).join("; "))}">Out: ${p.unavailable.map(g=>"G"+g).join(", ")}</span>`:""}
+          ${p.unavailable&&p.unavailable.length? `<span class="pill pill-warn pill-inline" title="${esc(p.unavailable.map(g=>gameLabel(g)).join("; "))}">Out: ${p.unavailable.map(g=>esc(gameTag(g))).join(", ")}</span>`:""}
         </div>
       </div>
       <div class="btn-row btn-row-tight">
@@ -915,7 +923,8 @@ function openPlayerDialog(playerId){
     </div>
     <div class="field">
       <label>Unavailable for game numbers (comma-separated, e.g. "3, 7")</label>
-      <input type="text" id="pfUnavail" value="${(draft.unavailable||[]).join(', ')}">
+      <input type="text" id="pfUnavail" value="${(draft.unavailable||[]).join(', ')}" aria-describedby="pfUnavailDates">
+      <div class="hint" id="pfUnavailDates" style="margin-top:4px;"></div>
     </div>
     <div class="modal-actions">
       <button class="btn" data-act="cancel">Cancel</button>
@@ -934,6 +943,13 @@ function openPlayerDialog(playerId){
       modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paintChips(); paintButtons(); });
     }
     paintChips(); paintButtons();
+    const unavailInput = modal.querySelector("#pfUnavail");
+    const paintUnavailDates = ()=>{
+      const nums = sanitizeUnavailable(unavailInput.value.split(",").map(s=>parseInt(s.trim(),10))).filter(n=>gameNums().includes(n));
+      modal.querySelector("#pfUnavailDates").textContent = nums.map(gameTag).join(" · ");
+    };
+    unavailInput.addEventListener("input", paintUnavailDates);
+    paintUnavailDates();
     modal.querySelector("#pfName").addEventListener("input", e=>{
       modal.querySelector("#dupWarn").style.display = isDup(e.target.value) && e.target.value.trim() ? "block":"none";
     });
@@ -1298,7 +1314,7 @@ function wireGameCard(el, num){
     const game = getGame(num);
     if(!game.isPlayed && !game.schedule){ toast("Generate this game's schedule before marking it played."); return; }
     game.isPlayed = !game.isPlayed;
-    saveState(); toast(game.isPlayed?`Game ${num} locked as played.`:`Game ${num} unlocked.`);
+    saveState(); toast(game.isPlayed?`${gameLabel(num)} locked as played.`:`${gameLabel(num)} unlocked.`);
     renderGamesList(el);
   };
   card.querySelectorAll("[data-slot].cell-clickable").forEach(cellEl=>{
@@ -1604,7 +1620,7 @@ function renderFillIns(root){
         <div class="list-row-main">
           <div class="player-name">${esc(f.name)}</div>
           <div class="player-meta">${f.prefs.map(pos=>`<span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>`).join(" ")||'<span class="hint">no preferences set</span>'}
-            ${oneOff?`<span class="pill pill-warn pill-inline">One-off${usedIn.length?` — game ${usedIn.join(", ")}`:""}</span>`
+            ${oneOff?`<span class="pill pill-warn pill-inline">One-off${usedIn.length?` — ${esc(usedIn.map(gameTag).join(", "))}`:""}</span>`
               :usedIn.length?`<span class="pill pill-accent pill-inline">Used in ${usedIn.length} game(s)</span>`:""}</div>
         </div>
         <div class="btn-row btn-row-tight">
@@ -1647,7 +1663,7 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
     ${existing ? "" : `
     <label class="checkbox-row"><input type="checkbox" id="fiSaved" ${draft.saved?"checked":""}>
       <span class="cb-label">Save this fill-in for reuse in future games</span>
-      <span class="cb-desc">Off: a genuine one-off — used ${contextGameNum?`only for game ${contextGameNum}`:"just once"} and not offered when assigning fill-ins to other games (§6)</span></label>`}
+      <span class="cb-desc">Off: a genuine one-off — used ${contextGameNum?`only for ${gameLabel(contextGameNum)}`:"just once"} and not offered when assigning fill-ins to other games (§6)</span></label>`}
     <div class="modal-actions">
       <button class="btn" data-act="cancel">Cancel</button>
       <button class="btn btn-primary" data-act="save">${existing?"Save changes":"Add fill-in"}</button>
