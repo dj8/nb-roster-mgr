@@ -49,6 +49,7 @@ erDiagram
     GAME {
         string gameNum PK "object key, e.g. STATE.games['3']"
         boolean isPlayed "true = frozen historical fact, never regenerated"
+        boolean isBye "coach-set: no game this round; emptied, skipped by generation, cannot be played"
         number rosterOffOverride "manual roster-off COUNT, or null for auto"
         string_array rosterOffLockIds FK "manual roster-off SELECTION -> PLAYER.id, or null"
         string_array rosteredOffIds FK "-> PLAYER.id, computed unless isPlayed"

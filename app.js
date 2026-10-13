@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 46; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 47; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -95,6 +95,7 @@ function gameAllowsOffPreference(game){
 function newGameState(){
   return {
     isPlayed:false,
+    isBye:false,                // coach-set: no game this round. Emptied, skipped by generation/fairness, can't be marked played
     date:"",                    // "YYYY-MM-DD" or "" — display/export label only; never affects generation
     time:"",                    // "HH:MM" (24h) or "" — label only, like date
     location:"",                // free text (<= MAX_LOCATION_LEN chars) — label only
@@ -219,6 +220,13 @@ function deleteGame(num){
     if(Array.isArray(p.unavailable)) p.unavailable = p.unavailable.filter(g=>g!==num).map(g=>g>num?g-1:g);
   });
   ensureGamesExist();
+  return true;
+}
+/* Reset game `num` to an empty bye (§8.1: refuses played games). */
+function makeBye(num){
+  const game = getGame(num);
+  if(game.isPlayed) return false;
+  STATE.games[String(num)] = Object.assign(newGameState(), {isBye:true});
   return true;
 }
 function ensureGamesExist(){
@@ -434,7 +442,7 @@ function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds)
    rosteredOffIds as fixed for this call only, so it round-trips unchanged;
    the next real Generate/Rebalance is still free to change it. */
 function computeSeasonRosterOff(preserveExisting){
-  const nums = gameNums();
+  const nums = gameNums().filter(n=>!getGame(n).isBye); // byes take no part in season-wide roster-off
   const availByNum = {};
   nums.forEach(num=>{ availByNum[num] = planGameAvailability(num); });
 
@@ -494,7 +502,7 @@ function runGeneration(){
   const phase1Stats = computeSeasonRosterOff();
 
   const cumulative = emptyCumulative();
-  const nums = gameNums();
+  const nums = gameNums().filter(n=>!getGame(n).isBye);
 
   nums.forEach(num=>{
     const game = getGame(num);
@@ -1123,7 +1131,7 @@ function renderGamesList(el){
   const nums = gameNums().filter(n=>{
     const g = getGame(n);
     if(scheduleUiState.filter==="played") return g.isPlayed;
-    if(scheduleUiState.filter==="attention") return !g.isPlayed && (g.error || g.shortfall || (g.coverageWarnings&&g.coverageWarnings.length) || !g.generated);
+    if(scheduleUiState.filter==="attention") return !g.isPlayed && !g.isBye && (g.error || g.shortfall || (g.coverageWarnings&&g.coverageWarnings.length) || !g.generated);
     return true;
   });
   el.innerHTML = nums.length ? nums.map(num=>renderGameCard(num)).join("")
@@ -1133,6 +1141,7 @@ function renderGamesList(el){
 
 function statusPillsForGame(game){
   const pills=[];
+  if(game.isBye) return `<span class="pill pill-muted">Bye</span>`;
   if(game.isPlayed) pills.push(`<span class="game-locked-banner">&#128274; Played &amp; locked</span>`);
   if(game.error) pills.push(`<span class="pill pill-danger" title="${esc(game.error)}">Error</span>`);
   else if(game.shortfall) pills.push(`<span class="pill pill-danger">Shortfall</span>`);
@@ -1151,7 +1160,7 @@ function renderGameCard(num){
   const game = getGame(num);
   const open = scheduleUiState.openGame===num;
   const offNames = (game.rosteredOffIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
-  const unavailNames = (planGameAvailability(num).unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
+  const unavailNames = game.isBye ? [] : (planGameAvailability(num).unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
   const summaryBits = [];
   if(offNames.length) summaryBits.push(`Off: ${offNames.slice(0,3).join(", ")}${offNames.length>3?` +${offNames.length-3}`:""}`);
   if(unavailNames.length) summaryBits.push(`Unavailable: ${unavailNames.slice(0,3).join(", ")}${unavailNames.length>3?` +${unavailNames.length-3}`:""}`);
@@ -1189,6 +1198,29 @@ function renderGameBody(num){
   }
   const errorHtml = game.error ? `<div class="alert alert-danger" style="margin-top:12px;">${esc(game.error)}</div>` : "";
 
+  if(game.isBye){
+    return `
+    <div style="margin-top:12px;">
+      <div class="game-meta-row">
+        <div class="field">
+          <label class="section-label" for="gameDate-${num}">Game date and time</label>
+          <div class="date-time-pair">
+            <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}">
+            <input type="time" id="gameTime-${num}" value="${esc(game.time||"")}" aria-label="Game time">
+          </div>
+        </div>
+        <div class="field game-location">
+          <label class="section-label" for="gameLocation-${num}">Game location</label>
+          <input type="text" id="gameLocation-${num}" maxlength="${MAX_LOCATION_LEN}" value="${esc(game.location||"")}">
+        </div>
+      </div>
+      <div class="empty-state" style="padding:20px;"><div class="cta">Bye — no game this round. Nobody is rostered off or counted as missing.</div></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+        <button class="btn btn-sm" data-unbye="${num}">Remove bye</button>
+        <button class="btn btn-sm btn-danger" data-delgame="${num}" ${STATE.season.numGames<=1?'disabled title="A season needs at least one game."':""}>Delete game</button>
+      </div>
+    </div>`;
+  }
   const offPrefSel = game.allowOffPreference===true?"1":game.allowOffPreference===false?"0":"";
   return `
     <div style="margin-top:12px;">
@@ -1259,7 +1291,8 @@ function renderGameBody(num){
           <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
         </label>
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+        <button class="btn btn-sm" data-bye="${num}" ${game.isPlayed?'disabled title="Unlock this game before making it a bye."':""}>Bye</button>
         <button class="btn btn-sm btn-danger" data-delgame="${num}" ${STATE.season.numGames<=1?'disabled title="A season needs at least one game."':""}>Delete game</button>
       </div>
     </div>
@@ -1363,10 +1396,28 @@ function wireGameCard(el, num){
   const togglePlayed = card.querySelector(`[data-toggleplayed="${num}"]`);
   if(togglePlayed) togglePlayed.onclick=()=>{
     const game = getGame(num);
+    if(game.isBye){ toast("A bye can't be marked as played."); return; }
     if(!game.isPlayed && !game.schedule){ toast("Generate this game's schedule before marking it played."); return; }
     game.isPlayed = !game.isPlayed;
     saveState(); toast(game.isPlayed?`${gameLabel(num)} locked as played.`:`${gameLabel(num)} unlocked.`);
     renderGamesList(el);
+  };
+  const byeBtn = card.querySelector(`[data-bye="${num}"]`);
+  if(byeBtn) byeBtn.onclick=()=>{
+    const label = gameLabel(num);
+    confirmDialog("Make this game a bye", `Make ${label} a bye? This clears its planned positions, fill-ins, locks, date, time and location, and it can't be marked as played. This cannot be undone.`, ()=>{
+      if(!makeBye(num)) return;
+      saveState(); dirtySinceGeneration = true;
+      toast(`Game ${num} is now a bye.`);
+      renderMain();
+    }, {confirmLabel:"Make bye", danger:true});
+  };
+  const unbye = card.querySelector(`[data-unbye="${num}"]`);
+  if(unbye) unbye.onclick=()=>{
+    getGame(num).isBye = false;
+    saveState(); dirtySinceGeneration = true;
+    toast(`Game ${num} is no longer a bye. Regenerate to schedule it.`);
+    renderMain();
   };
   const delGame = card.querySelector(`[data-delgame="${num}"]`);
   if(delGame) delGame.onclick=()=>{
@@ -2009,7 +2060,7 @@ function buildBackup(){
   gameNums().forEach(n=>{
     const g = getGame(n);
     planGames[n] = {
-      isPlayed: !!g.isPlayed, date: g.date||"", time: g.time||"", location: g.location||"",
+      isPlayed: !!g.isPlayed, isBye: !!g.isBye, date: g.date||"", time: g.time||"", location: g.location||"",
       rosterOffOverride: Number.isFinite(g.rosterOffOverride) ? g.rosterOffOverride : null,
       rosterOffLockIds: Array.isArray(g.rosterOffLockIds) ? g.rosterOffLockIds.slice() : null,
       fillInIds: (g.fillInIds||[]).slice(),
@@ -2096,7 +2147,8 @@ function importBackup(text){
     Object.keys(planGames).filter(k=>GAME_KEY_RE.test(k) && isPlainObject(planGames[k])).forEach(key=>{
       const src = planGames[key];
       const g = newGameState();
-      g.isPlayed = src.isPlayed===true;
+      g.isBye = src.isBye===true && src.isPlayed!==true;
+      g.isPlayed = src.isPlayed===true && !g.isBye;
       g.date = sanitizeGameDate(src.date);
       g.time = sanitizeGameTime(src.time);
       g.location = sanitizeGameLocation(src.location);

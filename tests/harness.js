@@ -100,6 +100,7 @@ if(typeof module!=="undefined" && module.exports){
     gameTag: gameTag,
     ensureGamesExist: ensureGamesExist,
     deleteGame: deleteGame,
+    makeBye: makeBye,
     gameNums: gameNums,
     POSITIONS: POSITIONS,
     uid: uid,
