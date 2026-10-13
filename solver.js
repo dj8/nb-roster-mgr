@@ -22,16 +22,20 @@ const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
 const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers, resting anyone risks zero coverage
 const BENCH_SCALE_BOOST = 10;           // keeps bench-slot cost comparable to a position cell's once scaled by the balance weight, below
-const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
+const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player with a list, and above any in-preference cell (worst rank is 6)
+const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) plays anywhere, level with a #2 choice — never ahead of a #1
 const PLAYING_TIME_WEIGHT = 2;          // fixed strength of the playing-time-evenness term; the preference slider alone sets how much it counts
 const PREFERENCE_RATIO_AT_0 = 0.5;     // preference:balance weight ratio at slider 0 — low, but never 0 (0 would make off-preference free)
 const PREFERENCE_RATIO_AT_9 = 16;       // ...and at slider 9; geometric in between, so each step multiplies the ratio by the same factor
+/* The season-wide settings' defaults — app.js's defaultState() and the
+   fallbacks below both read this, so a retune can't leave them disagreeing. */
+const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:true, positionVariety:1, rosterOffPriority:"coverage" });
 /* Phase 1 coverage weight per roster-off priority. "balanced" sits inside the
    narrow band (~0.002-0.02) where fairness and coverage actually trade off —
    above it coverage wins every conflict, which is why this is a three-way
    choice and not a 0-10 slider. */
-const ROSTER_OFF_PRIORITIES = ["fairness","balanced","coverage"];
-const ROSTER_OFF_BALANCED_COVERAGE_WEIGHT = 0.006;
+const ROSTER_OFF_COVERAGE_WEIGHT = Object.freeze({ fairness:0, balanced:0.006, coverage:PHASE1_COVERAGE_WEIGHT });
+const ROSTER_OFF_PRIORITIES = Object.keys(ROSTER_OFF_COVERAGE_WEIGHT);
 const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed -> deterministic, reproducible restarts (no Math.random)
 const STRICT_SPECIALIST_COVERAGE_BOOST = 3; // §5.5: multiplies a game's own coverage weight when its strictSpecialistPairing flag is on
 const STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT = PHASE1_COVERAGE_WEIGHT; // floor for the boost above — a pure multiplier does nothing when the season-wide weight is 0
@@ -101,12 +105,10 @@ function hasZeroCoverage(squadAfter){
 
 /* Maps the roster-off priority ("fairness" | "balanced" | "coverage") onto
    Phase 1's {fairness, coverage} weights. Fairness is held constant; anything
-   unrecognised falls back to "coverage", the default. */
+   unrecognised falls back to the default. */
 function deriveRosterOffWeights(rosterOffPriority){
-  const coverage = rosterOffPriority==="fairness" ? 0
-    : rosterOffPriority==="balanced" ? ROSTER_OFF_BALANCED_COVERAGE_WEIGHT
-    : PHASE1_COVERAGE_WEIGHT;
-  return { fairness: PHASE1_FAIRNESS_WEIGHT, coverage };
+  const priority = ROSTER_OFF_PRIORITIES.includes(rosterOffPriority) ? rosterOffPriority : DEFAULT_SETTINGS.rosterOffPriority;
+  return { fairness: PHASE1_FAIRNESS_WEIGHT, coverage: ROSTER_OFF_COVERAGE_WEIGHT[priority] };
 }
 
 /* Maps the 0-10 preference slider onto the {preference, balance} weights of
@@ -115,7 +117,7 @@ function deriveRosterOffWeights(rosterOffPriority){
    all of the visible change into the last three steps. Slider 10 is the hard
    end of the scale: balance weight exactly 0 (§5.1). */
 function derivePreferenceWeights(preferenceSlider){
-  const slider = clampSetting(preferenceSlider, 0, 10, 8);
+  const slider = clampSetting(preferenceSlider, 0, 10, DEFAULT_SETTINGS.preferenceSlider);
   const ratio = PREFERENCE_RATIO_AT_0 * Math.pow(PREFERENCE_RATIO_AT_9/PREFERENCE_RATIO_AT_0, Math.min(slider,9)/9);
   const balance = (1/(1+ratio)) * Math.min(1, 10-slider); // fades linearly to 0 across 9..10
   return { preference: 1-balance, balance };
@@ -439,12 +441,13 @@ function computeRosterOffAchievabilityNotes(players){
    tie-breaks position cells tied on preference toward whoever's had less
    on-court time. `settings.positionVariety` nudges a player away from an
    over-played position; it is capped below OFF_PREFERENCE_COST, which is the
-   same for every player, so raising it can never make an off-preference
-   candidate cheaper than any in-preference one. */
+   same for every player who has a list, so raising it can never make their
+   off-preference cell cheaper than any in-preference one. (A player with no
+   list at all is priced separately — see preferenceCost.) */
 function buildQuarterCostFns(cumulative, settings){
   const { preference: prefWeight, balance: balanceWeight } = derivePreferenceWeights(settings.preferenceSlider);
   const allowOff = !!settings.allowOffPreference;
-  const varietyWeight = clampSetting(settings.positionVariety, 0, 10, 1);
+  const varietyWeight = clampSetting(settings.positionVariety, 0, 10, DEFAULT_SETTINGS.positionVariety);
 
   function prefRank(p,pos){
     return p.prefs.indexOf(pos);
@@ -452,11 +455,14 @@ function buildQuarterCostFns(cumulative, settings){
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
     if(idx>=0) return idx;
-    // §5.2: "outside the stated list". One flat cost for everyone — a cost
-    // tied to the player's own list length made short-list players the
+    if(!allowOff) return null;
+    // §5.2: "outside the stated list". One flat cost for everyone who has a
+    // list — a cost tied to the list's length made short-list players the
     // cheapest off-preference fill, and let them undercut a long-list
-    // player's lower-ranked in-preference cell.
-    return allowOff ? OFF_PREFERENCE_COST : null;
+    // player's lower-ranked in-preference cell. A player with no list at all
+    // has nothing to be outside of: charging them the full cost would bench
+    // a no-preference fill-in for every quarter.
+    return p.prefs.length ? OFF_PREFERENCE_COST : NO_PREFERENCE_COST;
   }
   /* Variety penalty: a position this player has already played a lot costs
      more. Capped relative to the candidate's own list (prefs.length - idx),
@@ -704,7 +710,7 @@ const RosterSolver = {
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
     BENCH_SCALE_BOOST, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, PLAYING_TIME_WEIGHT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
-    ROSTER_OFF_PRIORITIES, ROSTER_OFF_BALANCED_COVERAGE_WEIGHT
+    ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS
   },
   variance,
   clampSetting,

@@ -29,7 +29,7 @@ mutates one of these directly and then explicitly calls `saveState()` and/or a
 - **`loadState()` runs a migration pass on every load**, not just a raw `JSON.parse`:
   merges parsed data onto `defaultState()` (so a field added in a later version gets its
   default for old saves), deletes fields that have since been retired
-  (`settings.strictSpecialistMode`, `topTwoOnly`, `rosterOffWeight`, `fairnessWeights` — dropped,
+  (any `settings` key not in `defaultState().settings` — dropped by `sanitizeSettingsAndSeason`,
   not migrated; the controls that replaced them start at their defaults),
   re-sanitizes every player's/fill-in's `prefs`, clamps season/settings numerics via
   `sanitizeSettingsAndSeason`, and falls back `activeTab` to `"setup"` if it's not a
@@ -128,8 +128,8 @@ fixed seed keeps every run — and every test that asserts an exact result
 (`PHASE1-DETERMINISTIC-1`) — reproducible.
 
 ### The preference/fairness cost model is deliberately weight-bounded
-In `buildQuarterCostFns`, off-preference costs every player the same flat
-`OFF_PREFERENCE_COST`, and the variety term is capped below it, so raising position
+In `buildQuarterCostFns`, off-preference costs every player who has a preference list the
+same flat `OFF_PREFERENCE_COST` (a no-preference fill-in costs `NO_PREFERENCE_COST` instead), and the variety term is capped below it, so raising position
 variety can **never** make an off-preference cell cheaper than any in-preference one
 (`OFFPREF-FLAT-1`). That is a per-cell bound: a whole assignment can still, rarely, come
 out cheaper with an off-preference fill in it. The preference slider's weights

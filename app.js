@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 51; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 52; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -18,6 +18,7 @@ const VALID_TABS = ["setup","schedule","fillins","reports","settings","data"];
 /* ---------------- Utilities ---------------- */
 function uid(prefix){ return prefix+"_"+Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-4); }
 function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
+function spread(nums){ return nums.length ? Math.max(...nums)-Math.min(...nums) : 0; }
 function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
 function byId(arr,id){ return arr.find(x=>x.id===id); }
 function anyPlayer(id){ return byId(STATE.players,id)||byId(STATE.fillIns,id); }
@@ -35,12 +36,7 @@ function defaultState(){
     fillIns:[],            // {id,name,prefs:[pos,...]}
     season:{numGames:11, desiredBenchSize:2},
     games:{},              // gameNum(string) -> gameState
-    settings:{
-      preferenceSlider:8,        // 0..10 — even court time <-> strict preference; defaults to strongly favouring preference
-      allowOffPreference:true,
-      positionVariety:1,         // 0..10 — repeat a favourite position <-> spread across the whole preference list
-      rosterOffPriority:"coverage" // "fairness" | "balanced" | "coverage" (§5.4)
-    },
+    settings: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_SETTINGS), // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority (§5, §11)
     activeTab:"setup"
   };
 }
@@ -134,6 +130,8 @@ function sanitizeSettingsAndSeason(state){
   fix(state.season, "numGames", 1, 60, d.season.numGames, "Number of games");
   fix(state.season, "desiredBenchSize", 0, 20, d.season.desiredBenchSize, "Desired bench size");
   state.settings = state.settings || Object.assign({}, d.settings);
+  // Controls that no longer exist are dropped, not migrated — their replacements start at the defaults.
+  Object.keys(state.settings).forEach(k=>{ if(!Object.hasOwn(d.settings,k)) delete state.settings[k]; });
   fix(state.settings, "preferenceSlider", 0, 10, d.settings.preferenceSlider, "Preference slider");
   fix(state.settings, "positionVariety", 0, 10, d.settings.positionVariety, "Position variety");
   if(!RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES.includes(state.settings.rosterOffPriority)){
@@ -148,7 +146,7 @@ function sanitizeSettingsAndSeason(state){
    codes — anything else is meaningless as a cost-matrix key and unsafe in the
    DOM. De-dupes (keeping stated rank order) so a malformed row like
    "GS|GS|GS|GA" can't inflate prefs.length, which feeds the solver's
-   off-preference cost and purity-term cap. */
+   variety-term cap. */
 function sanitizePrefs(prefs){
   const cleaned = (Array.isArray(prefs)?prefs:[]).map(x=>String(x).trim().toUpperCase()).filter(x=>POSITIONS.includes(x));
   return cleaned.filter((pos,i)=>cleaned.indexOf(pos)===i);
@@ -176,8 +174,6 @@ function loadState(){
       games: parsed.games||{},
       settings: Object.assign(d.settings, parsed.settings||{})
     });
-    // Controls that no longer exist (not migrated — the new ones start at their defaults).
-    ["strictSpecialistMode","topTwoOnly","rosterOffWeight","fairnessWeights"].forEach(k=>{ delete merged.settings[k]; });
     Object.values(merged.games||{}).forEach(g=>{
       delete g.strictSpecialistMode;
       g.date = sanitizeGameDate(g.date);
@@ -687,11 +683,9 @@ function computeOffPrefRate(log){
    "at a glance" card. Regular players only — fill-ins are excluded from
    season fairness. null until at least one game has a schedule. */
 function computeSeasonHeadlines(){
-  const offPref = computeOffPrefRate();
-  if(!offPref.totalSlots) return null;
   const prefsOf = {};
   STATE.players.forEach(p=>{ prefsOf[p.id] = p.prefs||[]; });
-  let regularSlots = 0, firstChoice = 0, thinPositions = 0;
+  let regularSlots = 0, firstChoice = 0, offPreference = 0, thinPositions = 0;
   gameNums().forEach(num=>{
     const game = getGame(num);
     if(!game.schedule) return;
@@ -701,19 +695,20 @@ function computeSeasonHeadlines(){
       if(!prefs) return; // empty slot or fill-in
       regularSlots++;
       if(prefs[0]===pos) firstChoice++;
+      if(q.offPreference && q.offPreference[pos]) offPreference++;
     }));
   });
+  if(!regularSlots) return null;
   const summaries = computePlayerSummaries();
   const courtShares = summaries.filter(s=>s.onCourt+s.bench>0).map(s=>100*s.onCourt/(s.onCourt+s.bench));
   const positionsEach = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.filter(pos=>s.positions[pos]>0).length);
-  const missed = summaries.map(s=>s.missed);
   return {
-    offPrefPct: offPref.rate,
+    offPrefPct: 100*offPreference/regularSlots,
     courtTimeMinPct: courtShares.length ? Math.min(...courtShares) : 0,
     courtTimeMaxPct: courtShares.length ? Math.max(...courtShares) : 0,
-    firstChoicePct: regularSlots ? 100*firstChoice/regularSlots : 0,
+    firstChoicePct: 100*firstChoice/regularSlots,
     positionsPerPlayer: positionsEach.length ? positionsEach.reduce((a,b)=>a+b,0)/positionsEach.length : 0,
-    missedSpread: missed.length ? Math.max(...missed)-Math.min(...missed) : 0,
+    missedSpread: spread(summaries.map(s=>s.missed)),
     thinPositions
   };
 }
@@ -1871,8 +1866,6 @@ function renderReports(root){
   const missedWarning = computeMissedGamesWarningForReports(summaries);
   const achievabilityNotes = computeRosterOffAchievabilityNotesForReports();
 
-  const spread = arr => arr.length ? Math.max(...arr)-Math.min(...arr) : 0;
-
   root.innerHTML = `
     ${missedWarning? `
     <div class="card">
@@ -1975,7 +1968,7 @@ function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, righ
    names the control each number responds to. */
 function headlineStats(h){
   return [
-    {label:"Off-preference quarters", value:h.offPrefPct.toFixed(1)+"%", moves:"preference slider"},
+    {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"preference slider"},
     {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
     {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
     {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
@@ -2084,7 +2077,7 @@ function renderData(root){
   document.getElementById("exportXlsxBtn").onclick=exportXlsx;
   document.getElementById("resetBtn").onclick=()=>{
     confirmDialog("Clear all data", "This permanently deletes every player, game, and setting stored in this browser. This cannot be undone.", ()=>{
-      STATE = defaultState(); saveState(); render(); toast("All data cleared.");
+      STATE = defaultState(); headlinesBeforeLastGeneration = null; saveState(); render(); toast("All data cleared.");
     }, {confirmLabel:"Clear all data", danger:true});
   };
 }
@@ -2178,7 +2171,8 @@ function importBackup(text){
     if(typeof planSeason.numGames==="number") ns.season.numGames = planSeason.numGames;
     if(typeof planSeason.desiredBenchSize==="number") ns.season.desiredBenchSize = planSeason.desiredBenchSize;
 
-    // Settings a v1 file carried that no longer exist are ignored, not migrated.
+    // Not migrated from v1: settings that no longer exist are ignored, and
+    // preferenceSlider is carried over as the same number on the new scale.
     const set = isPlainObject(plan.settings) ? plan.settings : {};
     ["preferenceSlider","positionVariety"].forEach(k=>{ if(typeof set[k]==="number") ns.settings[k] = set[k]; });
     if(typeof set.allowOffPreference==="boolean") ns.settings.allowOffPreference = set.allowOffPreference;
@@ -2258,6 +2252,7 @@ function importBackup(text){
       STATE = previousState;
       throw err;
     }
+    headlinesBeforeLastGeneration = null; // a different season — nothing to compare against
     saveState();
     render();
     if(warnings.length){

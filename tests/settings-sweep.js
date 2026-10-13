@@ -16,6 +16,7 @@
    Run with: npm run test:settings [-- --detail] [--strict] [--setting=<key>] */
 "use strict";
 const { loadEngine } = require("./harness.js");
+const ENGINE = loadEngine(); // one instance, state reset per run
 
 const ARGS = process.argv.slice(2);
 const DETAIL = ARGS.includes("--detail");
@@ -49,7 +50,6 @@ const FIXTURES = {
 const METRICS = {
   offPref:   {label:"off-preference fills (% of slots)", min:0.5},
   top1:      {label:"quarters at a player's #1 choice (%)", min:1},
-  top2:      {label:"quarters in a player's top 2 (%)", min:1},
   playSd:    {label:"spread of on-court time (SD of on-court rate, pts)", min:0.5},
   distinct:  {label:"distinct positions played per player", min:0.15},
   missedVar: {label:"missed-games variance", min:0.05},
@@ -63,19 +63,15 @@ const METRICS = {
 const R0 = [0,1,2,3,4,5,6,7,8,9,10];
 const SETTINGS = [
   { key:"preferenceSlider", title:"Preference slider (0 even court time .. 10 strict preference)", values:R0,
-    apply:(s,v)=>{ s.preferenceSlider = v; },
     intent:[["offPref",-1],["top1",+1],["playSd",+1]], side:["distinct"],
     contexts:[{}] },
   { key:"positionVariety", title:"Position variety slider (0 repeat favourite .. 10 spread across list)", values:R0,
-    apply:(s,v)=>{ s.positionVariety = v; },
     intent:[["top1",-1],["distinct",+1]], side:["offPref","playSd"],
     contexts:[{}, {preferenceSlider:5}] },
-  { key:"rosterOffPriority", title:"Roster-off priority (even missed games -> balanced -> protect thin positions)", values:["fairness","balanced","coverage"],
-    apply:(s,v)=>{ s.rosterOffPriority = v; },
+  { key:"rosterOffPriority", title:"Roster-off priority (even missed games -> balanced -> protect thin positions)", values:ENGINE.RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES,
     intent:[["thinCover",-1],["missedVar",+1]], side:["offPref"],
     contexts:[{}] },
   { key:"allowOffPreference", title:"Allow off-preference positions (on -> off)", values:[true,false],
-    apply:(s,v)=>{ s.allowOffPreference = v; },
     intent:[["offPref",-1]], side:["errors","playSd"],
     contexts:[{}, {preferenceSlider:0}] }
 ];
@@ -83,16 +79,15 @@ const SETTINGS = [
 /* ---------------- Running one configuration ---------------- */
 function buildEngine(fixtureName){
   const f = FIXTURES[fixtureName];
-  const engine = loadEngine();
-  engine._resetState();
-  const st = engine._getState();
+  ENGINE._resetState();
+  const st = ENGINE._getState();
   st.season.numGames = f.numGames;
   st.season.desiredBenchSize = f.bench;
   f.players.forEach(([name,prefs,unavailable])=>{
-    st.players.push({id:engine.uid("p"), name, prefs:prefs.slice(), unavailable:(unavailable||[]).slice()});
+    st.players.push({id:ENGINE.uid("p"), name, prefs:prefs.slice(), unavailable:(unavailable||[]).slice()});
   });
-  engine.ensureGamesExist();
-  return engine;
+  ENGINE.ensureGamesExist();
+  return ENGINE;
 }
 // runGeneration logs its own timing line on every call.
 function quietly(fn){
@@ -112,9 +107,9 @@ function run(fixtureName, configure){
   const prefs = {}, nameOf = {};
   st.players.forEach(p=>{ prefs[p.id] = p.prefs; nameOf[p.id] = p.name; });
 
-  // Ids are random per engine instance, so schedules are compared by name.
+  // Ids are random per run, so schedules are compared by name.
   const slots = [], rosterOff = [];
-  let total=0, off=0, top1=0, top2=0, thin=0, errors=0;
+  let total=0, off=0, top1=0, thin=0, errors=0;
   engine.gameNums().forEach(num=>{
     const g = engine.getGame(num);
     rosterOff.push((g.rosteredOffIds||[]).map(id=>nameOf[id]).sort().join(","));
@@ -127,7 +122,6 @@ function run(fixtureName, configure){
       const rank = (prefs[id]||[]).indexOf(pos);
       if(rank<0) off++;
       if(rank===0) top1++;
-      if(rank===0 || rank===1) top2++;
     }));
   });
   const summaries = engine.computePlayerSummaries();
@@ -135,7 +129,7 @@ function run(fixtureName, configure){
   return {
     slots, rosterOff, timedOut: !!gen.phase1Stats.timedOut,
     m: {
-      offPref: pct(off,total), top1: pct(top1,total), top2: pct(top2,total),
+      offPref: pct(off,total), top1: pct(top1,total),
       playSd: Math.sqrt(engine.RosterSolver.variance(rates)),
       distinct: mean(summaries.map(s=>P.filter(pos=>s.positions[pos]>0).length)),
       missedVar: engine.RosterSolver.variance(summaries.map(s=>s.missed)),
@@ -170,7 +164,7 @@ const fmt = v=> typeof v==="number" ? (Number.isInteger(v) ? String(v) : v.toFix
 const ctxLabel = ctx=> Object.keys(ctx).map(k=>`${k}=${ctx[k]}`).join(", ") || "defaults";
 
 function sweep(setting, fixtureName, ctx){
-  const results = setting.values.map(v=>run(fixtureName, s=>{ Object.assign(s,ctx); setting.apply(s,v); }));
+  const results = setting.values.map(v=>run(fixtureName, s=>{ Object.assign(s,ctx); s[setting.key] = v; }));
   const steps = results.slice(1).map((r,i)=>classify(setting, results[i], r));
   const first = results[0], last = results[results.length-1];
   const where = `${setting.key} / ${fixtureName} / ${ctxLabel(ctx)}`;

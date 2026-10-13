@@ -22,6 +22,8 @@ function freshEngine(){
   return engine;
 }
 
+const ROSTER_OFF_PRIORITIES = freshEngine().RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES;
+
 function addPlayer(engine, name, prefs, unavailable){
   const st = engine._getState();
   const p = {id: engine.uid("p"), name, prefs: prefs.slice(), unavailable: (unavailable||[]).slice()};
@@ -424,7 +426,7 @@ test("ROSTEROFF-PRIORITY-SWEEP: fairness -> balanced -> coverage are three disti
     engine.ensureGamesExist();
   }
   const variances = [], thin = [];
-  ["fairness","balanced","coverage"].forEach(priority=>{
+  ROSTER_OFF_PRIORITIES.forEach(priority=>{
     const engine = freshEngine();
     buildRoster(engine);
     engine._getState().settings.rosterOffPriority = priority;
@@ -462,7 +464,7 @@ test("REPORTED-BUG: 11 players / 11 games / 2 off per game reaches exactly 2 mis
     defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
     engine.ensureGamesExist();
   }
-  ["fairness","balanced","coverage"].forEach(rosterOffPriority=>[true,false].forEach(allowOffPreference=>{
+  ROSTER_OFF_PRIORITIES.forEach(rosterOffPriority=>[true,false].forEach(allowOffPreference=>{
     const engine = freshEngine();
     buildReportedBugRoster(engine);
     engine._getState().settings.rosterOffPriority = rosterOffPriority;
@@ -1390,7 +1392,7 @@ test("PREF-WEIGHTS-1: the preference slider is evenly (geometrically) spaced fro
   assert.strictEqual(atMax.positionCellCost({id:"a", prefs:["GS"]}, "GS"), 0);
 });
 
-test("OFFPREF-FLAT-1: off-preference costs every player the same, and more than any in-preference cell at any slider or variety setting", ()=>{
+test("OFFPREF-FLAT-1: off-preference costs every player with a list the same, and more than any in-preference cell at any slider or variety setting", ()=>{
   // Previously: off-preference cost was the player's own list length, so a
   // one-position player was the cheapest off-preference fill and could
   // undercut a long-list player's overplayed 5th choice.
@@ -1398,14 +1400,20 @@ test("OFFPREF-FLAT-1: off-preference costs every player the same, and more than 
   const S = engine.RosterSolver;
   const longList = {id:"long", prefs:["GS","GA","WA","C","WD"]};
   const shortList = {id:"short", prefs:["GK"]};
+  const otherShortList = {id:"short2", prefs:["GD","GK"]};
   const noList = {id:"none", prefs:[]};
   const posCount = {};
   longList.prefs.forEach(pos=>{ posCount["long::"+pos] = 200; }); // every listed position heavily overplayed
   const cumulative = {posCount, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
   for(let slider=0; slider<=10; slider++){
     const { positionCellCost } = S.buildQuarterCostFns(cumulative, {preferenceSlider:slider, allowOffPreference:true, positionVariety:10});
-    assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(noList,"WD"), `slider ${slider}: off-preference cost must not depend on list length`);
+    assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(otherShortList,"WD"), `slider ${slider}: off-preference cost must not depend on list length`);
     assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(longList,"GK"), `slider ${slider}: off-preference cost must not depend on list length`);
+    // A player with no list at all (a fill-in, §6) is priced apart: cheaper
+    // than anyone's off-preference fill so they get on court, never cheaper
+    // than a fresh #1 choice.
+    assert.ok(positionCellCost(noList,"WD") < positionCellCost(shortList,"WD"), `slider ${slider}: a no-preference player must cost less than an off-preference fill`);
+    assert.ok(positionCellCost(noList,"GK") > positionCellCost(shortList,"GK"), `slider ${slider}: a no-preference player must cost more than someone's #1 choice`);
     longList.prefs.forEach(pos=>assert.ok(positionCellCost(longList,pos) < positionCellCost(shortList,pos),
       `slider ${slider}: ${pos} in-preference (however overplayed) must stay cheaper than another player's off-preference fill`));
   }
@@ -1694,6 +1702,23 @@ test("BYE-2: bye/delete drop the game's one-off fill-ins; an imported bye ignore
   assert.strictEqual((g.rosteredOffIds||[]).length, 0);
 });
 
+test("FILLIN-NOPREFS-1: a fill-in with no stated preferences still gets court time at the default settings", ()=>{
+  // Regression: charging a preference-less player the full flat off-preference
+  // cost benched them for every quarter from slider 5 up, default included.
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 4;
+  st.season.desiredBenchSize = 1;
+  ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  st.fillIns.push({id:"fi1", name:"Guest", prefs:[], saved:true});
+  engine.gameNums().forEach(n=>{ engine.getGame(n).fillInIds = ["fi1"]; });
+  engine.runGeneration();
+  let onCourt = 0;
+  engine.gameNums().forEach(n=>engine.getGame(n).schedule.quarters.forEach(q=>{ if(Object.values(q.onCourt).includes("fi1")) onCourt++; }));
+  assert.ok(onCourt >= 4, `the guest should be on court for a fair share of the 16 quarters, got ${onCourt}`);
+});
+
 test("HEADLINES-1: the Settings tab's at-a-glance numbers are empty before generation and count regular players only", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
@@ -1710,7 +1735,8 @@ test("HEADLINES-1: the Settings tab's at-a-glance numbers are empty before gener
   st.settings.preferenceSlider = 0;
   engine.runGeneration();
   const h = engine.computeSeasonHeadlines();
-  assert.ok(h.offPrefPct > 0, "the fill-in's off-preference quarters show in the off-preference rate: "+JSON.stringify(h));
+  assert.ok(engine.computeOffPrefLog().length > 0, "sanity: the fill-in did play off-preference quarters");
+  assert.strictEqual(h.offPrefPct, 0, "the fill-in's off-preference quarters are not counted: "+JSON.stringify(h));
   assert.strictEqual(h.firstChoicePct, 100, "every regular only ever plays their sole listed position; the fill-in is not counted");
   assert.strictEqual(h.positionsPerPlayer, 1);
   assert.ok(h.courtTimeMinPct>0 && h.courtTimeMaxPct<=100 && h.courtTimeMinPct<=h.courtTimeMaxPct);
