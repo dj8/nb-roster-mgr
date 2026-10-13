@@ -81,8 +81,8 @@ case. See [`flows.md`](flows.md#3-manual-roster-off-override).
 
 ### Fill-ins are invisible to season fairness
 A fill-in can occupy a real on-court or bench slot, but every fairness computation
-(`applyQuarterToCumulative`, `foldGameIntoCumulative`, `computePlayerSummaries`) explicitly
-filters them out via `STATE.fillIns.some(f=>f.id===pid)` checks. This is intentional (§6)
+(`applyQuarterToCumulative`, `computePlayerSummaries`) explicitly
+filters them out via `isFillInId(pid)` checks. This is intentional (§6)
 but easy to forget when adding a new aggregate — a new stat that iterates a quarter's
 `onCourt`/`bench` without this check will silently include guests in season totals.
 

@@ -27,10 +27,10 @@ html[data-theme="light"]{
 *{box-sizing:border-box;}
 body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);
   -webkit-font-smoothing:antialiased;transition:background .2s,color .2s;}
-h1,h2,h3,.display{font-family:var(--font-display);letter-spacing:-.01em;}
+h1,h2,h3{font-family:var(--font-display);letter-spacing:-.01em;}
 .mono{font-family:var(--font-mono);}
 button{font-family:var(--font-body);cursor:pointer;}
-input,select,textarea{font-family:var(--font-body);}
+input,select{font-family:var(--font-body);}
 ::selection{background:var(--accent-solid);color:#0A1512;}
 
 /* ---------- Focus ---------- */
@@ -83,19 +83,17 @@ main{flex:1;padding:18px 20px 60px;max-width:1180px;width:100%;margin:0 auto;}
 /* ---------- Forms ---------- */
 .field{margin-bottom:12px;}
 .field label{display:block;font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:5px;}
-input[type=text],input[type=number],input[type=date],input[type=time],select,textarea{
+input[type=text],input[type=number],input[type=date],input[type=time],select{
   width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
   color:var(--text);padding:9px 11px;font-size:13.5px;outline:none;transition:.15s;}
-input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,input[type=time]:focus,select:focus,textarea:focus{
+input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,input[type=time]:focus,select:focus{
   border-color:var(--accent);box-shadow:0 0 0 3px rgba(84,214,201,.2);}
 .input-error{border-color:var(--danger) !important;}
 .field-error{color:var(--danger);font-size:11.5px;margin-top:5px;line-height:1.4;}
-.row{display:flex;gap:10px;flex-wrap:wrap;}
-.row > *{flex:1;min-width:140px;}
 .row-compact{display:flex;gap:20px;flex-wrap:wrap;}
 .field-compact{flex:none;min-width:0;}
 .field-compact input{max-width:120px;}
-.detail-row{display:grid;grid-template-columns:2fr 2fr 1fr;gap:16px;align-items:start;}
+.detail-row{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;align-items:start;margin-top:14px;}
 .game-meta-row{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;}
 .game-meta-row .field{margin-bottom:0;}
 .game-meta-row input{height:40px;}
@@ -103,7 +101,6 @@ input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,input[typ
 .date-time-pair input[type=time]{width:auto;}
 .game-meta-row .game-location{flex:1;min-width:180px;}
 .game-meta-row input[type=date]{width:auto;min-width:160px;}
-.detail-row-3{grid-template-columns:repeat(3,1fr);}
 .detail-checkbox{align-items:flex-start;flex-wrap:wrap;padding:0;}
 .detail-checkbox .cb-desc{flex-basis:100%;margin-left:26px;}
 .checkbox-row{display:flex;align-items:center;gap:9px;padding:10px 0;}
@@ -186,7 +183,6 @@ tr:last-child td{border-bottom:none;}
 .grid-cell .pname{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .cell-oncourt{background:var(--surface-3);border:1px solid var(--border-soft);}
 .cell-bench{background:var(--bg-alt);color:var(--text-dim);}
-.cell-off{background:transparent;color:var(--text-faint);font-style:italic;}
 /* Fill-in (dashed border) and off-preference (teal inset ring) stack as
    concentric rings so both stay visible together. A locked cell has no border
    of its own — just the padlock icon, vertically centred at its right edge. */
@@ -248,12 +244,14 @@ tr:last-child td{border-bottom:none;}
 .game-card{border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px;background:var(--surface-2);}
 .game-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;}
 .game-card h4{margin:0;font-size:13.5px;}
+.game-body{margin-top:12px;}
+.game-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
+.empty-state-compact{padding:20px;}
 
 @media (max-width:640px){
   main{padding:14px 12px 60px;}
   .card{padding:14px;}
-  .row > *{min-width:100%;}
-  .detail-row,.detail-row-3{grid-template-columns:1fr;}
+  .detail-row{grid-template-columns:1fr;}
   .checkbox-row{flex-wrap:wrap;}
   .checkbox-row .cb-desc{flex-basis:100%;margin-left:26px;}
 }

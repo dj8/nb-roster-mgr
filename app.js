@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 48; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 49; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -20,6 +20,9 @@ function uid(prefix){ return prefix+"_"+Math.random().toString(36).slice(2,9)+Da
 function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
 function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
 function byId(arr,id){ return arr.find(x=>x.id===id); }
+function anyPlayer(id){ return byId(STATE.players,id)||byId(STATE.fillIns,id); }
+/* §6: fill-ins are excluded from season fairness — every aggregate over a quarter's onCourt/bench filters on this. */
+function isFillInId(id){ return STATE.fillIns.some(f=>f.id===id); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function todayIso(){ return new Date().toISOString(); }
 
@@ -65,19 +68,17 @@ function formatGameTime(t){
   return new Date(2000,0,1,h,m).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"});
 }
 /* Parsed as a local date (not new Date(iso), which is UTC and can show the previous day). */
-function formatGameDate(iso){
+function formatGameDate(iso, opts){
   const clean = sanitizeGameDate(iso);
   if(!clean) return "";
   const [y,mo,d] = clean.split("-").map(Number);
-  return new Date(y,mo-1,d).toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"});
+  return new Date(y,mo-1,d).toLocaleDateString(undefined, opts||{weekday:"short",day:"numeric",month:"short"});
 }
 /* Compact tag for tight spots (pills, lists): "G3" or "G3 (14 Mar)". */
 function gameTag(num){
   const g = STATE.games[num];
-  const clean = g ? sanitizeGameDate(g.date) : "";
-  if(!clean) return "G"+num;
-  const [y,mo,d] = clean.split("-").map(Number);
-  return `G${num} (${new Date(y,mo-1,d).toLocaleDateString(undefined,{day:"numeric",month:"short"})})`;
+  const d = g ? formatGameDate(g.date,{day:"numeric",month:"short"}) : "";
+  return d ? `G${num} (${d})` : "G"+num;
 }
 function gameLabel(num){
   const g = getGame(num);
@@ -195,6 +196,10 @@ function loadState(){
     return merged;
   }catch(e){ console.warn("Failed to load state, starting fresh.",e); return defaultState(); }
 }
+/* A plan input changed: persist it and flag the generated schedule as stale. */
+function markStale(msg){
+  saveState(); dirtySinceGeneration = true; toast(msg||"Regenerate to apply.");
+}
 function saveState(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(STATE)); }
   catch(e){ toast("Could not save to local storage ("+e.message+")"); }
@@ -203,6 +208,8 @@ function gameNums(){
   const n = STATE.season.numGames;
   const arr=[]; for(let i=1;i<=n;i++) arr.push(i); return arr;
 }
+/* Games the engine plans: byes take no part in roster-off, positions or fairness. */
+function scheduledGameNums(){ return gameNums().filter(n=>!getGame(n).isBye); }
 function getGame(num){
   const key=String(num);
   if(!STATE.games[key]) STATE.games[key]=newGameState();
@@ -255,7 +262,14 @@ function regularRosterInvalid(){
 }
 
 function playerLabel(p){ return p ? p.name : "—"; }
+function playerNames(ids){ return (ids||[]).map(id=>playerLabel(byId(STATE.players,id))); }
 
+/* How many to roster off when nobody is hand-picked: the per-game override
+   if set, else whatever leaves 7 on court plus the desired bench. */
+function autoRosterOffCount(game, availableCount){
+  if(Number.isFinite(game.rosterOffOverride)) return clamp(game.rosterOffOverride,0,Math.max(0,availableCount-7));
+  return Math.max(0, availableCount-(7+Number(STATE.season.desiredBenchSize||0)));
+}
 function isUnavailable(player, gameNum){
   return (player.unavailable||[]).includes(gameNum);
 }
@@ -300,10 +314,8 @@ function planGameAvailability(gameNum){
     // Array.isArray, not truthy+length: an explicit empty selection ("roster
     // nobody off") is a real manual choice, distinct from null ("no lock").
     fixedOffIds = game.rosterOffLockIds.filter(id=>availableRegulars.some(p=>p.id===id));
-  } else if(Number.isFinite(game.rosterOffOverride)){
-    rosterOffCount = clamp(game.rosterOffOverride,0,Math.max(0,availableRegulars.length-7));
   } else {
-    rosterOffCount = Math.max(0, availableRegulars.length-(7+Number(STATE.season.desiredBenchSize||0)));
+    rosterOffCount = autoRosterOffCount(game, availableRegulars.length);
   }
 
   return {
@@ -368,10 +380,7 @@ function fillInGapSuggestions(gameNum){
 }
 
 function emptyCumulative(){
-  return {missed:{}, onCourt:{}, bench:{}, posCount:{}};
-}
-function bumpCum(cumulative, key, id, amt){
-  cumulative[key][id] = (cumulative[key][id]||0) + amt;
+  return {onCourt:{}, bench:{}, posCount:{}};
 }
 function posCountKey(id,pos){ return id+"::"+pos; }
 
@@ -381,36 +390,14 @@ function posCountKey(id,pos){ return id+"::"+pos; }
 function applyQuarterToCumulative(cumulative, q, sign){
   POSITIONS.forEach(pos=>{
     const pid = q.onCourt[pos]; if(!pid) return;
-    if(STATE.fillIns.some(f=>f.id===pid)) return;
+    if(isFillInId(pid)) return;
     const pck = posCountKey(pid,pos);
     cumulative.posCount[pck] = (cumulative.posCount[pck]||0) + sign;
     cumulative.onCourt[pid] = (cumulative.onCourt[pid]||0) + sign;
   });
   (q.bench||[]).forEach(pid=>{
-    if(STATE.fillIns.some(f=>f.id===pid)) return;
+    if(isFillInId(pid)) return;
     cumulative.bench[pid] = (cumulative.bench[pid]||0) + sign;
-  });
-}
-
-function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, schedule){
-  unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
-  rosteredOffIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
-  if(!schedule) return;
-  schedule.quarters.forEach(q=>{
-    POSITIONS.forEach(pos=>{
-      const pid = q.onCourt[pos];
-      if(!pid) return;
-      const isFillIn = STATE.fillIns.some(f=>f.id===pid);
-      if(isFillIn) return; // §6: fill-ins excluded from fairness totals
-      bumpCum(cumulative,"onCourt",pid,1);
-      const pck = posCountKey(pid,pos);
-      cumulative.posCount[pck] = (cumulative.posCount[pck]||0)+1;
-    });
-    (q.bench||[]).forEach(pid=>{
-      const isFillIn = STATE.fillIns.some(f=>f.id===pid);
-      if(isFillIn) return;
-      bumpCum(cumulative,"bench",pid,1);
-    });
   });
 }
 
@@ -420,7 +407,7 @@ function foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, sche
    gives the "merely rested this quarter" half — squadIds alone can't tell
    those apart, since it includes benched players. Considers fill-ins too. */
 function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds){
-  const player = byId(STATE.players,playerId) || byId(STATE.fillIns,playerId);
+  const player = anyPlayer(playerId);
   const assignedFillIns = (getGame(gameNum).fillInIds||[]).map(fid=>byId(STATE.fillIns,fid)).filter(Boolean);
   const specialists = STATE.players.concat(assignedFillIns).filter(p=>p.id!==playerId && p.prefs.includes(pos));
   const squadIdSet = new Set(squadIds);
@@ -443,7 +430,7 @@ function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds)
    rosteredOffIds as fixed for this call only, so it round-trips unchanged;
    the next real Generate/Rebalance is still free to change it. */
 function computeSeasonRosterOff(preserveExisting){
-  const nums = gameNums().filter(n=>!getGame(n).isBye); // byes take no part in season-wide roster-off
+  const nums = scheduledGameNums();
   const availByNum = {};
   nums.forEach(num=>{ availByNum[num] = planGameAvailability(num); });
 
@@ -503,7 +490,7 @@ function runGeneration(){
   const phase1Stats = computeSeasonRosterOff();
 
   const cumulative = emptyCumulative();
-  const nums = gameNums().filter(n=>!getGame(n).isBye);
+  const nums = scheduledGameNums();
 
   nums.forEach(num=>{
     const game = getGame(num);
@@ -511,7 +498,7 @@ function runGeneration(){
     if(game.isPlayed){
       // §8.1: locked — every stored field stays untouched; only fold its
       // already-frozen result into cumulative fairness for the rest of the season.
-      foldGameIntoCumulative(cumulative, game.rosteredOffIds, game.unavailableIds, game.schedule);
+      if(game.schedule) game.schedule.quarters.forEach(q=>applyQuarterToCumulative(cumulative,q,1));
       return;
     }
 
@@ -523,7 +510,6 @@ function runGeneration(){
     if(plan.squad.length<7){
       game.error = `Not enough players for game ${num}: ${plan.squad.length} available (need 7). Add ${7-plan.squad.length} more fill-in(s).`;
       game.schedule = null; game.generated=false;
-      foldGameIntoCumulative(cumulative, game.rosteredOffIds, game.unavailableIds, null);
       return;
     }
     game.error = null;
@@ -567,8 +553,7 @@ function runGeneration(){
       // fold this quarter immediately so later quarters in same game see updated counts
       applyQuarterToCumulative(cumulative, {onCourt:result.onCourt, bench:result.bench}, 1);
       result.bench.forEach(pid=>{
-        const isFillIn = STATE.fillIns.some(f=>f.id===pid);
-        if(isFillIn) return;
+        if(isFillInId(pid)) return;
         gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1;
       });
       benchedLastQuarter = new Set(result.bench);
@@ -583,7 +568,6 @@ function runGeneration(){
       const detail = failingQuarters.map(f=>`Q${f.quarter}: ${f.positions.join(", ")}`).join("; ");
       game.error = `Game ${num}: no eligible in-preference player for — ${detail}. Add/adjust a fill-in, or allow off-preference positions for this game.`;
       game.schedule = null; game.generated = false;
-      foldGameIntoCumulative(cumulative, plan.rosteredOffIds, plan.unavailableIds, null);
       return;
     }
 
@@ -597,19 +581,15 @@ function runGeneration(){
     quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
     refined.quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, 1));
 
-    plan.unavailableIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
-    plan.rosteredOffIds.forEach(id=>bumpCum(cumulative,"missed",id,1));
-
     game.schedule = {quarters:refined.quarters};
     game.generated = true;
-    game.error = null;
   });
 
   STATE._lastGeneratedAt = todayIso();
   STATE._lastGenerationMs = Date.now()-startTime;
   console.log(`Season generation took ${STATE._lastGenerationMs}ms (Phase 1: ${phase1Stats.elapsedMs}ms across ${phase1Stats.passes} pass(es)).`);
   saveState();
-  return {invalid, offPrefLog: computeOffPrefLog(), phase1Stats, elapsedMs: STATE._lastGenerationMs, cumulative};
+  return {invalid, phase1Stats, elapsedMs: STATE._lastGenerationMs, cumulative};
 }
 
 function computePlayerSummaries(){
@@ -664,16 +644,16 @@ function describeOffPrefReason(o){
   if(o.benchedSpecialists.length) parts.push(`Benched: ${o.benchedSpecialists.join(", ")}`);
   return parts.length ? parts.join("; ") : "no specialists on the roster";
 }
-function computeOffPrefRate(){
-  const log = computeOffPrefLog();
+function computeOffPrefRate(log){
+  log = log || computeOffPrefLog();
   let totalSlots=0;
   gameNums().forEach(num=>{ const g=getGame(num); if(g.schedule) totalSlots += g.schedule.quarters.length*7; });
   return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
 }
 
 /* Informational only — never fed back into generation. */
-function computeMissedGamesWarningForReports(){
-  const list = computePlayerSummaries().map(s=>({id:s.id, name:s.name, missed:s.missed}));
+function computeMissedGamesWarningForReports(summaries){
+  const list = (summaries||computePlayerSummaries()).map(s=>({id:s.id, name:s.name, missed:s.missed}));
   return RosterSolver.computeMissedGamesWarning(list);
 }
 
@@ -954,6 +934,20 @@ function renderPlayerList(el){
   });
 }
 
+/* Ranked position-preference editor shared by the player and fill-in dialogs:
+   chips for draft.prefs (in order) plus an add-button per remaining position. */
+function wirePrefEditor(modal, draft, chipsSel, buttonsSel, emptyHint){
+  function paint(){
+    modal.querySelector(chipsSel).innerHTML = draft.prefs.length
+      ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>${esc(POS_LABEL[pos])}<button data-rm="${esc(pos)}" title="Remove">&times;</button></span>`).join("")
+      : `<span class="hint">${esc(emptyHint)}</span>`;
+    modal.querySelector(buttonsSel).innerHTML = POSITIONS.filter(p=>!draft.prefs.includes(p))
+      .map(pos=>`<button class="btn btn-sm" data-add="${pos}"><span class="pos-badge pos-${pos}">${pos}</span> ${POS_LABEL[pos]}</button>`).join("");
+    modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs = draft.prefs.filter(p=>p!==b.dataset.rm); paint(); });
+    modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paint(); });
+  }
+  paint();
+}
 function openPlayerDialog(playerId){
   const existing = playerId ? byId(STATE.players,playerId) : null;
   const draft = existing ? deepClone(existing) : {id:uid("p"), name:"", prefs:[], unavailable:[]};
@@ -979,18 +973,7 @@ function openPlayerDialog(playerId){
       <button class="btn btn-primary" data-act="save">${existing?"Save changes":"Add player"}</button>
     </div>
   `, modal=>{
-    function paintChips(){
-      modal.querySelector("#prefChips").innerHTML = draft.prefs.length
-        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>${esc(POS_LABEL[pos])}<button data-rm="${esc(pos)}" title="Remove">&times;</button></span>`).join("")
-        : `<span class="hint">No preferences set yet — click a position below.</span>`;
-      modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs = draft.prefs.filter(p=>p!==b.dataset.rm); paintChips(); paintButtons(); });
-    }
-    function paintButtons(){
-      modal.querySelector("#prefButtons").innerHTML = POSITIONS.filter(p=>!draft.prefs.includes(p))
-        .map(pos=>`<button class="btn btn-sm" data-add="${pos}"><span class="pos-badge pos-${pos}">${pos}</span> ${POS_LABEL[pos]}</button>`).join("");
-      modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paintChips(); paintButtons(); });
-    }
-    paintChips(); paintButtons();
+    wirePrefEditor(modal, draft, "#prefChips", "#prefButtons", "No preferences set yet — click a position below.");
     const unavailInput = modal.querySelector("#pfUnavail");
     const paintUnavailDates = ()=>{
       const nums = sanitizeUnavailable(unavailInput.value.split(",").map(s=>parseInt(s.trim(),10))).filter(n=>gameNums().includes(n));
@@ -1160,8 +1143,8 @@ function statusPillsForGame(game){
 function renderGameCard(num){
   const game = getGame(num);
   const open = scheduleUiState.openGame===num;
-  const offNames = (game.rosteredOffIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
-  const unavailNames = game.isBye ? [] : (planGameAvailability(num).unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id)));
+  const offNames = playerNames(game.rosteredOffIds);
+  const unavailNames = game.isBye ? [] : playerNames(planGameAvailability(num).unavailableIds);
   const summaryBits = [];
   if(offNames.length) summaryBits.push(`Off: ${offNames.slice(0,3).join(", ")}${offNames.length>3?` +${offNames.length-3}`:""}`);
   if(unavailNames.length) summaryBits.push(`Unavailable: ${unavailNames.slice(0,3).join(", ")}${unavailNames.length>3?` +${unavailNames.length-3}`:""}`);
@@ -1186,48 +1169,7 @@ function renderGameCard(num){
 
 function renderGameBody(num){
   const game = getGame(num);
-  const avail = planGameAvailability(num);
-  const rosteredOffNames = (game.rosteredOffIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ")||"—";
-  const unavailNames = (game.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ")||"—";
-  const fillinChips = (game.fillInIds||[]).map(fid=>{ const f=byId(STATE.fillIns,fid); return f?`<span class="pill pill-warn">${esc(f.name)} <button data-rmfillin="${fid}" style="background:none;border:none;color:inherit;cursor:pointer;">&times;</button></span>`:""; }).join(" ");
-
-  let gapHtml="";
-  if(avail.shortfall){
-    const gaps = fillInGapSuggestions(num);
-    gapHtml = `<div class="alert alert-danger">Minimum ${avail.minFillIns} fill-in(s) needed, ${avail.recommendedFillIns} recommended for bench rotation.
-      ${gaps.length?` Coverage gaps: ${gaps.join(", ")}.`:""}</div>`;
-  }
-  const errorHtml = game.error ? `<div class="alert alert-danger" style="margin-top:12px;">${esc(game.error)}</div>` : "";
-
-  if(game.isBye){
-    return `
-    <div style="margin-top:12px;">
-      <div class="game-meta-row">
-        <div class="field">
-          <label class="section-label" for="gameDate-${num}">Game date and time</label>
-          <div class="date-time-pair">
-            <input type="date" id="gameDate-${num}" value="${esc(game.date||"")}">
-            <input type="time" id="gameTime-${num}" value="${esc(game.time||"")}" aria-label="Game time">
-          </div>
-        </div>
-        <div class="field game-location">
-          <label class="section-label" for="gameLocation-${num}">Game location</label>
-          <input type="text" id="gameLocation-${num}" maxlength="${MAX_LOCATION_LEN}" value="${esc(game.location||"")}">
-        </div>
-      </div>
-      <div class="empty-state" style="padding:20px;"><div class="cta">Bye — no game this round. Nobody is rostered off or counted as missing.</div></div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
-        <button class="btn btn-sm" data-unbye="${num}">Remove bye</button>
-        <button class="btn btn-sm btn-danger" data-delgame="${num}" ${STATE.season.numGames<=1?'disabled title="A season needs at least one game."':""}>Delete game</button>
-      </div>
-    </div>`;
-  }
-  const offPrefSel = game.allowOffPreference===true?"1":game.allowOffPreference===false?"0":"";
-  return `
-    <div style="margin-top:12px;">
-      ${errorHtml}
-      ${gapHtml}
-      <div class="game-meta-row">
+  const metaFields = `
         <div class="field">
           <label class="section-label" for="gameDate-${num}">Game date and time</label>
           <div class="date-time-pair">
@@ -1238,7 +1180,40 @@ function renderGameBody(num){
         <div class="field game-location">
           <label class="section-label" for="gameLocation-${num}">Game location</label>
           <input type="text" id="gameLocation-${num}" maxlength="${MAX_LOCATION_LEN}" value="${esc(game.location||"")}" placeholder="e.g. Court 3, Riverside Centre">
-        </div>
+        </div>`;
+  const deleteBtn = `<button class="btn btn-sm btn-danger" data-delgame="${num}" ${STATE.season.numGames<=1?'disabled title="A season needs at least one game."':""}>Delete game</button>`;
+  if(game.isBye){
+    return `
+    <div class="game-body">
+      <div class="game-meta-row">${metaFields}
+      </div>
+      <div class="empty-state empty-state-compact"><div class="cta">Bye — no game this round. Nobody is rostered off or counted as missing.</div></div>
+      <div class="game-actions">
+        <button class="btn btn-sm" data-unbye="${num}">Remove bye</button>
+        ${deleteBtn}
+      </div>
+    </div>`;
+  }
+
+  const avail = planGameAvailability(num);
+  const rosteredOffNames = playerNames(game.rosteredOffIds).join(", ")||"—";
+  const unavailNames = playerNames(game.unavailableIds).join(", ")||"—";
+  const fillinChips = (game.fillInIds||[]).map(fid=>{ const f=byId(STATE.fillIns,fid); return f?`<span class="pill pill-warn">${esc(f.name)} <button data-rmfillin="${fid}" style="background:none;border:none;color:inherit;cursor:pointer;">&times;</button></span>`:""; }).join(" ");
+
+  let gapHtml="";
+  if(avail.shortfall){
+    const gaps = fillInGapSuggestions(num);
+    gapHtml = `<div class="alert alert-danger">Minimum ${avail.minFillIns} fill-in(s) needed, ${avail.recommendedFillIns} recommended for bench rotation.
+      ${gaps.length?` Coverage gaps: ${gaps.join(", ")}.`:""}</div>`;
+  }
+  const errorHtml = game.error ? `<div class="alert alert-danger" style="margin-top:12px;">${esc(game.error)}</div>` : "";
+
+  const offPrefSel = game.allowOffPreference===true?"1":game.allowOffPreference===false?"0":"";
+  return `
+    <div class="game-body">
+      ${errorHtml}
+      ${gapHtml}
+      <div class="game-meta-row">${metaFields}
         <button class="btn btn-sm" data-toggleplayed="${num}">
           ${game.isPlayed?"Unlock (mark not played)":"Mark game as played (lock)"}
         </button>
@@ -1253,7 +1228,7 @@ function renderGameBody(num){
         <span>${LOCK_ICON_SVG} Locked</span>
       </div>
 
-      <div class="detail-row detail-row-3" style="margin-top:14px;">
+      <div class="detail-row">
         <div>
           <div class="section-label">Rostered off</div>
           <div class="hint">${esc(rosteredOffNames)}</div>
@@ -1270,7 +1245,7 @@ function renderGameBody(num){
         </div>
       </div>
 
-      <div class="detail-row detail-row-3" style="margin-top:14px;">
+      <div class="detail-row">
         <div>
           <label class="section-label" for="rosterOffOverride-${num}">Roster-off count override</label>
           <input type="number" class="mono" id="rosterOffOverride-${num}" placeholder="auto" min="0"
@@ -1292,9 +1267,9 @@ function renderGameBody(num){
           <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
         </label>
       </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+      <div class="game-actions">
         <button class="btn btn-sm" data-bye="${num}" ${game.isPlayed?'disabled title="Unlock this game before making it a bye."':""}>Bye</button>
-        <button class="btn btn-sm btn-danger" data-delgame="${num}" ${STATE.season.numGames<=1?'disabled title="A season needs at least one game."':""}>Delete game</button>
+        ${deleteBtn}
       </div>
     </div>
   `;
@@ -1304,17 +1279,17 @@ function renderRotationGrid(num){
   const game = getGame(num);
   if(!game.schedule){
     const msg = game.error ? "Couldn't be scheduled — resolve the issue above." : "Not generated yet. Run Generate season above.";
-    return `<div class="empty-state" style="padding:20px;"><div class="cta">${esc(msg)}</div></div>`;
+    return `<div class="empty-state empty-state-compact"><div class="cta">${esc(msg)}</div></div>`;
   }
   const editable = !game.isPlayed;
   const rows = game.schedule.quarters.map((q,qi)=>{
     const cells = POSITIONS.map(pos=>{
       const pid = q.onCourt[pos];
-      const isFillIn = pid && STATE.fillIns.some(f=>f.id===pid);
+      const isFillIn = pid && isFillInId(pid);
       const isOffPref = q.offPreference && q.offPreference[pos];
       const lockKey = qi+"-"+pos;
       const isLocked = game.lockedSlots && game.lockedSlots[lockKey];
-      const name = pid ? (byId(STATE.players,pid)||byId(STATE.fillIns,pid)||{}).name : "—";
+      const name = pid ? (anyPlayer(pid)||{}).name : "—";
       const classes = ["grid-cell","cell-oncourt"];
       classes.push(editable ? "cell-clickable" : "cell-readonly");
       if(isFillIn) classes.push("cell-fillin");
@@ -1327,8 +1302,8 @@ function renderRotationGrid(num){
       return `<td><div class="${classes.join(' ')}" data-slot="${num}|${qi}|${pos}"${tabAttr}${ariaAttr}>${isLocked?'<span class="cell-lock" aria-hidden="true">'+LOCK_ICON_SVG+'</span>':""}<div class="pname" title="${esc(cellTitle)}">${esc(name)}</div></div></td>`;
     }).join("");
     const benchNames = (q.bench||[]).map(pid=>{
-      const isFillIn = STATE.fillIns.some(f=>f.id===pid);
-      const p = byId(STATE.players,pid)||byId(STATE.fillIns,pid);
+      const isFillIn = isFillInId(pid);
+      const p = anyPlayer(pid);
       return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:'?')}</span>`;
     }).join("") || '<span class="hint">—</span>';
     return `<tr><td class="mono">Q${qi+1}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
@@ -1356,7 +1331,7 @@ function wireGameCard(el, num){
     game.rosterOffOverride = v===""?null:clamp(parseInt(v,10),0,STATE.players.length);
     game.rosteredOffIds = null; // clear manual selection lock when override count changes
     game.rosterOffLockIds = null;
-    saveState(); dirtySinceGeneration = true; toast("Roster-off override set. Regenerate to apply.");
+    markStale("Roster-off override set. Regenerate to apply.");
   };
   const manageOff = card.querySelector(`[data-manageoff="${num}"]`);
   if(manageOff) manageOff.onclick=()=>openRosterOffDialog(num);
@@ -1381,12 +1356,12 @@ function wireGameCard(el, num){
   if(allowOffPrefSel) allowOffPrefSel.onchange=e=>{
     const v = e.target.value;
     getGame(num).allowOffPreference = v==="" ? null : v==="1";
-    saveState(); dirtySinceGeneration = true; toast("Regenerate to apply.");
+    markStale();
   };
   const strictPairing = card.querySelector(`#strictPairing-${num}`);
   if(strictPairing) strictPairing.onchange=e=>{
     getGame(num).strictSpecialistPairing = e.target.checked;
-    saveState(); dirtySinceGeneration = true; toast("Regenerate to apply.");
+    markStale();
   };
   const assignFillin = card.querySelector(`[data-assignfillin="${num}"]`);
   if(assignFillin) assignFillin.onclick=()=>openAssignFillInDialog(num);
@@ -1445,15 +1420,12 @@ function wireGameCard(el, num){
 }
 
 /* The count the auto-deriver would pick right now, ignoring any existing
-   manual lock — shown in openRosterOffDialog as a target. Mirrors
-   planGameAvailability's default-branch arithmetic, since that function's
-   own rosterOffCount is left at 0 once a manual lock exists. */
+   manual lock — shown in openRosterOffDialog as a target
+   (planGameAvailability's own rosterOffCount is left at 0 once a lock exists). */
 function expectedRosterOffCount(num){
   const game = getGame(num);
   const avail = planGameAvailability(num);
-  if(avail.shortfall) return 0;
-  if(Number.isFinite(game.rosterOffOverride)) return clamp(game.rosterOffOverride,0,Math.max(0,avail.availableRegularIds.length-7));
-  return Math.max(0, avail.availableRegularIds.length-(7+Number(STATE.season.desiredBenchSize||0)));
+  return avail.shortfall ? 0 : autoRosterOffCount(game, avail.availableRegularIds.length);
 }
 
 function openRosterOffDialog(num){
@@ -1551,7 +1523,7 @@ function refreshOffPreferenceFlag(q, pos){
   const pid = q.onCourt[pos];
   if(!q.offPreference) q.offPreference = {};
   if(!pid){ delete q.offPreference[pos]; return; }
-  const player = byId(STATE.players,pid) || byId(STATE.fillIns,pid);
+  const player = anyPlayer(pid);
   q.offPreference[pos] = !!(player && player.prefs && !player.prefs.includes(pos));
 }
 
@@ -1583,7 +1555,7 @@ function openSlotEditDialog(num, qi, pos){
   if(game.isPlayed){ toast("This game is locked as played. Unlock it first to edit."); return; }
   if(!game.schedule) return;
   const squadIds = game.squadIds||[];
-  const options = squadIds.map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
+  const options = squadIds.map(anyPlayer).filter(Boolean);
   const lockKey = qi+"-"+pos;
   const isLocked = !!(game.lockedSlots && game.lockedSlots[lockKey]);
   const q = game.schedule.quarters[qi];
@@ -1614,10 +1586,10 @@ function openSlotEditDialog(num, qi, pos){
       const lock = modal.querySelector("#slotLock").checked;
       const qDraft = deepClone(q);
       const lockedSlotsDraft = Object.assign({}, game.lockedSlots||{});
+      if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
 
       if(pid===oldPid){
-        // No player change — just apply the lock toggle.
-        if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
+        // No player change — only the lock toggle above applies.
         commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         return;
       }
@@ -1628,7 +1600,6 @@ function openSlotEditDialog(num, qi, pos){
         qDraft.onCourt[pos] = null;
         if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
         refreshOffPreferenceFlag(qDraft, pos);
-        if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
         commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         toast(`${POS_LABEL[pos]} left unassigned this quarter — remember to fill it before the game is played.`);
         return;
@@ -1641,7 +1612,6 @@ function openSlotEditDialog(num, qi, pos){
         if(oldPid) qDraft.bench.push(oldPid);
         qDraft.onCourt[pos] = pid;
         refreshOffPreferenceFlag(qDraft, pos);
-        if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
         commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
         return;
       }
@@ -1651,7 +1621,6 @@ function openSlotEditDialog(num, qi, pos){
       // openFillVacancyDialog); both drafts are handed to it to finish.
       const otherPos = POSITIONS.find(p2=>p2!==pos && qDraft.onCourt[p2]===pid);
       qDraft.onCourt[pos] = pid;
-      if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
       if(!otherPos){
         // Defensive — shouldn't happen for a squad member: nothing to vacate.
         refreshOffPreferenceFlag(qDraft, pos);
@@ -1672,8 +1641,8 @@ function openSlotEditDialog(num, qi, pos){
    bench player, so the quarter never ends up with a gap or a duplicate.
    Continues the same qDraft/lockedSlotsDraft; Cancel discards them untouched. */
 function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedSlotsDraft){
-  const displacedPlayer = displacedPid ? (byId(STATE.players,displacedPid)||byId(STATE.fillIns,displacedPid)) : null;
-  const benchPlayers = (qDraft.bench||[]).map(id=>byId(STATE.players,id)||byId(STATE.fillIns,id)).filter(Boolean);
+  const displacedPlayer = displacedPid ? anyPlayer(displacedPid) : null;
+  const benchPlayers = (qDraft.bench||[]).map(anyPlayer).filter(Boolean);
 
   const optionHtml = p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
   openModal(`
@@ -1783,18 +1752,7 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
       <button class="btn btn-primary" data-act="save">${existing?"Save changes":"Add fill-in"}</button>
     </div>
   `, modal=>{
-    function paintChips(){
-      modal.querySelector("#fiChips").innerHTML = draft.prefs.length
-        ? draft.prefs.map((pos,i)=>`<span class="pref-chip"><span class="pref-rank">${i+1}</span><span class="pos-badge pos-${esc(pos)}">${esc(pos)}</span>${esc(POS_LABEL[pos])}<button data-rm="${esc(pos)}">&times;</button></span>`).join("")
-        : `<span class="hint">Flexible / no preference.</span>`;
-      modal.querySelectorAll("[data-rm]").forEach(b=>b.onclick=()=>{ draft.prefs=draft.prefs.filter(p=>p!==b.dataset.rm); paintChips(); paintButtons(); });
-    }
-    function paintButtons(){
-      modal.querySelector("#fiButtons").innerHTML = POSITIONS.filter(p=>!draft.prefs.includes(p))
-        .map(pos=>`<button class="btn btn-sm" data-add="${pos}"><span class="pos-badge pos-${pos}">${pos}</span> ${POS_LABEL[pos]}</button>`).join("");
-      modal.querySelectorAll("[data-add]").forEach(b=>b.onclick=()=>{ draft.prefs.push(b.dataset.add); paintChips(); paintButtons(); });
-    }
-    paintChips(); paintButtons();
+    wirePrefEditor(modal, draft, "#fiChips", "#fiButtons", "Flexible / no preference.");
     modal.querySelector('[data-act="cancel"]').onclick=closeModal;
     modal.querySelector('[data-act="save"]').onclick=()=>{
       clearFieldErrors(modal);
@@ -1823,9 +1781,9 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
 function renderReports(root){
   const summaries = computePlayerSummaries();
   const offPref = computeOffPrefLog();
-  const offPrefRate = computeOffPrefRate();
+  const offPrefRate = computeOffPrefRate(offPref);
   const shortGames = gameNums().map(n=>({n,g:getGame(n)})).filter(x=>x.g.shortfall);
-  const missedWarning = computeMissedGamesWarningForReports();
+  const missedWarning = computeMissedGamesWarningForReports(summaries);
   const achievabilityNotes = computeRosterOffAchievabilityNotesForReports();
 
   const spread = arr => arr.length ? Math.max(...arr)-Math.min(...arr) : 0;
@@ -1894,7 +1852,7 @@ function renderReports(root){
       <div class="card-head"><div><h2>Short-staffed game notes</h2><p>Games where availability drops below a full squad.</p></div></div>
       ${shortGames.length? shortGames.map(({n,g})=>{
         const gaps = fillInGapSuggestions(n);
-        const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
+        const unavail = playerNames(g.unavailableIds).join(", ");
         return `<div class="game-card"><div class="game-card-head"><h4>${esc(gameLabel(n))}</h4>
           <span class="pill pill-danger">${g.minFillIns} min / ${g.recommendedFillIns} recommended fill-ins</span></div>
           <p class="hint" style="margin:8px 0 4px;">Unavailable: ${esc(unavail)||"—"}</p>
@@ -1990,14 +1948,14 @@ function renderSettings(root){
   `;
   root.querySelectorAll('input[type=range]').forEach(syncRangeFill);
   document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; syncRangeFill(e.target); };
-  document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
+  document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); markStale(); };
   document.getElementById("rosterOffSlider").oninput=e=>{ document.getElementById("rosterOffSliderVal").textContent=e.target.value; syncRangeFill(e.target); };
-  document.getElementById("rosterOffSlider").onchange=e=>{ s.rosterOffWeight=Number(e.target.value); saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
-  document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
-  document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
+  document.getElementById("rosterOffSlider").onchange=e=>{ s.rosterOffWeight=Number(e.target.value); markStale(); };
+  document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; markStale(); };
+  document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; markStale(); };
   root.querySelectorAll("[data-weight]").forEach(inp=>{
     inp.oninput=e=>{ e.target.nextElementSibling.textContent=e.target.value; syncRangeFill(e.target); };
-    inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); saveState(); dirtySinceGeneration=true; toast("Regenerate to apply."); };
+    inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); markStale(); };
   });
 }
 
@@ -2321,12 +2279,12 @@ function exportXlsx(){
     const g = getGame(n); if(!g.schedule) return;
     g.schedule.quarters.forEach((q,qi)=>{
       const posCells = POSITIONS.map(pos=>{
-        const pid=q.onCourt[pos]; const p = pid && (byId(STATE.players,pid)||byId(STATE.fillIns,pid));
+        const pid=q.onCourt[pos]; const p = pid && anyPlayer(pid);
         if(!p) return "";
         const offpref = q.offPreference&&q.offPreference[pos];
         return p.name + (offpref?" (off-pref)":"");
       });
-      const benchNames = (q.bench||[]).map(pid=>{ const p=byId(STATE.players,pid)||byId(STATE.fillIns,pid); return p?p.name:pid; }).join(", ");
+      const benchNames = (q.bench||[]).map(pid=>{ const p=anyPlayer(pid); return p?p.name:pid; }).join(", ");
       gridRows.push([n,g.date||"",g.time||"",g.location||"",qi+1,...posCells,benchNames]);
     });
   });
@@ -2340,7 +2298,7 @@ function exportXlsx(){
   const noteRows = [["Game","Date","Time","Location","Unavailable","Min Fill-ins","Recommended Fill-ins","Coverage Gaps"]];
   gameNums().filter(n=>getGame(n).shortfall).forEach(n=>{
     const g = getGame(n);
-    const unavail = (g.unavailableIds||[]).map(id=>playerLabel(byId(STATE.players,id))).join(", ");
+    const unavail = playerNames(g.unavailableIds).join(", ");
     noteRows.push([n, g.date||"", g.time||"", g.location||"", unavail, g.minFillIns, g.recommendedFillIns, fillInGapSuggestions(n).join(", ")]);
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(noteRows), "Short-Staffed Notes");

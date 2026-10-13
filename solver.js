@@ -17,7 +17,6 @@ const PHASE1_TIME_BUDGET_MS = 3000;
 const PHASE1_MAX_PASSES = 50;
 const COVERAGE_GAP_ZERO_PENALTY = 100;  // zero players left covering the position
 const COVERAGE_GAP_ONE_PENALTY = 30;    // exactly one player left covering it
-const COVERAGE_OVERLAP_WEIGHT = 10;     // unused — superseded by the rank-weighted penalty in gameCoveragePenalty()
 const MISSED_GAMES_WARNING_SPREAD = 2;  // Reports-tab warning threshold (max-min missed games)
 const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
@@ -153,16 +152,29 @@ function solveSeasonRosterOff(input){
     if(!g.strictSpecialistPairing) return coverageWeight;
     return Math.max(coverageWeight*STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT);
   }
+  // Each game's available players (invariant for the whole solve) and its
+  // memoised coverage term per roster-off choice.
+  const poolByNum = {}, coverageTermCache = {};
+  games.forEach(g=>{
+    poolByNum[g.num] = g.availableIds.map(id=>playerById[id]).filter(Boolean);
+    coverageTermCache[g.num] = new Map();
+  });
   function totalObjectiveOf(current){
     const missed = totalMissedMapOf(current);
     const fairnessTerm = fairnessWeight*variance(Object.values(missed));
     let coverageTerm = 0;
     games.forEach(g=>{
       const offIds = g.fixedOffIds!=null ? g.fixedOffIds : (current[g.num]||[]);
-      const offSet = new Set(offIds);
-      const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
-      const squadAfter = pool.filter(p=>!offSet.has(p.id));
-      coverageTerm += effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
+      // A move touches one or two games; the rest hit the cache. Summed in
+      // the same game order, so the float total is unchanged.
+      const key = JSON.stringify(offIds);
+      let term = coverageTermCache[g.num].get(key);
+      if(term===undefined){
+        const offSet = new Set(offIds);
+        term = effectiveCoverageWeight(g)*gameCoveragePenalty(poolByNum[g.num].filter(p=>!offSet.has(p.id)));
+        coverageTermCache[g.num].set(key, term);
+      }
+      coverageTerm += term;
     });
     return fairnessTerm + coverageTerm;
   }
@@ -173,7 +185,7 @@ function solveSeasonRosterOff(input){
     const runningMissed = {};
     players.forEach(p=>{ runningMissed[p.id] = fixedMissedBase[p.id]||0; });
     gameOrder.forEach(g=>{
-      const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
+      const pool = poolByNum[g.num];
       const picked = [];
       const remaining = pool.slice();
       for(let k=0;k<g.rosterOffCount && remaining.length;k++){
@@ -218,7 +230,7 @@ function solveSeasonRosterOff(input){
       // Move 1: single-game swap (offP <-> onP within the same game).
       for(const g of gameOrder){
         if(Date.now()>deadline){ timedOut=true; break outer; }
-        const pool = g.availableIds.map(id=>playerById[id]).filter(Boolean);
+        const pool = poolByNum[g.num];
         const offSet = new Set(current[g.num]);
         for(let oi=0; oi<pool.length; oi++){
           const offP = pool[oi];
@@ -253,8 +265,8 @@ function solveSeasonRosterOff(input){
         for(let gj=gi+1; gj<gameOrder.length; gj++){
           if(Date.now()>deadline){ timedOut=true; break outer; }
           const g1 = gameOrder[gi], g2 = gameOrder[gj];
-          const pool1 = g1.availableIds.map(id=>playerById[id]).filter(Boolean);
-          const pool2 = g2.availableIds.map(id=>playerById[id]).filter(Boolean);
+          const pool1 = poolByNum[g1.num];
+          const pool2 = poolByNum[g2.num];
           const off1 = new Set(current[g1.num]);
           const off2 = new Set(current[g2.num]);
           for(const A of pool1){
@@ -304,14 +316,14 @@ function solveSeasonRosterOff(input){
         if(H!=null && L!=null && H!==L && missedNow[H]>missedNow[L]){
           chainSearch:
           for(const gA of gameOrder){
-            const poolA = gA.availableIds.map(id=>playerById[id]).filter(Boolean);
+            const poolA = poolByNum[gA.num];
             const offA = new Set(current[gA.num]);
             if(!offA.has(H)) continue; // H must be off in gA
             for(const X of poolA){
               if(offA.has(X.id) || X.id===H || X.id===L) continue; // X must be on in gA
               for(const gB of gameOrder){
                 if(gB===gA) continue;
-                const poolB = gB.availableIds.map(id=>playerById[id]).filter(Boolean);
+                const poolB = poolByNum[gB.num];
                 const offB = new Set(current[gB.num]);
                 if(!offB.has(X.id)) continue; // X must be off in gB
                 if(offB.has(L) || !poolB.some(p=>p.id===L)) continue; // L must be on in gB
@@ -387,7 +399,7 @@ function computeRosterOffAchievabilityNotes(players){
       notes.push({
         position: pos,
         players: names,
-        message: `${names.join(" and ")} ${single?"is the only player":"are the only players"} who prefer${single?"s":""} ${pos}. Resting ${single?"them":"both"} would leave ${pos} uncovered, so the roster-off split may never come out perfectly even — expect ${single?"them":"them"} to end up with fewer missed games than the rest of the roster.`
+        message: `${names.join(" and ")} ${single?"is the only player":"are the only players"} who prefer${single?"s":""} ${pos}. Resting ${single?"them":"both"} would leave ${pos} uncovered, so the roster-off split may never come out perfectly even — expect them to end up with fewer missed games than the rest of the roster.`
       });
     }
   });
@@ -492,7 +504,7 @@ function buildQuarterCostFns(cumulative, settings){
     const scaledSeasonSide = balanceDamping*BENCH_SCALE_BOOST*(benchRate*benchWeight + thisGame*0.3);
     return scaledSeasonSide + backToBack;
   }
-  return { positionCellCost, benchCellCost, isDisqualified:(p,pos)=>preferenceCost(p,pos)===null };
+  return { positionCellCost, benchCellCost };
 }
 
 /* input: { players:[{id,name,prefs,isFillIn}], benchSlotCount, lockedSlots:{pos:playerId},
@@ -685,7 +697,7 @@ const RosterSolver = {
   CONSTANTS: {
     PHASE1_FAIRNESS_WEIGHT, PHASE1_COVERAGE_WEIGHT, PHASE1_TIME_BUDGET_MS, PHASE1_MAX_PASSES,
     PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
-    COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, COVERAGE_OVERLAP_WEIGHT,
+    COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
     BENCH_SCALE_BOOST, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT
   },
