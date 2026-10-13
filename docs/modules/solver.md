@@ -21,7 +21,8 @@ the results back onto `STATE.games[...]`.
 | `solveQuarterPositions(input)` | `{players:[{id,name,prefs,isFillIn}], benchSlotCount, lockedSlots:{pos:id}, cumulative, settings}` | `{onCourt:{pos:id}, bench:[ids], offPreference:{pos:true}, errors:[{position,reason}]}` | Phase 2a, one quarter. Builds a cost matrix and calls `Hungarian.solve`. |
 | `refineGameQuarters(input)` | `{quarters, squadPool, cumulativeSnapshots, lockedSlotsPerQuarter, settings, timeBudgetMs}` | `{quarters, stats:{swaps,elapsedMs}}` | Phase 2b, one game's 4 quarters together. |
 | `buildQuarterCostFns(cumulative, settings)` | cumulative snapshot + settings | `{positionCellCost(p,pos), benchCellCost(p)}` | The cost model, exposed directly — used by both 2a and 2b so they score identically. |
-| `deriveRosterOffWeights(rosterOffWeight)` | 0-10 slider value | `{fairness, coverage}` | Maps the single Settings-tab slider onto Phase 1's two internal weights. |
+| `deriveRosterOffWeights(rosterOffPriority)` | `"fairness"`/`"balanced"`/`"coverage"` | `{fairness, coverage}` | Maps the Settings-tab three-way choice onto Phase 1's two internal weights (coverage 0 / `ROSTER_OFF_BALANCED_COVERAGE_WEIGHT` / `PHASE1_COVERAGE_WEIGHT`). Anything unrecognised is treated as `"coverage"`. |
+| `derivePreferenceWeights(preferenceSlider)` | 0-10 slider value | `{preference, balance}` (sum to 1) | Maps the preference slider onto the cost model's two weights: ratio geometric from `PREFERENCE_RATIO_AT_0` to `PREFERENCE_RATIO_AT_9`, balance exactly 0 at 10. |
 | `computeMissedGamesWarning(missedByPlayer, threshold?)` | `[{id,name,missed}]` | `null` or `{spread,max,min,mostMissed,leastMissed,suggestion}` | Reports-tab informational warning; never fed back into generation. |
 | `computeRosterOffAchievabilityNotes(players)` | `[{name,prefs}]` | `[{position,players,message}]` | Roster-composition note: a position with ≤1 preferrer can't be rested without risking zero coverage, independent of any setting. |
 | `clampSetting(v, lo, hi, fallback)` | untrusted value + bounds | number in `[lo,hi]` | Used everywhere an untrusted numeric setting (localStorage, CSV) needs coercing — `NaN` in used to poison every downstream comparison silently. |
@@ -71,21 +72,22 @@ One cost per `(player, column)` cell, where a column is either a position or a b
 slot:
 
 - **`preferenceCost(p, pos)`** — the player's rank in their own `prefs` list (0 = their
-  #1 choice); off-preference costs `max(1, prefs.length)` (never 0 — an empty
-  preference list must never look cheaper than a real rank-0 specialist), or `null`
-  (→ `BIG_M`, disqualified) when `allowOffPreference` is off.
-- **`purityAndVarietyTerm(p, pos)`** — a small penalty for a position the player's
-  already played a lot this season (`purityWeight`), plus an extra nudge away from a
-  3rd+-ranked position when `topTwoOnly` is on. Capped relative to the player's *own*
-  gap to their off-preference fallback (`prefs.length - idx`), so it can never flip an
-  in-preference rank into losing against an off-preference candidate.
+  #1 choice); off-preference costs the flat `OFF_PREFERENCE_COST` (7) for every player
+  — above any in-preference cell, and independent of list length, so a short-list
+  player is never the cheap off-preference fill — or `null` (→ `BIG_M`, disqualified)
+  when `allowOffPreference` is off.
+- **`varietyTerm(p, pos)`** — a penalty for a position the player's already played a
+  lot this season, scaled by `settings.positionVariety` (0 = none). Capped relative to
+  the player's *own* list (`prefs.length - idx`), so a favourite can lose ground to a
+  lower choice but an in-preference cell always stays below `OFF_PREFERENCE_COST`.
 - **`balanceCost(p)`** — this player's season-so-far on-court *rate* (not raw count —
   rate is what keeps a coach mid-way through an 11-game season and one three games into
-  a 20-game season judged the same way), scaled by `benchWeight`.
-- **`positionCellCost`** = `sliderNorm * (preferenceCost + purity) + (1-sliderNorm) * balanceCost`,
-  where `sliderNorm = preferenceSlider/10`. At slider=10 this is pure preference cost;
-  lower values blend in fairness/balance.
-- **`benchCellCost(p)`** — scaled by the *same* `(1-sliderNorm)` factor (so it's exactly
+  a 20-game season judged the same way), scaled by the fixed `PLAYING_TIME_WEIGHT`.
+- **`positionCellCost`** = `preference * (preferenceCost + variety) + balance * balanceCost`,
+  with the two weights from `derivePreferenceWeights(preferenceSlider)`. At slider=10
+  this is pure preference cost; each step down multiplies the balance side's relative
+  weight by the same factor.
+- **`benchCellCost(p)`** — scaled by the *same* `balance` weight (so it's exactly
   0 at slider=10 — bench pressure can never outcompete preference once the coach asks
   for strict preference), plus an unscaled small back-to-back-bench penalty (a tie-break,
   not part of the preference/fairness trade-off).

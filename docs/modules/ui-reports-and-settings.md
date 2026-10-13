@@ -23,27 +23,32 @@ render from the functions in [`engine.md`](engine.md#report-aggregations).
 
 ## Settings tab
 
-`renderSettings(root)` renders three cards of sliders/checkboxes bound directly to
-`STATE.settings`. Every control's `onchange` handler does the same three things:
-`saveState()`, set `dirtySinceGeneration = true`, and `toast("Regenerate to apply.")` —
-none of these settings take effect until the next Generate/Rebalance. A persistent
-`.alert-warn` banner appears at the top of the tab whenever `dirtySinceGeneration` is
-already true from a previous change.
+`renderSettings(root)` renders four cards bound directly to `STATE.settings`: the
+at-a-glance numbers, then one card per decision (preferences vs. even court time,
+position variety, who sits out). Every control's `onchange` handler does the same thing
+via `markStale()`: `saveState()`, set `dirtySinceGeneration = true`, and
+`toast("Regenerate to apply.")` — none of these settings take effect until the next
+Generate/Rebalance. A persistent `.alert-warn` banner appears at the top of the tab
+whenever `dirtySinceGeneration` is already true from a previous change.
 
 | Setting | Control | Range |
 |---|---|---|
-| `preferenceSlider` | slider | 0–10, fairness ↔ strict preference |
-| `allowOffPreference` | checkbox | — |
-| `topTwoOnly` | checkbox | — |
-| `rosterOffWeight` | slider | 0–10, roster-off fairness ↔ position coverage |
-| `fairnessWeights.bench` | slider | 1–10 |
-| `fairnessWeights.positionPurity` | slider | 1–10 |
+| `preferenceSlider` | slider `#prefSlider` | 0–10, even court time ↔ strict preference |
+| `allowOffPreference` | checkbox `#allowOffPref` | — |
+| `positionVariety` | slider `#varietySlider` | 0–10, repeat favourite ↔ spread across the list |
+| `rosterOffPriority` | radio group `rosterOffPriority` | `fairness` / `balanced` / `coverage` |
 
 | Function | Purpose |
 |---|---|
-| `labelledSliderHtml({id, dataWeight, min, max, step, value, valueId, leftLabel, rightLabel})` | Shared markup for every slider on this tab — a `<input type=range>` + numeric readout + end-labels describing what each direction does, so all five sliders are structurally identical. `id`/`for` are wired for label association. |
+| `labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel})` | Shared markup for both sliders — a `<input type=range>` + numeric readout + end-labels describing what each direction does. `id`/`for` are wired for label association. |
+| `seasonHeadlinesHtml()` | The at-a-glance card body: `computeSeasonHeadlines()` (see [`engine.md`](engine.md#report-aggregations)) as six stat boxes, each naming the control that moves it, or a prompt to generate if there's no schedule yet. A number that differs from `headlinesBeforeLastGeneration` also shows `was …`. |
+| `headlineStats(h)` | Formats a headlines object into the six `{label, value, moves}` entries, in display order. |
 
-Every slider's `oninput` also calls `syncRangeFill(e.target)` (see
+`headlinesBeforeLastGeneration` is a module variable set by the Schedule tab's
+`runGenerationWithBusyState` just before each generation — session-only, never saved, so
+the "was" comparison disappears on reload.
+
+Each slider's `oninput` also calls `syncRangeFill(e.target)` (see
 [`ui-shell-and-modals.md`](ui-shell-and-modals.md)) so the filled-track visual updates
 live while dragging, separately from the `onchange` that actually persists the value.
 

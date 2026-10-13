@@ -226,6 +226,7 @@ tr:last-child td{border-bottom:none;}
 .stat-box{background:var(--surface-2);border-radius:10px;padding:12px 14px;}
 .stat-box .num{font-family:var(--font-display);font-size:22px;font-weight:700;}
 .stat-box .lbl{font-size:11px;color:var(--text-dim);margin-top:2px;}
+.stat-box .was{font-size:11px;color:var(--accent);}
 
 /* ---------- Modal ---------- */
 .modal-backdrop{position:fixed;inset:0;background:rgba(6,8,12,.6);backdrop-filter:blur(2px);

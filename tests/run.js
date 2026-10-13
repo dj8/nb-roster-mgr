@@ -140,7 +140,7 @@ test("QUARTER-OPTIMAL-1: solveQuarterPositions achieves the brute-force-optimal 
     {id:"h",name:"H",prefs:["GS","WA","C"],isFillIn:false}
   ];
   const cumulative = {posCount:{}, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
-  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const settings = {preferenceSlider:10, allowOffPreference:true, positionVariety:1};
 
   const result = engine.RosterSolver.solveQuarterPositions({players, benchSlotCount:1, lockedSlots:{}, cumulative, settings});
   assert.strictEqual(result.errors.length, 0);
@@ -172,7 +172,7 @@ test("QUARTER-LOCK-1: locked slots are pulled out before solving and never reass
     {id:"g",name:"G",prefs:["GK"],isFillIn:false}
   ];
   const cumulative = {posCount:{}, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
-  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const settings = {preferenceSlider:10, allowOffPreference:true, positionVariety:1};
   // Lock A (a GS specialist) into GK, an obviously off-preference forced slot.
   const result = engine.RosterSolver.solveQuarterPositions({players, benchSlotCount:0, lockedSlots:{GK:"a"}, cumulative, settings});
   assert.strictEqual(result.onCourt.GK, "a");
@@ -190,7 +190,7 @@ test("PHASE2B-1: refinement never increases total game cost and never touches a 
     {id:"d",prefs:["C","WA"]},{id:"e",prefs:["WD","GD"]},{id:"f",prefs:["GD","WD"]},
     {id:"g",prefs:["GK"]}
   ];
-  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const settings = {preferenceSlider:10, allowOffPreference:true, positionVariety:1};
   const emptyCum = ()=>({posCount:{},onCourt:{},bench:{},gameBenchSoFar:{},benchedLastQuarter:new Set()});
   const perms = [
     ["GA","GS","C","WA","GD","WD","GK"],
@@ -231,7 +231,7 @@ test("PHASE2B-1: refinement never increases total game cost and never touches a 
 test("P2B-4: a forced very low Phase 2b time budget stops promptly and returns a valid (if unrefined) result", ()=>{
   const engine = freshEngine();
   const players = Array.from({length:12},(_,i)=>({id:"p"+i, prefs: engine.POSITIONS.slice(i%7).concat(engine.POSITIONS.slice(0,i%7))}));
-  const settings = {preferenceSlider:9, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const settings = {preferenceSlider:9, allowOffPreference:true, positionVariety:1};
   const emptyCum = ()=>({posCount:{},onCourt:{},bench:{},gameBenchSoFar:{},benchedLastQuarter:new Set()});
   const quarters = [0,1,2,3].map(qi=>{
     const onCourt = {}; engine.POSITIONS.forEach((pos,i)=>{ onCourt[pos] = players[(i+qi)%players.length].id; });
@@ -405,7 +405,7 @@ test("PHASE1-TOGGLE-1: allowOffPreference visibly changes Phase 1's roster-off c
     "with the toggle off, Q must never be rostered off since it would leave GK uncovered: "+JSON.stringify(disallowed.rosterOffByGame));
 });
 
-test("ROSTEROFF-SLIDER-SWEEP: missed-games variance is monotonically non-decreasing as rosterOffWeight rises from 0 (fairness) to 10 (coverage)", ()=>{
+test("ROSTEROFF-PRIORITY-SWEEP: fairness -> balanced -> coverage are three distinct outcomes, each trading more missed-games evenness for coverage", ()=>{
   function buildRoster(engine){
     const st = engine._getState();
     st.season.numGames = 8;
@@ -423,20 +423,22 @@ test("ROSTEROFF-SLIDER-SWEEP: missed-games variance is monotonically non-decreas
     st2.players[9].unavailable = [5,6];
     engine.ensureGamesExist();
   }
-  const variances = [];
-  for(let w=0; w<=10; w++){
+  const variances = [], thin = [];
+  ["fairness","balanced","coverage"].forEach(priority=>{
     const engine = freshEngine();
     buildRoster(engine);
-    engine._getState().settings.rosterOffWeight = w;
+    engine._getState().settings.rosterOffPriority = priority;
     const r = engine.runGeneration();
     assert.strictEqual(r.invalid, null);
-    const missed = engine.computePlayerSummaries().map(s=>s.missed);
-    variances.push(engine.RosterSolver.variance(missed));
-  }
-  for(let i=1;i<variances.length;i++){
-    assert.ok(variances[i] >= variances[i-1] - 1e-9,
-      `variance should be non-decreasing as rosterOffWeight rises from ${i-1} (${variances[i-1]}) to ${i} (${variances[i]}): ${JSON.stringify(variances)}`);
-  }
+    variances.push(engine.RosterSolver.variance(engine.computePlayerSummaries().map(s=>s.missed)));
+    thin.push(engine.gameNums().reduce((n,num)=>n+engine.getGame(num).coverageWarnings.length, 0));
+  });
+  // Strict, not just monotonic: the old 0-10 slider only ever had two
+  // outcomes (0, or anything else), which is why it became a three-way choice.
+  assert.ok(variances[0] < variances[1] && variances[1] < variances[2],
+    `missed-games variance should rise at each step toward coverage: ${JSON.stringify(variances)}`);
+  assert.ok(thin[0] > thin[1] && thin[1] > thin[2],
+    `thin-position warnings should fall at each step toward coverage: ${JSON.stringify(thin)}`);
 });
 
 test("REPORTED-BUG: 11 players / 11 games / 2 off per game reaches exactly 2 missed each", ()=>{
@@ -460,24 +462,19 @@ test("REPORTED-BUG: 11 players / 11 games / 2 off per game reaches exactly 2 mis
     defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
     engine.ensureGamesExist();
   }
-  [
-    {rosterOffWeight:0, allowOffPreference:true},
-    {rosterOffWeight:0, allowOffPreference:false},
-    {rosterOffWeight:10, allowOffPreference:true},
-    {rosterOffWeight:10, allowOffPreference:false}
-  ].forEach(({rosterOffWeight, allowOffPreference})=>{
+  ["fairness","balanced","coverage"].forEach(rosterOffPriority=>[true,false].forEach(allowOffPreference=>{
     const engine = freshEngine();
     buildReportedBugRoster(engine);
-    engine._getState().settings.rosterOffWeight = rosterOffWeight;
+    engine._getState().settings.rosterOffPriority = rosterOffPriority;
     engine._getState().settings.allowOffPreference = allowOffPreference;
     const r = engine.runGeneration();
     assert.strictEqual(r.invalid, null);
     const summaries = engine.computePlayerSummaries();
     summaries.forEach(s=>{
       assert.strictEqual(s.missed, 2,
-        `rosterOffWeight=${rosterOffWeight}, allowOffPreference=${allowOffPreference}: ${s.name} should have exactly 2 missed games, got ${s.missed}`);
+        `rosterOffPriority=${rosterOffPriority}, allowOffPreference=${allowOffPreference}: ${s.name} should have exactly 2 missed games, got ${s.missed}`);
     });
-  });
+  }));
 });
 
 test("PHASE1-DETERMINISTIC-1 (M6): identical input reproduces identical roster-off output under the default time budget", ()=>{
@@ -578,16 +575,15 @@ test("WARNING-2: stays silent on a balanced dataset", ()=>{
 
 test("FR-3/FR-4: on-court and bench quarters are even (within a small tolerance) among players attending the same number of games", ()=>{
   // §4 ranks on-court/bench evenness below preference-honouring, so some
-  // spread at the app's default (preferenceSlider 9) is intended, not a bug
-  // (BENCH-SWEEP-1 confirms raising bench weight closes it). Tests the
-  // "within a small tolerance" claim at a setting not maximally tilted
-  // against fairness — best-effort, not absolute.
+  // spread at the app's default (preferenceSlider 8) is intended, not a bug
+  // (PLAYTIME-SWEEP-1 confirms lowering the slider closes it). Tests the
+  // "within a small tolerance" claim near the slider's even-court-time end
+  // — best-effort, not absolute.
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 11;
   st.season.desiredBenchSize = 2;
-  st.settings.preferenceSlider = 5; // §5.1's own "trade-off zone", not the preference-maximizing default
-  st.settings.fairnessWeights.bench = 8;
+  st.settings.preferenceSlider = 1; // the even-court-time end of §5.1's trade-off, not the preference-favouring default
   const defs = [
     ["Amy",["GS","GA"]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
     ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"]], ["Fay",["GD","WD","GK"]],
@@ -637,9 +633,10 @@ test("FR-7: a player is benched in consecutive quarters only when squad size lea
 /* ============================================================
    6. Settings default
    ============================================================ */
-test("SETTINGS-DEFAULT-1: preferenceSlider defaults to 9 (strongly favours preference)", ()=>{
+test("SETTINGS-DEFAULT-1: the four settings and their defaults (preference 8 - strongly favours preference)", ()=>{
   const engine = freshEngine();
-  assert.strictEqual(engine._getState().settings.preferenceSlider, 9);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(engine._getState().settings)),
+    {preferenceSlider:8, allowOffPreference:true, positionVariety:1, rosterOffPriority:"coverage"});
 });
 
 /* ============================================================
@@ -749,7 +746,7 @@ test("OFFPREF-LOG-BENCHED-1 (I4 regression): the off-preference log names a spec
 /* Builds a minimal valid backup file as text, merging `plan`/`results` overrides in. */
 function makeBackup(planOverrides, results){
   return JSON.stringify({
-    format:"netball-roster-backup", schemaVersion:1,
+    format:"netball-roster-backup", schemaVersion:2,
     plan: Object.assign({season:{numGames:1, desiredBenchSize:0}, settings:{}, players:[], fillIns:[], games:{}}, planOverrides||{}),
     results: results || {games:{}}
   });
@@ -849,14 +846,14 @@ test("BACKUP-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped
   ];
   engine.importBackup(makeBackup({
     season:{numGames:3, desiredBenchSize:2},
-    settings:{preferenceSlider:"abc", rosterOffWeight:"abc", fairnessWeights:{bench:"nope", positionPurity:null}},
+    settings:{preferenceSlider:"abc", positionVariety:null, rosterOffPriority:"<img src=x>", allowOffPreference:"yes"},
     players: defs.map(([name,prefs],i)=>({id:"p"+i, name, prefs, unavailable:[]}))
   }));
   const st = engine._getState();
   assert.ok(Number.isFinite(st.settings.preferenceSlider), "preferenceSlider must be a finite number after import: "+st.settings.preferenceSlider);
-  assert.ok(Number.isFinite(st.settings.rosterOffWeight), "rosterOffWeight must be a finite number after import: "+st.settings.rosterOffWeight);
-  assert.ok(Number.isFinite(st.settings.fairnessWeights.bench), "bench weight must be a finite number after import: "+st.settings.fairnessWeights.bench);
-  assert.ok(Number.isFinite(st.settings.fairnessWeights.positionPurity), "positionPurity weight must be a finite number after import: "+st.settings.fairnessWeights.positionPurity);
+  assert.ok(Number.isFinite(st.settings.positionVariety), "positionVariety must be a finite number after import: "+st.settings.positionVariety);
+  assert.strictEqual(st.settings.rosterOffPriority, "coverage", "an unrecognised roster-off priority must fall back to the default");
+  assert.strictEqual(st.settings.allowOffPreference, true, "a non-boolean toggle must be ignored, leaving the default");
 
   // The real regression check: generation must not throw.
   const r = engine.runGeneration();
@@ -872,8 +869,9 @@ test("SETTINGS-SANITIZE-1 (C1 regression): a corrupted localStorage blob is clam
   const st = engine._getState();
   Object.assign(st, {
     season: {numGames:"NaN", desiredBenchSize:-5},
-    settings: {preferenceSlider:"oops", rosterOffWeight:999, allowOffPreference:true, topTwoOnly:false,
-               fairnessWeights:{bench:"x", positionPurity:0}}
+    settings: {preferenceSlider:"oops", positionVariety:999, rosterOffPriority:"sideways", allowOffPreference:true,
+               // controls that no longer exist, as an older save would still carry them
+               rosterOffWeight:3, topTwoOnly:true, fairnessWeights:{bench:7, positionPurity:4}}
   });
   engine.saveState();
   const reloaded = engine.loadState();
@@ -881,8 +879,9 @@ test("SETTINGS-SANITIZE-1 (C1 regression): a corrupted localStorage blob is clam
     "numGames should be clamped to a valid range: "+reloaded.season.numGames);
   assert.strictEqual(reloaded.season.desiredBenchSize, 0, "a negative bench size should be clamped to 0");
   assert.ok(Number.isFinite(reloaded.settings.preferenceSlider), "a non-numeric preferenceSlider should fall back to a finite default");
-  assert.strictEqual(reloaded.settings.rosterOffWeight, 10, "an out-of-range rosterOffWeight (999) should be clamped to the max (10)");
-  assert.ok(Number.isFinite(reloaded.settings.fairnessWeights.bench), "a non-numeric bench weight should fall back to a finite default");
+  assert.strictEqual(reloaded.settings.positionVariety, 10, "an out-of-range positionVariety (999) should be clamped to the max (10)");
+  assert.strictEqual(reloaded.settings.rosterOffPriority, "coverage", "an unrecognised roster-off priority should fall back to the default");
+  ["rosterOffWeight","topTwoOnly","fairnessWeights"].forEach(k=>assert.ok(!(k in reloaded.settings), `retired setting ${k} should be dropped on load`));
 });
 
 test("BACKUP-IMPORT-XSS-1 (C2 regression): imported preferences are filtered to real positions only", ()=>{
@@ -924,7 +923,7 @@ test("BACKUP-ROUNDTRIP-1: the file is versioned, split into plan/results, and om
   const text = engine.CapturingBlob.last;
   const b = JSON.parse(text);
   assert.strictEqual(b.format, "netball-roster-backup");
-  assert.strictEqual(b.schemaVersion, 1);
+  assert.strictEqual(b.schemaVersion, 2);
   assert.ok(Number.isInteger(b.buildNumber) && b.buildNumber>0, "buildNumber should be recorded");
   assert.ok(b.plan && b.results, "plan and results sections should both be present");
   assert.strictEqual(b.plan.players.length, 7);
@@ -932,8 +931,7 @@ test("BACKUP-ROUNDTRIP-1: the file is versioned, split into plan/results, and om
   assert.ok(!("schedule" in b.plan.games["1"]), "results must not leak into plan");
   assert.ok(!text.includes("weight_missed") && !text.includes("onCourt\":1"), "retired settings must not be exported");
   assert.ok(!("theme" in b) && !("theme" in b.plan), "device-only theme must not be exported");
-  assert.ok(!("missed" in engine._getState().settings.fairnessWeights));
-  assert.ok(!("onCourt" in engine._getState().settings.fairnessWeights));
+  assert.deepStrictEqual(Object.keys(b.plan.settings).sort(), ["allowOffPreference","positionVariety","preferenceSlider","rosterOffPriority"]);
 });
 
 test("BACKUP-ROUNDTRIP-2: a played game's rosteredOffIds and unavailableIds survive export/import as frozen facts", ()=>{
@@ -1058,7 +1056,7 @@ test("STRICT-PAIRING-APP-1 (M3): the per-game toggle reaches computeSeasonRoster
   // two WD specialists, coverage-blind season-wide weight (0) so any
   // coverage-aware pick can only come from the per-game flag.
   [["X",["GS"]],["Y",["GS"]],["Z",["WD"]],["W",["WD"]]].forEach(([name,prefs])=>addPlayer(engine,name,prefs));
-  st.settings.rosterOffWeight = 0;
+  st.settings.rosterOffPriority = "fairness";
   engine.ensureGamesExist();
   engine.getGame(1).strictSpecialistPairing = true;
   engine.computeSeasonRosterOff();
@@ -1272,12 +1270,10 @@ test("OP-11: with allowOffPreference off, the preference slider has no effect (n
   });
 });
 
-test("TOPTWO-1 (H2 regression): topTwoOnly is a soft nudge, not a hard eligibility cutoff", ()=>{
+test("RANK3-1 (H2 regression): a 3rd+ preference is still in-preference, not an off-preference fill", ()=>{
   // Previously: prefRank sliced to prefs.slice(0,2), so a 3rd+ preference was
-  // indistinguishable from unlisted — with allowOffPreference off, "prefer
-  // top 2" could turn genuine (non-top-2) coverage into a false
-  // NO_ELIGIBLE_PLAYER error. §4 rule 5 makes top-2 a variety scope, not a
-  // stricter eligibility rule.
+  // indistinguishable from unlisted — with allowOffPreference off, genuine
+  // (non-top-2) coverage became a false NO_ELIGIBLE_PLAYER error.
   const engine = freshEngine();
   const st = engine._getState();
   st.season.numGames = 1;
@@ -1290,15 +1286,9 @@ test("TOPTWO-1 (H2 regression): topTwoOnly is a soft nudge, not a hard eligibili
   ];
   defs.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
   engine.ensureGamesExist();
-
-  st.settings.topTwoOnly = false;
-  engine.runGeneration();
-  assert.strictEqual(engine.getGame(1).error, null, "sanity: without topTwoOnly, GK has in-preference coverage and should generate cleanly: "+engine.getGame(1).error);
-
-  st.settings.topTwoOnly = true;
   engine.runGeneration();
   assert.strictEqual(engine.getGame(1).error, null,
-    "topTwoOnly must not disqualify a position that a player genuinely lists (just not in their top 2): "+engine.getGame(1).error);
+    "a position a player lists third must count as in-preference coverage: "+engine.getGame(1).error);
 });
 
 test("EMPTYPREFS-1 (H3 regression): a preference-less candidate is never cheaper than a real specialist", ()=>{
@@ -1307,7 +1297,7 @@ test("EMPTYPREFS-1 (H3 regression): a preference-less candidate is never cheaper
   // and out-competing every real candidate at every position.
   const engine = freshEngine();
   const cumulative = {posCount:{}, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
-  const settings = {preferenceSlider:10, allowOffPreference:true, topTwoOnly:false, fairnessWeights:{bench:2,positionPurity:1}};
+  const settings = {preferenceSlider:10, allowOffPreference:true, positionVariety:1};
   const { positionCellCost } = engine.RosterSolver.buildQuarterCostFns(cumulative, settings);
   const specialist = {id:"a", prefs:["GK","GD"]};
   const noPrefs = {id:"b", prefs:[]};
@@ -1319,10 +1309,10 @@ test("EMPTYPREFS-1 (H3 regression): a preference-less candidate is never cheaper
 });
 
 /* ============================================================
-   M1/M2/H1 regression: the cost-scale rework that made the position-purity
-   and bench-weight settings actually responsive, and closed off a concrete
-   monotonicity leak (bench weight could increase off-preference fills even
-   at the preference slider's literal maximum).
+   Cost-model guarantees behind the two sliders: position variety actually
+   spreads play, the preference slider actually evens out court time and is
+   evenly spaced, and nothing but the absence of an in-preference candidate
+   can cause an off-preference fill at the slider's maximum.
    ============================================================ */
 function buildRealisticRosterFixture(engine){
   const st = engine._getState();
@@ -1338,14 +1328,14 @@ function buildRealisticRosterFixture(engine){
   return defs;
 }
 
-test("PURITY-SWEEP-1 (M1 regression): raising position-purity weight measurably spreads play across a player's list", ()=>{
-  // Previously: the purity bonus was capped at a flat 0.95, saturating after
+test("VARIETY-SWEEP-1 (M1 regression): raising position variety measurably spreads play across a player's list", ()=>{
+  // Previously: the variety penalty was capped at a flat 0.95, saturating after
   // one quarter at a position, so raising the weight had almost no further
   // effect — making §11's "spread across the whole list" false at the high end.
   const engine = freshEngine();
   const defs = buildRealisticRosterFixture(engine);
-  function avgShareOnTopPreference(purityWeight){
-    engine._getState().settings.fairnessWeights.positionPurity = purityWeight;
+  function avgShareOnTopPreference(variety){
+    engine._getState().settings.positionVariety = variety;
     engine.runGeneration();
     const summaries = engine.computePlayerSummaries();
     const shares = summaries.map(s=>{
@@ -1354,43 +1344,71 @@ test("PURITY-SWEEP-1 (M1 regression): raising position-purity weight measurably 
     });
     return shares.reduce((a,b)=>a+b,0)/shares.length;
   }
-  const low = avgShareOnTopPreference(1);
+  const none = avgShareOnTopPreference(0);
+  const mid = avgShareOnTopPreference(5);
   const high = avgShareOnTopPreference(10);
-  assert.ok(high < low - 0.1,
-    `raising position-purity from 1 to 10 should meaningfully reduce the share of quarters spent on a player's #1 preference: low=${low.toFixed(3)} high=${high.toFixed(3)}`);
+  assert.ok(mid < none - 0.1 && high < mid,
+    `each half of the variety slider should reduce the share of quarters spent on a player's #1 preference: 0=${none.toFixed(3)} 5=${mid.toFixed(3)} 10=${high.toFixed(3)}`);
 });
 
-test("BENCH-SWEEP-1 (M2 regression): raising bench weight measurably evens out bench/on-court spread", ()=>{
+test("PLAYTIME-SWEEP-1: lowering the preference slider evens out court time, steadily rather than all at the top end", ()=>{
   const engine = freshEngine();
   buildRealisticRosterFixture(engine);
-  function spreadAt(benchWeight){
-    engine._getState().settings.fairnessWeights.bench = benchWeight;
+  function benchSpreadAt(slider){
+    engine._getState().settings.preferenceSlider = slider;
     engine.runGeneration();
     const bench = engine.computePlayerSummaries().map(s=>s.bench);
     return Math.max(...bench)-Math.min(...bench);
   }
-  const low = spreadAt(1);
-  const high = spreadAt(10);
-  assert.ok(high <= low,
-    `raising bench weight should never widen bench-quarter spread: weight=1 spread=${low}, weight=10 spread=${high}`);
+  const spreads = [0,5,10].map(benchSpreadAt);
+  assert.ok(spreads[0] < spreads[1] && spreads[1] < spreads[2],
+    `bench-quarter spread should widen across both halves of the slider: ${JSON.stringify(spreads)}`);
 });
 
-test("BENCH-MAXSLIDER-1 (M2 regression): bench weight cannot affect off-preference fills at the preference slider's literal maximum", ()=>{
-  // Previously: benchCellCost wasn't scaled by the slider at all, so at
-  // slider=10 (§5.1: off-preference only when no in-preference candidate is
-  // eligible) raising bench weight could still shift bench-vs-court picks and
-  // increase off-preference fills. Confirms the season-rate term hits exactly
-  // zero at slider=10 regardless of benchWeight.
+test("PREF-WEIGHTS-1: the preference slider is evenly (geometrically) spaced from 0 to 9 and removes balance entirely at 10", ()=>{
   const engine = freshEngine();
-  buildRealisticRosterFixture(engine);
-  engine._getState().settings.preferenceSlider = 10;
-  const counts = [1,5,10].map(w=>{
-    engine._getState().settings.fairnessWeights.bench = w;
-    engine.runGeneration();
-    return engine.computeOffPrefLog().length;
-  });
-  assert.ok(counts.every(c=>c===counts[0]),
-    `off-preference count must be identical across bench weights at slider=10: ${JSON.stringify(counts)}`);
+  const S = engine.RosterSolver;
+  const ratios = [];
+  for(let s=0;s<=9;s++){
+    const w = S.derivePreferenceWeights(s);
+    assert.ok(Math.abs(w.preference+w.balance-1)<1e-12, `weights should sum to 1 at slider ${s}`);
+    assert.ok(w.preference>0, `preference weight must never reach 0 (off-preference would become free) at slider ${s}`);
+    ratios.push(w.preference/w.balance);
+  }
+  for(let s=1;s<=9;s++){
+    assert.ok(Math.abs(ratios[s]/ratios[s-1]-ratios[1]/ratios[0])<1e-9,
+      `each step should multiply the preference:balance ratio by the same factor: ${JSON.stringify(ratios)}`);
+  }
+  assert.strictEqual(S.derivePreferenceWeights(10).balance, 0);
+
+  // BENCH-MAXSLIDER-1 (M2 regression): at 10 the season bench-rate term is
+  // exactly zero, so bench rotation can never be why an in-preference
+  // candidate loses out (§5.1).
+  const cumulative = {posCount:{}, onCourt:{a:40}, bench:{a:0}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
+  const atMax = S.buildQuarterCostFns(cumulative, {preferenceSlider:10, allowOffPreference:true, positionVariety:1});
+  assert.strictEqual(atMax.benchCellCost({id:"a", prefs:["GS"]}), 0);
+  assert.strictEqual(atMax.positionCellCost({id:"a", prefs:["GS"]}, "GS"), 0);
+});
+
+test("OFFPREF-FLAT-1: off-preference costs every player the same, and more than any in-preference cell at any slider or variety setting", ()=>{
+  // Previously: off-preference cost was the player's own list length, so a
+  // one-position player was the cheapest off-preference fill and could
+  // undercut a long-list player's overplayed 5th choice.
+  const engine = freshEngine();
+  const S = engine.RosterSolver;
+  const longList = {id:"long", prefs:["GS","GA","WA","C","WD"]};
+  const shortList = {id:"short", prefs:["GK"]};
+  const noList = {id:"none", prefs:[]};
+  const posCount = {};
+  longList.prefs.forEach(pos=>{ posCount["long::"+pos] = 200; }); // every listed position heavily overplayed
+  const cumulative = {posCount, onCourt:{}, bench:{}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
+  for(let slider=0; slider<=10; slider++){
+    const { positionCellCost } = S.buildQuarterCostFns(cumulative, {preferenceSlider:slider, allowOffPreference:true, positionVariety:10});
+    assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(noList,"WD"), `slider ${slider}: off-preference cost must not depend on list length`);
+    assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(longList,"GK"), `slider ${slider}: off-preference cost must not depend on list length`);
+    longList.prefs.forEach(pos=>assert.ok(positionCellCost(longList,pos) < positionCellCost(shortList,pos),
+      `slider ${slider}: ${pos} in-preference (however overplayed) must stay cheaper than another player's off-preference fill`));
+  }
 });
 
 test("SLIDER-SWEEP-REALISTIC-1 (H1): off-preference count is monotonically non-increasing on a roster with good position depth", ()=>{
@@ -1576,7 +1594,7 @@ test("PERF-2: a forced low Phase 1 time budget on a larger/conflict-heavy input 
 
   const start = Date.now();
   const r = S.solveSeasonRosterOff({
-    players, games, weights:S.deriveRosterOffWeights(10), allowOffPreference:true,
+    players, games, weights:S.deriveRosterOffWeights("coverage"), allowOffPreference:true,
     timeBudgetMs: 30
   });
   const elapsed = Date.now()-start;
@@ -1674,6 +1692,44 @@ test("BYE-2: bye/delete drop the game's one-off fill-ins; an imported bye ignore
   assert.strictEqual(g.isBye, true);
   assert.strictEqual(g.schedule, null);
   assert.strictEqual((g.rosteredOffIds||[]).length, 0);
+});
+
+test("HEADLINES-1: the Settings tab's at-a-glance numbers are empty before generation and count regular players only", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 2;
+  st.season.desiredBenchSize = 1;
+  ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  assert.strictEqual(engine.computeSeasonHeadlines(), null, "nothing generated yet");
+
+  // A preference-less fill-in makes the bench: off-preference whenever on court.
+  st.fillIns.push({id:"fi1", name:"Guest", prefs:[], saved:true});
+  engine.getGame(1).fillInIds = ["fi1"];
+  engine.getGame(2).fillInIds = ["fi1"];
+  st.settings.preferenceSlider = 0;
+  engine.runGeneration();
+  const h = engine.computeSeasonHeadlines();
+  assert.ok(h.offPrefPct > 0, "the fill-in's off-preference quarters show in the off-preference rate: "+JSON.stringify(h));
+  assert.strictEqual(h.firstChoicePct, 100, "every regular only ever plays their sole listed position; the fill-in is not counted");
+  assert.strictEqual(h.positionsPerPlayer, 1);
+  assert.ok(h.courtTimeMinPct>0 && h.courtTimeMaxPct<=100 && h.courtTimeMinPct<=h.courtTimeMaxPct);
+  assert.strictEqual(h.missedSpread, 0);
+});
+
+test("BACKUP-V1-1: a version-1 file still imports; its retired settings are ignored, not migrated", ()=>{
+  const engine = freshEngine();
+  engine.importBackup(JSON.stringify({
+    format:"netball-roster-backup", schemaVersion:1,
+    plan:{season:{numGames:1, desiredBenchSize:0},
+      settings:{preferenceSlider:4, allowOffPreference:false, topTwoOnly:true, rosterOffWeight:0, fairnessWeights:{bench:9, positionPurity:7}},
+      players:[{id:"p1", name:"Liv", prefs:["GS"], unavailable:[]}], fillIns:[], games:{}},
+    results:{games:{}}
+  }));
+  const st = engine._getState();
+  assert.strictEqual(st.players.length, 1, "the rest of a v1 file imports normally");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(st.settings)),
+    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"coverage"});
 });
 
 /* ============================================================

@@ -5,6 +5,7 @@
   "scripts": {
     "test": "node tests/run.js",
     "test:ui": "node tests/ui-smoke.js",
+    "test:settings": "node tests/settings-sweep.js",
     "lint": "eslint ."
   },
   "devDependencies": {

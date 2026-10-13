@@ -93,10 +93,10 @@ Unless a case says otherwise, regenerate from identical saved input when compari
 |FR-2|Unavailability reduces need for rostered-off|Player unavailable for 1 game|That player is rostered off less often in remaining games than a peer with no unavailability, converging toward the same total missed-games|
 |FR-3|Even on-court quarters|Generate a full season|Players who attend the same number of games have on-court quarter counts within a small tolerance of each other|
 |FR-4|Even bench quarters|Generate a full season|Same tolerance check for bench quarters among players attending the same number of games|
-|FR-5|Top-2 preference mode|Enable "prefer top 2 only" toggle (§4.4)|Players assigned only their top 2 listed positions except when required by shortfall/off-preference logic|
+|FR-5|_Retired_ — the "prefer top 2 only" toggle was removed (no measurable effect; see §22)|—|—|
 |FR-6|Full-preference balance mode|Disable the toggle|Players' on-court time spread across their _entire_ preference list, not concentrated on preference #1|
 |FR-7|No back-to-back bench (soft)|Inspect any single game|Same player benched in consecutive quarters only when unavoidable given squad size|
-|FR-8|Priority weights are adjustable|Change weight/priority order for §4 rules 1–4|Regenerated schedule reflects new priority order (e.g. position-purity weighted above bench evenness produces a measurably different schedule)|
+|FR-8|Position variety is adjustable|Raise the position-variety slider and regenerate|Players spend measurably fewer quarters at their #1 position (`VARIETY-SWEEP-1`)|
 
 ---
 
@@ -106,7 +106,7 @@ Unless a case says otherwise, regenerate from identical saved input when compari
 |---|---|---|---|
 |P1-1|Games processed together, not sequentially committed|Inspect `solveSeasonRosterOff`|Builds a full-season seed across all decidable games before any refinement pass runs — no game's roster-off is "final" before the others are considered|
 |P1-2|Seed respects missed-count ordering strictly|Any dataset|No candidate with a strictly lower cumulative missed-count is ever passed over in favor of one with a higher count, in the seed step|
-|P1-3|**Seed tie-break is weight-aware** _(regression for the bug found this round)_|Build a roster with asymmetric preference overlap (not identical lists), sweep the roster-off weight slider 0→10, inspect which players the _seed_ picks (before refinement runs)|Seed's tie-break score changes with the slider — at the "roster-off fairness" end, coverage impact stops influencing which tied player is picked; confirm by diffing seed output at slider=0 vs slider=10 on the same dataset|
+|P1-3|**Seed tie-break is weight-aware** _(regression for the bug found this round)_|Build a roster with asymmetric preference overlap (not identical lists), run the seed at coverage weight 0 and at the default, inspect which players the _seed_ picks (before refinement runs)|Seed's tie-break score changes with the weight — at the "even missed games" end, coverage impact stops influencing which tied player is picked; confirm by diffing seed output on the same dataset|
 |P1-4|Refinement pass is weight-aware|Same sweep, inspect the refined (final) output|`fairnessWeight`/`coverageWeight` visibly change which swaps the refinement pass accepts|
 |P1-5|**`allowOffPreference` reaches Phase 1** _(regression for the bug found this round)_|Toggle "Allow off-preference positions" on and off with everything else identical, regenerate|The roster-off split changes between the two states on a dataset constructed to have a real coverage/fairness conflict — confirm this by asserting the two runs produce _different_ `rosterOffByGame` results, not just checking neither errors|
 |P1-6|Off toggle makes zero-coverage a hard disqualification|`allowOffPreference` off, construct a case where a naive fairness-first pick would zero out a position|Phase 1 never selects that combination, in either the seed or refinement — confirm no game in the output leaves a position at 0 in-preference cover|
@@ -115,23 +115,25 @@ Unless a case says otherwise, regenerate from identical saved input when compari
 
 ---
 
-## 9. New Setting — Roster-Off Weight Slider
+## 9. Roster-Off Priority Setting
 
 |ID|Case|Steps|Expected|
 |---|---|---|---|
-|SLD-1|Slider exists and persists|Locate the new slider in Settings, change it, reload|Value persists via existing `STATE.settings` persistence, same as other sliders|
-|SLD-2|Monotonic effect on missed-games variance|Sweep 0→10 on a dataset with a real fairness/coverage conflict, regenerate at each step|Missed-games variance across the roster is monotonically non-increasing as the slider moves toward the "roster-off fairness" end|
+|SLD-1|Setting exists and persists|Locate the three-way "Who sits out" choice in Settings, change it, reload|Value persists via existing `STATE.settings` persistence, same as the sliders|
+|SLD-2|Each priority is a distinct step|Generate at fairness, balanced and coverage on a dataset with a real fairness/coverage conflict|Missed-games variance strictly rises and thin-position warnings strictly fall at each step (`ROSTEROFF-PRIORITY-SWEEP`)|
 |SLD-3|Reaches the actual solver call|Inspect the `RosterSolver.solveSeasonRosterOff(...)` call site in `app.js`|`weights: {fairness, coverage}` and `allowOffPreference` are computed from live settings and passed on every call — not hardcoded, not omitted|
-|SLD-4|Default reproduces prior behavior|Fresh install / default settings, generate a season|Roster-off outcome matches (or closely approximates) the previous hardcoded `1:4` fairness:coverage ratio, so existing users don't see a surprise change on upgrade|
-|SLD-5|Hint text accuracy|Read the hint under the new slider|States that the slider has little effect when the roster has good depth at every position — matches actual algorithm behavior (see REG-1 below), not generic copy|
+|SLD-4|Default reproduces prior behavior|Fresh install / default settings, generate a season|Default is "protect thin positions", the previous hardcoded `1:4` fairness:coverage ratio|
+|SLD-5|Hint text accuracy|Read the hint under the choice|States that it has little effect when the roster has good depth at every position — matches actual algorithm behavior (see REG-1 below), not generic copy|
 
 ---
 
 ## 10. Slider Transparency — End Labels
 
+_Now two sliders (preference, position variety); the roster-off control is a labelled three-way choice._
+
 |ID|Case|Steps|Expected|
 |---|---|---|---|
-|LBL-1|All four sliders labeled|Open Settings tab|Preference slider, new roster-off weight slider, bench weight, position-purity weight each show a left-end and right-end label describing what moving that direction changes|
+|LBL-1|Both sliders labeled|Open Settings tab|Preference slider and position-variety slider each show a left-end and right-end label describing what moving that direction changes|
 |LBL-2|Labels match actual code behavior|For each labeled slider, move it to each extreme and inspect the generated output|The generated result changes in the direction the label claims — e.g. moving toward "Position coverage" measurably protects thin positions more than moving toward "Roster-off fairness" does, on a dataset built to show the difference|
 |LBL-3|Reusable component, not four bespoke blocks|Inspect the Settings tab markup/JS|One shared labeled-slider helper is used for all four, not four independently duplicated implementations|
 |LBL-4|Consistent visual styling|Visual check across all four sliders|Label placement, font, and color are consistent with each other and with the existing dark/light CSS variable system|
@@ -260,7 +262,7 @@ Full-list position coverage: GS=3, GA=4, WA=7, C=4, WD=7, GD=3, GK=3.
 
 |ID|Case|Steps|Expected|
 |---|---|---|---|
-|REG-1|Exact even split, all four setting combinations|11 players, 11 games, no unavailability, desired bench size 2 (→ `rosterOffCount=2`/game). Generate at: {slider=0, off}, {slider=0, on}, {slider=10, off}, {slider=10, on}|**Every player ends up with exactly 2 missed games in all four runs.** Coverage math (min depth 3, max 2 rostered off per game) makes this deterministically achievable — treat any other result as a failing test, not "close enough"|
+|REG-1|Exact even split, all four setting combinations|11 players, 11 games, no unavailability, desired bench size 2 (→ `rosterOffCount=2`/game). Generate at every roster-off priority × allow-off-preference on/off|**Every player ends up with exactly 2 missed games in all six runs.** Coverage math (min depth 3, max 2 rostered off per game) makes this deterministically achievable — treat any other result as a failing test, not "close enough"|
 |REG-2|No coverage warning on this roster|Run WARN-1/WARN-2 check against this fixture|No structural-impossibility note appears in Reports, in any of the four combinations above|
 |REG-3|Toggle visibly changes output on a thinner variant|Tighten the fixture (e.g. drop Mabel's GS/GA/WD entries to isolate GS/GD/GK back down to 2 coverers each), regenerate with the toggle on vs. off|`rosterOffByGame` output differs between the two toggle states — this is the direct regression check for the "toggling off-preference does nothing" bug|
 |REG-4|Regression against original test plan|Re-run DM-1–DM-10, RO-1–RO-5, QR-1–QR-5, FR-1–FR-8, OP-1–OP-11, SS-1–SS-9, OUT-1–OUT-8, ED-1–ED-8, CSV-1–CSV-8, ARCH-1–ARCH-4 from the original test plan against the redesigned solver|All still pass — the algorithm rewrite must not regress any previously-verified behavior|
@@ -302,3 +304,43 @@ Run the full suite for releases. Use this table for focused verification of prev
 - Multi-user concurrent editing; the client-only application has no server-backed collaboration.
 - Cross-browser or cross-device automatic sync; CSV remains the supported sharing mechanism.
 - Load or stress testing beyond the realistic squad and season sizes covered by ARCH-4 and PERF-1/PERF-2.
+
+---
+
+## 22. Settings Sweep — Does Each Setting Do What Its Label Says, At Every Step?
+
+Covers the four Settings-tab controls in §11's table. Engine cases run in
+`tests/settings-sweep.js` (`npm run test:settings`, add `-- --detail` for the per-value
+numbers); SET-8–SET-10 run in `tests/ui-smoke.js`. The first run of this sweep is what
+led to the current four controls: it showed the old roster-off slider had two outcomes,
+the "prefer top-2" toggle none, and the bench weight duplicating the preference slider.
+
+**Method.** For each setting × roster fixture × context, regenerate the season at every
+value with all other settings held fixed, and compare each value with the one before it.
+Four fixtures: `deep11` (good depth), `unavail12` (uneven availability), `thin10` (a sole
+GK, short lists), `small9` (nobody rostered off). Contexts are the defaults plus the
+setting a control interacts with (variety at preference 5; the off-preference toggle at
+preference 0).
+
+**Headline numbers** and the smallest step-to-step change that counts as noticeable:
+off-preference fills (0.5% of slots), quarters at a player's #1 choice (1 pt), SD of
+on-court rate (0.5 pt), distinct positions per player (0.15), missed-games variance
+(0.05), positions left with ≤1 preferrer (1).
+
+**Each step is classed** `+` a headline number moved the way the label says · `~` the
+schedule changed but no headline number did · `.` identical schedule · `!` moved against
+the label · `*` mixed. SET-1–SET-6 fail the run; step classes are printed as findings and
+fail it only with `--strict`.
+
+|ID|Case|Steps|Expected|
+|---|---|---|---|
+|SET-1|Sweeps are reproducible|Generate each fixture twice with identical settings; watch Phase 1's `timedOut` on every run|Identical seasons; no run hits the time budget — otherwise step comparisons measure noise|
+|SET-2|Every step is classed|Sweep each control over its full range per fixture and context|A step matrix and verdict per sweep; dead, reshuffle-only and against-label steps listed as findings|
+|SET-3|End-to-end direction matches the label (LBL-2)|Compare each control's first and last value on its intent metrics|No intent metric moves against the label by a noticeable amount|
+|SET-4|Preference slider is monotonic (§5.1)|Sweep 0→10 on all four fixtures|Off-preference fill count never rises from one value to the next|
+|SET-5|Roster-off priority is monotonic (§5.4)|Step fairness → balanced → coverage on all four fixtures|Missed-games variance never falls and thin-coverage count never rises toward the coverage end|
+|SET-6|Allow off-preference is a hard rule (§5.2)|Toggle off on every fixture, at the default preference and at 0|Zero off-preference fills in every generated game|
+|SET-7|Side effects are reported|For each sweep, compare the first and last value on the metrics the label doesn't mention|Any shift of twice the noticeable threshold is listed as a finding|
+|SET-8|At-a-glance numbers|Open Settings after generating; change the preference slider and regenerate|Six headline numbers are shown; after regenerating, each changed number shows what it was before|
+|SET-9|Every control saves and persists|In the real UI, move each slider with the arrow keys, click the checkbox and pick a roster-off priority; reload|Readout updates, value is saved with the right type, Settings and Schedule tabs both warn the season is stale, and every control shows the new value after a reload|
+|SET-10|A setting change reaches the engine|Regenerate at the default, at preference 0, then back at the default|The season differs at 0 and is reproduced exactly on return|
