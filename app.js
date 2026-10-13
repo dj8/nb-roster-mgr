@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 52; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 53; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -384,7 +384,7 @@ function computeCoverageWarnings(plan){
   if(plan.shortfall) return [];
   const warnings = [];
   POSITIONS.forEach(pos=>{
-    const coverers = plan.squad.filter(p=>p.prefs.includes(pos));
+    const coverers = plan.squad.filter(p=>RosterSolver.isInPreference(p,pos));
     if(coverers.length<=1){
       const causedBy = plan.rosteredOffIds
         .map(id=>byId(STATE.players,id))
@@ -437,7 +437,7 @@ function applyQuarterToCumulative(cumulative, q, sign){
 function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds){
   const player = anyPlayer(playerId);
   const assignedFillIns = (getGame(gameNum).fillInIds||[]).map(fid=>byId(STATE.fillIns,fid)).filter(Boolean);
-  const specialists = STATE.players.concat(assignedFillIns).filter(p=>p.id!==playerId && p.prefs.includes(pos));
+  const specialists = STATE.players.concat(assignedFillIns).filter(p=>p.id!==playerId && RosterSolver.isInPreference(p,pos));
   const squadIdSet = new Set(squadIds);
   const benchIdSet = new Set(benchIds||[]);
   const unavailableSpecialists = specialists.filter(p=>!squadIdSet.has(p.id)).map(p=>p.name);
@@ -1603,7 +1603,7 @@ function refreshOffPreferenceFlag(q, pos){
   if(!q.offPreference) q.offPreference = {};
   if(!pid){ delete q.offPreference[pos]; return; }
   const player = anyPlayer(pid);
-  q.offPreference[pos] = !!(player && player.prefs && !player.prefs.includes(pos));
+  q.offPreference[pos] = !!(player && !RosterSolver.isInPreference(player,pos));
 }
 
 /* Drops a lock that no longer holds the player it was locked to — forcing
@@ -1646,7 +1646,7 @@ function openSlotEditDialog(num, qi, pos){
     <div class="field"><label>Assign player</label>
       <select id="slotSelect">
         <option value="">— unassigned —</option>
-        ${options.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.prefs&&!p.prefs.includes(pos)?' (off-preference)':''}</option>`).join("")}
+        ${options.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${RosterSolver.isInPreference(p,pos)?'':' (off-preference)'}</option>`).join("")}
       </select>
     </div>
     <label class="checkbox-row"><input type="checkbox" id="slotLock" ${isLocked?"checked":""}>
@@ -1724,7 +1724,7 @@ function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedS
   const displacedPlayer = displacedPid ? anyPlayer(displacedPid) : null;
   const benchPlayers = (qDraft.bench||[]).map(anyPlayer).filter(Boolean);
 
-  const optionHtml = p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
+  const optionHtml = p=>`<option value="${esc(p.id)}">${esc(p.name)}${RosterSolver.isInPreference(p,vacantPos)?'':' (off-preference)'}</option>`;
   openModal(`
     <h3>${esc(gameLabel(num))} · Q${qi+1} · ${vacantPos} is now empty</h3>
     <p class="modal-sub">${POS_LABEL[vacantPos]} — who fills it? Cancelling discards this whole edit — nothing has been saved yet.</p>

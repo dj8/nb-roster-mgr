@@ -22,8 +22,8 @@ const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
 const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers, resting anyone risks zero coverage
 const BENCH_SCALE_BOOST = 10;           // keeps bench-slot cost comparable to a position cell's once scaled by the balance weight, below
-const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player with a list, and above any in-preference cell (worst rank is 6)
-const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) plays anywhere, level with a #2 choice — never ahead of a #1
+const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
+const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) is happy anywhere: level with a #2 choice, never ahead of a #1
 const PLAYING_TIME_WEIGHT = 2;          // fixed strength of the playing-time-evenness term; the preference slider alone sets how much it counts
 const PREFERENCE_RATIO_AT_0 = 0.5;     // preference:balance weight ratio at slider 0 — low, but never 0 (0 would make off-preference free)
 const PREFERENCE_RATIO_AT_9 = 16;       // ...and at slider 9; geometric in between, so each step multiplies the ratio by the same factor
@@ -69,6 +69,13 @@ function clampSetting(v, lo, hi, fallback){
   const n = Number(v);
   if(!Number.isFinite(n)) return fallback;
   return Math.max(lo, Math.min(hi, n));
+}
+
+/* §6: a player who states no preferences (only a fill-in can) is happy to
+   play any position — every position is in-preference for them. */
+function isInPreference(p, pos){
+  const prefs = p.prefs||[];
+  return !prefs.length || prefs.includes(pos);
 }
 
 function variance(nums){
@@ -441,9 +448,8 @@ function computeRosterOffAchievabilityNotes(players){
    tie-breaks position cells tied on preference toward whoever's had less
    on-court time. `settings.positionVariety` nudges a player away from an
    over-played position; it is capped below OFF_PREFERENCE_COST, which is the
-   same for every player who has a list, so raising it can never make their
-   off-preference cell cheaper than any in-preference one. (A player with no
-   list at all is priced separately — see preferenceCost.) */
+   same for every player, so raising it can never make an off-preference
+   cell cheaper than any in-preference one. */
 function buildQuarterCostFns(cumulative, settings){
   const { preference: prefWeight, balance: balanceWeight } = derivePreferenceWeights(settings.preferenceSlider);
   const allowOff = !!settings.allowOffPreference;
@@ -455,14 +461,12 @@ function buildQuarterCostFns(cumulative, settings){
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
     if(idx>=0) return idx;
-    if(!allowOff) return null;
-    // §5.2: "outside the stated list". One flat cost for everyone who has a
-    // list — a cost tied to the list's length made short-list players the
-    // cheapest off-preference fill, and let them undercut a long-list
-    // player's lower-ranked in-preference cell. A player with no list at all
-    // has nothing to be outside of: charging them the full cost would bench
-    // a no-preference fill-in for every quarter.
-    return p.prefs.length ? OFF_PREFERENCE_COST : NO_PREFERENCE_COST;
+    if(!p.prefs.length) return NO_PREFERENCE_COST; // no list at all: in-preference everywhere (isInPreference)
+    // §5.2: "outside the stated list". One flat cost for everyone — a cost
+    // tied to the list's length made short-list players the cheapest
+    // off-preference fill, and let them undercut a long-list player's
+    // lower-ranked in-preference cell.
+    return allowOff ? OFF_PREFERENCE_COST : null;
   }
   /* Variety penalty: a position this player has already played a lot costs
      more. Capped relative to the candidate's own list (prefs.length - idx),
@@ -474,7 +478,7 @@ function buildQuarterCostFns(cumulative, settings){
      their last choice" — itself always below OFF_PREFERENCE_COST. */
   function varietyTerm(p,pos){
     const idx = prefRank(p,pos);
-    if(idx<0) return 0; // no variety signal for an off-preference cell
+    if(idx<0) return 0; // no variety signal off the list (or for a player with no list)
     const posCount = (cumulative.posCount && cumulative.posCount[p.id+"::"+pos]) || 0;
     const safeCap = Math.max(0, (p.prefs.length-idx) - 0.05);
     return Math.min(0.15*varietyWeight*Math.log2(1+posCount), safeCap);
@@ -533,7 +537,7 @@ function solveQuarterPositions(input){
     if(idx>=0){
       const p = remaining.splice(idx,1)[0];
       onCourt[pos]=p.id;
-      if(!p.prefs.includes(pos)) offPreference[pos]=true;
+      if(!isInPreference(p,pos)) offPreference[pos]=true;
     }
   });
 
@@ -573,7 +577,7 @@ function solveQuarterPositions(input){
       return;
     }
     onCourt[col]=p.id;
-    if(!p.prefs.includes(col)) offPreference[col]=true;
+    if(!isInPreference(p,col)) offPreference[col]=true;
   });
 
   return { onCourt, bench, offPreference, errors };
@@ -674,7 +678,7 @@ function refineGameQuarters(input){
       else {
         onCourt[key]=pid;
         const p = playerById[pid];
-        if(p && !p.prefs.includes(key)) offPreference[key]=true;
+        if(p && !isInPreference(p,key)) offPreference[key]=true;
       }
     });
     return { onCourt, bench, offPreference };
@@ -714,6 +718,7 @@ const RosterSolver = {
   },
   variance,
   clampSetting,
+  isInPreference,
   gameCoveragePenalty,
   hasZeroCoverage,
   deriveRosterOffWeights,
