@@ -1415,7 +1415,7 @@ test("COURT-TARGET-1: season court targets are level, except for players who can
   // planGameBench: a regular behind on court time is due less bench; only those missing fewer games get the relaxed cap.
   const plan = S.planGameBench({
     squad:[{id:"a"},{id:"b"},{id:"g",isFillIn:true}].concat(["c","d","e","f","h","i"].map(id=>({id}))), benchSlotCount:2,
-    courtTargets:{a:28,b:28}, onCourtSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3}
+    courtTargets:{a:28,b:28}, onCourtSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3,c:3,d:3,e:3,f:3,h:3,i:3,away:9}
   });
   assert.ok(near(plan.benchQuota.a,0.5) && near(plan.benchQuota.b,0), JSON.stringify(plan.benchQuota));
   assert.ok(near(plan.benchQuota.g,8/9), "a fill-in is due an even share of this game's bench");

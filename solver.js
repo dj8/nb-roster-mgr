@@ -22,8 +22,8 @@ const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
 const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers, resting anyone risks zero coverage
 const COURT_TIME_WEIGHT = 24;           // bench-cell cost per bench quarter a player is ahead of their share this game (before the balance weight): at the default slider, about two preference-rank steps
-const BENCH_CAP_PENALTY = 6;            // §4 rule 4: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
-const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 6, in the same units
+const BENCH_CAP_PENALTY = 6;            // §4 rule 3: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
+const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 5, in the same units
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
 const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
 const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) is happy anywhere: level with a #2 choice, never ahead of a #1
@@ -446,7 +446,7 @@ function computeRosterOffAchievabilityNotes(players){
    PHASE 2a — exact per-quarter Hungarian position assignment
    ============================================================ */
 
-/* §4 rule 3: each regular's season on-court target. Everyone gets the same
+/* §4 rule 2: each regular's season on-court target. Everyone gets the same
    number of quarters ("level") unless they can't reach it (`cap`: too many
    missed games) or are already past it (`floor`: quarters already played in
    frozen games) — the rest then share what's left evenly. This is what makes
@@ -464,7 +464,7 @@ function computeCourtTargets(players, total){
   return targets;
 }
 
-/* §4 rule 4: the fewest bench quarters per game that "nobody is benched more
+/* §4 rule 3: the fewest bench quarters per game that "nobody is benched more
    than this" can be held to — 1 while there's at most one bench stint each to
    go round (a bench of 1 or 2 with a full squad), more only when the bench is
    too big for that. */
@@ -476,22 +476,23 @@ function baseBenchCap(squadSize, benchSlotCount){
    member is due in it, and the most they may sit before the cap penalty.
    A regular is due whatever leaves them on pace for their season target over
    the games they have left; a fill-in (outside season fairness) an even share
-   of this game's bench. Only when missed games can't come out even may the
-   players missing fewer be benched one more time, to hand court time to
-   those missing more.
+   of this game's bench. Only a player who misses fewer games than someone
+   else in this squad may be benched one more time, to hand that squad-mate
+   court time — an absentee who isn't playing doesn't relax anyone's cap.
    input: { squad:[{id,isFillIn}], benchSlotCount, courtTargets:{id:n},
             onCourtSoFar:{id:n}, gamesLeft:{id:n} (this game included), missed:{id:n} }
    -> { benchQuota:{id:n}, benchCap:{id:n} } */
 function planGameBench(input){
   const squad = input.squad||[];
   const baseCap = baseBenchCap(squad.length, input.benchSlotCount);
-  const mostMissed = Math.max(0, ...Object.values(input.missed||{}));
+  const missed = input.missed||{};
+  const mostMissed = Math.max(0, ...squad.filter(p=>!p.isFillIn).map(p=>missed[p.id]||0));
   const benchQuota = {}, benchCap = {};
   squad.forEach(p=>{
     if(p.isFillIn){ benchQuota[p.id] = 4*input.benchSlotCount/squad.length; benchCap[p.id] = baseCap; return; }
     const courtDue = (input.courtTargets[p.id]||0) - (input.onCourtSoFar[p.id]||0);
     benchQuota[p.id] = Math.max(0, Math.min(4, 4 - courtDue/Math.max(1, input.gamesLeft[p.id]||1)));
-    benchCap[p.id] = baseCap + ((input.missed[p.id]||0)<mostMissed ? 1 : 0);
+    benchCap[p.id] = baseCap + ((missed[p.id]||0)<mostMissed ? 1 : 0);
   });
   return { benchQuota, benchCap };
 }

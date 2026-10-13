@@ -105,8 +105,9 @@ games; those plus every quarter of every game still to come) so the targets sum 
 (`4 − courtStillDue / gamesLeft`, which is what makes a player who misses more games sit
 out less; a fill-in gets an even share of that game's bench) and `benchCap`:
 `baseBenchCap(squadSize, benchSlots)` (`max(1, ceil(4·bench / squad))`), plus 1 for
-players who miss fewer games than the most-missing player (§4 rule 3). `runGeneration`
-calls it at the start of each game with the live on-court totals.
+players who miss fewer games than the most-missing regular *in that game's squad* (§4 rule 3). `runGeneration`
+re-derives the targets and calls it at the start of each game with the live on-court
+totals, so a game that fails to schedule leaves no phantom quarters behind.
 
 `solveQuarterPositions` builds the `(squad) × (open positions + bench slots)` matrix from
 these, calls `Hungarian.solve`, and maps the result back — any cell that only got

@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 56; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 57; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -529,25 +529,23 @@ function runGeneration(){
     if(game.isPlayed && game.schedule) game.schedule.quarters.forEach(q=>applyQuarterToCumulative(cumulative,q,1));
   });
 
-  /* §4 rules 3-4: who should sit out how much. Phase 1 has fixed every
+  /* §4 rules 2-3: who should sit out how much. Phase 1 has fixed every
      game's squad, so each regular's remaining games are known; their season
      on-court target follows (RosterSolver.computeCourtTargets), and from it
      the bench quarters they're due in each game still to come. */
   const planByNum = {};
-  const gamesLeft = {}; // regular id -> unplayed games they're in the squad for, from the current game on
-  let courtQuartersToShare = STATE.players.reduce((sum,p)=>sum+(cumulative.onCourt[p.id]||0), 0);
+  const gamesLeft = {};     // regular id -> unplayed games they're in the squad for, from the current game on
+  const courtShareOf = {};  // game num -> on-court quarters its regulars will share
+  let courtQuartersLeft = 0;
   nums.forEach(num=>{
     if(getGame(num).isPlayed) return;
     const plan = planByNum[num] = planGameSquad(num);
     if(plan.squad.length<7) return;
     const regulars = plan.squad.filter(p=>!p.isFillIn);
     regulars.forEach(p=>{ gamesLeft[p.id] = (gamesLeft[p.id]||0)+1; });
-    courtQuartersToShare += 28*regulars.length/plan.squad.length; // fill-ins take an equal share of the court
+    courtShareOf[num] = 28*regulars.length/plan.squad.length; // fill-ins take an equal share of the court
+    courtQuartersLeft += courtShareOf[num];
   });
-  const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>{
-    const played = cumulative.onCourt[p.id]||0;
-    return {id:p.id, floor:played, cap:played+4*(gamesLeft[p.id]||0)};
-  }), courtQuartersToShare);
   const missedById = {};
   STATE.players.forEach(p=>{ missedById[p.id]=0; });
   nums.forEach(num=>{
@@ -572,11 +570,18 @@ function runGeneration(){
     game.error = null;
 
     const benchCount = plan.squad.length-7;
+    // Targets are re-derived from what has actually been scheduled so far, so
+    // a game that couldn't be scheduled doesn't leave phantom quarters in them.
+    const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>{
+      const sofar = cumulative.onCourt[p.id]||0;
+      return {id:p.id, floor:sofar, cap:sofar+4*(gamesLeft[p.id]||0)};
+    }), STATE.players.reduce((sum,p)=>sum+(cumulative.onCourt[p.id]||0), 0) + courtQuartersLeft);
     const { benchQuota, benchCap } = RosterSolver.planGameBench({
       squad: plan.squad, benchSlotCount: benchCount, courtTargets,
       onCourtSoFar: cumulative.onCourt, gamesLeft, missed: missedById
     });
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
+    courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
     const gameBenchSoFar = {};
     let benchedLastQuarter = new Set();
@@ -905,8 +910,8 @@ function render(){
           </div>
         </div>
         <div class="topbar-actions">
-          <button class="btn btn-sm btn-primary" id="genBtn" title="Runs the assignment engine across every unplayed game, in order">Generate season</button>
-          <button class="btn btn-sm" id="rebalBtn" title="Re-runs the same engine honoring every lock and edit — played games and locked slots are never touched">Rebalance remaining games</button>
+          <button class="btn btn-sm btn-primary" id="genBtn">Generate season</button>
+          <button class="btn btn-sm" id="rebalBtn">Rebalance remaining games</button>
           <button class="icon-btn" id="themeToggle" title="Toggle dark / light mode">${STATE.theme==="dark"?"&#9728;":"&#9789;"}</button>
         </div>
       </div>
@@ -937,32 +942,48 @@ function render(){
 /* The topbar's Generate/Rebalance buttons sit outside every tab panel, so
    no tab render touches them: renderMain() calls this, which is why a handler
    that changes roster validity must end in renderMain(), not a tab's own render. */
+const GENERATE_BUTTON_TITLES = {
+  genBtn: "Runs the assignment engine across every unplayed game, in order",
+  rebalBtn: "Re-runs the same engine honoring every lock and edit — played games and locked slots are never touched"
+};
 function syncGenerateButtons(){
-  const blocked = !STATE.players.length || !!regularRosterInvalid();
-  ["genBtn","rebalBtn"].forEach(id=>{ document.getElementById(id).disabled = blocked; });
+  const blockedBy = !STATE.players.length ? "Add players in the Setup tab first." : regularRosterInvalid();
+  Object.keys(GENERATE_BUTTON_TITLES).forEach(id=>{
+    const btn = document.getElementById(id);
+    btn.disabled = !!blockedBy;
+    btn.title = blockedBy || GENERATE_BUTTON_TITLES[id]; // a disabled button on another tab should still say why
+  });
 }
 /* runGeneration() is synchronous and can take seconds with no yield
    points — deferring it one tick via setTimeout lets the disabled/
    "Generating…" state actually paint before the freeze, so the UI doesn't
    look identically hung the whole time. */
 function runGenerationWithBusyState(pastTenseLabel){
+  // These buttons are reachable from every tab, so the click that lands here
+  // may also have blurred a field whose change handler just opened a dialog
+  // (e.g. shortening the season) — let the coach answer that first.
+  if(document.querySelector(".modal-backdrop")) return;
   const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
   const labels = [genBtn.textContent, rebalBtn.textContent];
   genBtn.disabled = true; rebalBtn.disabled = true;
   genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
   setTimeout(()=>{
-    headlinesBeforeLastGeneration = computeSeasonHeadlines();
-    const r = runGeneration();
-    dirtySinceGeneration = false;
-    console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
-    const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
-    const errored = gameNums().filter(n=>getGame(n).error).length;
-    const bits = [`${gameNums().length} games`];
-    if(errored) bits.push(`${errored} couldn't be scheduled`);
-    else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
-    toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
-    genBtn.textContent = labels[0]; rebalBtn.textContent = labels[1];
-    renderMain(); // whichever tab is open; also re-enables the buttons
+    try{
+      headlinesBeforeLastGeneration = computeSeasonHeadlines();
+      const r = runGeneration();
+      dirtySinceGeneration = false;
+      console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
+      const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
+      const errored = gameNums().filter(n=>getGame(n).error).length;
+      const bits = [`${gameNums().length} games`];
+      if(errored) bits.push(`${errored} couldn't be scheduled`);
+      else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
+      toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
+    } finally {
+      // No tab render rebuilds these buttons, so a throw must not strand them on "Generating…".
+      genBtn.textContent = labels[0]; rebalBtn.textContent = labels[1];
+      renderMain(); // whichever tab is open; also re-enables the buttons
+    }
   }, 0);
 }
 function syncTabButtons(){
