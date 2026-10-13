@@ -1617,8 +1617,8 @@ test("BYE-1: a bye is emptied, skipped by generation and fairness, and can't be 
   assert.strictEqual(engine.makeBye(2), true);
   assert.strictEqual(st.games["2"].isBye, true);
   assert.strictEqual(st.games["2"].schedule, null);
-  assert.strictEqual(st.games["2"].date, "");
-  assert.strictEqual(st.games["2"].location, "");
+  assert.strictEqual(st.games["2"].date, "2026-03-14", "bye keeps its date");
+  assert.strictEqual(st.games["2"].location, "Court 1", "bye keeps its location");
   engine.runGeneration();
   const b = engine.getGame(2);
   assert.strictEqual(b.schedule, null);

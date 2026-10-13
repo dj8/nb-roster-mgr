@@ -22,7 +22,7 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
 | `getGame(num)` | game number | that game's state object | **Lazily creates** `STATE.games[num]` via `newGameState()` if it doesn't exist yet — this is the only accessor used anywhere for reading or writing a game |
 | `ensureGamesExist()` | — | — | Calls `getGame()` for every number in `gameNums()` (materializing any missing ones), then deletes any `STATE.games` entry whose key exceeds the current `numGames` (pruning after the season was shortened) |
 | `deleteGame(num)` | game number | `boolean` | Removes game `num`, shifts later games down one key, decrements `numGames`, and renumbers every `player.unavailable` entry (drops `num`, decrements higher). Returns `false` (no-op) if only one game remains or `num` is out of range. Called from the Delete-game button in the expanded schedule card, behind `confirmDialog`; played games may be deleted too. |
-| `makeBye(num)` | game number | `boolean` | Resets game `num` to `newGameState()` with `isBye:true` (clears schedule, fill-ins, locks, date/time/location). Returns `false` for played games (§8.1). Bye games are excluded from `computeSeasonRosterOff` and `runGeneration` (no roster-off, no fairness/missed counts) and can't be marked played. Persisted as `plan.games[n].isBye` in the JSON backup. |
+| `makeBye(num)` | game number | `boolean` | Resets game `num` to `newGameState()` with `isBye:true` (clears schedule, fill-ins, locks; keeps date/time/location). Returns `false` for played games (§8.1). Bye games are excluded from `computeSeasonRosterOff` and `runGeneration` (no roster-off, no fairness/missed counts) and can't be marked played. Persisted as `plan.games[n].isBye` in the JSON backup. |
 
 ## Notable behavior
 

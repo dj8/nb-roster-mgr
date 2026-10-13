@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 47; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 48; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -226,7 +226,8 @@ function deleteGame(num){
 function makeBye(num){
   const game = getGame(num);
   if(game.isPlayed) return false;
-  STATE.games[String(num)] = Object.assign(newGameState(), {isBye:true});
+  const {date, time, location} = game; // a bye still has a slot in the calendar
+  STATE.games[String(num)] = Object.assign(newGameState(), {isBye:true, date, time, location});
   return true;
 }
 function ensureGamesExist(){
@@ -1405,7 +1406,7 @@ function wireGameCard(el, num){
   const byeBtn = card.querySelector(`[data-bye="${num}"]`);
   if(byeBtn) byeBtn.onclick=()=>{
     const label = gameLabel(num);
-    confirmDialog("Make this game a bye", `Make ${label} a bye? This clears its planned positions, fill-ins, locks, date, time and location, and it can't be marked as played. This cannot be undone.`, ()=>{
+    confirmDialog("Make this game a bye", `Make ${label} a bye? This clears its planned positions, fill-ins and locks (the date, time and location are kept), and it can't be marked as played. This cannot be undone.`, ()=>{
       if(!makeBye(num)) return;
       saveState(); dirtySinceGeneration = true;
       toast(`Game ${num} is now a bye.`);
