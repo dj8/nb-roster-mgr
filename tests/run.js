@@ -1589,6 +1589,47 @@ test("PERF-2: a forced low Phase 1 time budget on a larger/conflict-heavy input 
   });
 });
 
+test("DG-1: deleteGame renumbers later games and shifts player unavailability", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 4;
+  const p = addPlayer(engine, "Liv", ["GA"], [1,2,4]);
+  engine.ensureGamesExist();
+  [1,2,3,4].forEach(n=>{ engine.getGame(n).location = "L"+n; });
+  assert.strictEqual(engine.deleteGame(2), true);
+  assert.strictEqual(st.season.numGames, 3);
+  assert.strictEqual(engine.gameNums().map(n=>engine.getGame(n).location).join(), "L1,L3,L4");
+  assert.strictEqual(st.games["4"], undefined);
+  assert.strictEqual(p.unavailable.join(), "1,3");
+  st.season.numGames = 1; // never delete the last game
+  assert.strictEqual(engine.deleteGame(1), false);
+});
+
+test("BYE-1: a bye is emptied, skipped by generation and fairness, and can't be played", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 3; st.season.desiredBenchSize = 1;
+  ["A","B","C","D","E","F","G","H","I"].forEach((n,i)=>addPlayer(engine, n, ["GS","GA","WA","C","WD","GD","GK"].slice(i%7), i===0?[2]:[]));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const g2 = engine.getGame(2); g2.date = "2026-03-14"; g2.location = "Court 1";
+  assert.ok(g2.schedule, "game 2 generated before bye");
+  assert.strictEqual(engine.makeBye(2), true);
+  assert.strictEqual(st.games["2"].isBye, true);
+  assert.strictEqual(st.games["2"].schedule, null);
+  assert.strictEqual(st.games["2"].date, "2026-03-14", "bye keeps its date");
+  assert.strictEqual(st.games["2"].location, "Court 1", "bye keeps its location");
+  engine.runGeneration();
+  const b = engine.getGame(2);
+  assert.strictEqual(b.schedule, null);
+  assert.strictEqual(b.generated, false);
+  assert.strictEqual(b.error, null);
+  assert.ok(engine.getGame(1).schedule && engine.getGame(3).schedule, "other games still generated");
+  engine.computePlayerSummaries().forEach(s=>assert.ok(s.missed<=2, "bye adds no missed games"));
+  const played = engine.getGame(1); played.isPlayed = true;
+  assert.strictEqual(engine.makeBye(1), false, "played game can't become a bye");
+});
+
 /* ============================================================
    Report
    ============================================================ */
