@@ -10,12 +10,13 @@ who's rostered off. State lives in `localStorage`. `package.json` is dev tooling
 npm run lint      # ESLint over all JS (eslint.config.js) — must be clean before every commit
 npm test          # tests/run.js — unit tests against the engine (Node only, no browser)
 npm run test:ui   # tests/ui-smoke.js — headless Playwright walk-through (needs `npx playwright install chromium` once)
+npm run test:settings  # tests/settings-sweep.js — sweeps every Settings control; hard checks + per-step findings (-- --detail for numbers)
 npx serve .       # or just open index.html
 ```
 
 Node is installed via Homebrew on this machine (`/opt/homebrew/bin`); if `node` isn't on PATH in a
 non-login shell, prefix with `export PATH="/opt/homebrew/bin:$PATH"`. Run `npm test` after any
-change to `solver.js`, `hungarian.js` or the engine half of `app.js`; run `test:ui` after UI changes.
+change to `solver.js`, `hungarian.js` or the engine half of `app.js`; run `test:ui` after UI changes, and `test:settings` after retuning the cost model or any setting.
 
 ## Layout
 
@@ -52,9 +53,10 @@ matching `docs/modules/*.md` / `data-model.md`.
   `Array.isArray`, not a length/truthy check. Both the JSON backup and localStorage preserve the distinction.
 - **Disqualified Hungarian cells use `BIG_M` (1e9), never `Infinity`** — `Infinity` yields NaN in the
   potentials arithmetic.
-- **Cost-model terms in `buildQuarterCostFns` are deliberately capped** so raising a fairness/purity/
-  bench slider can never make an off-preference candidate cheaper than an in-preference one. Keep that
-  bound if retuning (guarded by the slider-sweep tests).
+- **Off-preference costs every player the same flat `OFF_PREFERENCE_COST`**, and the variety term in
+  `buildQuarterCostFns` is capped below it, so raising position variety can never make an off-preference
+  cell cheaper than an in-preference one. The preference slider's weights (`derivePreferenceWeights`)
+  are geometric with tuned endpoints. Re-run `npm run test:settings` if retuning any of it.
 - **Phase 1 is deterministic** (seeded `mulberry32`, never `Math.random()`); tests assert exact results.
 - **Hardcoded shape:** 4 quarters, 7 positions (`GS GA WA C WD GD GK`). Not configurable.
 - **No auto re-render.** Handlers mutate `STATE`, then explicitly call `saveState()` and the relevant
@@ -73,7 +75,7 @@ matching `docs/modules/*.md` / `data-model.md`.
    *optional* field needs no schema bump (a missing value falls back to its default on import).
    Renaming, removing or changing the meaning of a field **does**: bump `BACKUP_SCHEMA_VERSION` in
    `app.js`, add a migration in `importBackup` that upgrades each older `schemaVersion` to the current
-   shape before it's read (today there are none — files are only checked as `<=` current), and add a
+   shape before it's read (today there are none — files are only checked as `<=` current; the v1→v2 settings change was deliberately not migrated, old files just fall back to default settings), and add a
    test that imports a saved old-format file. Also update the example file in
    `docs/modules/csv-xlsx-io.md`.
 4. If the engine consumes it, thread it through `app.js` into the plain-data input of `solver.js`.

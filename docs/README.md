@@ -105,7 +105,7 @@ boundaries. See [`docs/modules/`](modules/) for a per-area breakdown of that sam
 
 ## Testing
 
-- `npm test` → `tests/run.js`, 59 unit tests against the engine, loaded via
+- `npm test` → `tests/run.js`, 74 unit tests against the engine, loaded via
   `tests/harness.js` — a Node `vm` sandbox that reads `app.js`'s source text, appends a
   `module.exports` block just before the closing `})();`, and runs it with stubbed
   `document`/`localStorage`/`Blob`/`URL`. This is how engine-level functions that are
@@ -114,3 +114,8 @@ boundaries. See [`docs/modules/`](modules/) for a per-area breakdown of that sam
   rendered UI (serves the repo statically, drives it with Chromium) — the golden path a
   coach would actually click through, plus a handful of dialog-cancel/edge-case checks.
   Requires `npx playwright install chromium` once.
+- `npm run test:settings` → `tests/settings-sweep.js`, regenerates four fixture rosters at
+  every value of every Settings control and reports, step by step, whether the result
+  moved the way the control's label says (test plan §22). Spec guarantees are hard checks;
+  dead or reshuffle-only steps are printed as findings (`-- --strict` fails on them,
+  `-- --detail` prints the numbers).

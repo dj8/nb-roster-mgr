@@ -296,10 +296,86 @@ async function shot(page, name){
   // ---- Settings: verify the new default and that the old toggle is gone ----
   await page.click('.tab-btn[data-tab="settings"]');
   const sliderVal = (await page.locator("#sliderVal").textContent()).trim();
-  check(sliderVal==="9", `preference slider defaults to 9 (got ${sliderVal})`);
+  check(sliderVal==="8", `preference slider defaults to 8 (got ${sliderVal})`);
   const settingsText = await page.locator("body").textContent();
   check(!/strict specialist/i.test(settingsText), "no leftover 'strict specialist pairing' UI text anywhere on the page");
+  check(await page.locator("#topTwoOnly, [data-weight], #rosterOffSlider").count()===0, "the retired top-2 toggle, weight sliders and roster-off slider are gone");
+  check(await page.locator("#seasonHeadlines .stat-box").count()===6, "the at-a-glance card shows six headline numbers for the generated season");
   await shot(page, "05-settings.png");
+
+  // ---- SET-9/SET-10: every Settings control saves, flags the schedule stale, survives a reload and reaches the engine ----
+  const savedState = ()=>page.evaluate(()=>JSON.parse(localStorage.getItem("netballRosterApp_v1")));
+  const savedSchedules = async()=>JSON.stringify(Object.values((await savedState()).games).map(g=>g.schedule));
+  // Arrow keys, not a scripted value change — the path a coach's input actually takes.
+  async function nudgeSlider(selector, target){
+    await page.focus(selector);
+    const current = Number(await page.inputValue(selector));
+    for(let i=0;i<Math.abs(target-current);i++) await page.keyboard.press(target>current ? "ArrowRight" : "ArrowLeft");
+  }
+  async function regenerate(){
+    await page.click('.tab-btn[data-tab="schedule"]');
+    await page.click("#genBtn");
+    await page.waitForTimeout(50);
+  }
+  const SLIDERS = [
+    {sel:"#prefSlider", read:s=>s.preferenceSlider, to:3, back:8},
+    {sel:"#varietySlider", read:s=>s.positionVariety, to:6, back:1}
+  ];
+  const TOGGLES = [
+    {sel:"#allowOffPref", read:s=>s.allowOffPreference, back:true}
+  ];
+  const priorityRadio = v=>`input[name="rosterOffPriority"][value="${v}"]`;
+  for(const c of SLIDERS){
+    await nudgeSlider(c.sel, c.to);
+    const readout = (await page.locator(`${c.sel} + .slider-val`).textContent()).trim();
+    const saved = c.read((await savedState()).settings);
+    check(readout===String(c.to) && saved===c.to, `${c.sel} moved to ${c.to}: readout shows it and it is saved as a number (readout=${readout}, saved=${JSON.stringify(saved)})`);
+  }
+  for(const c of TOGGLES){
+    await page.click(c.sel);
+    const saved = c.read((await savedState()).settings);
+    check(saved===!c.back, `${c.sel} toggled: saved as ${!c.back} (got ${JSON.stringify(saved)})`);
+  }
+  check(await page.isChecked(priorityRadio("coverage")), "roster-off priority defaults to protecting thin positions");
+  await page.click(priorityRadio("balanced"));
+  check((await savedState()).settings.rosterOffPriority==="balanced", "choosing a roster-off priority saves it");
+  await page.click('.tab-btn[data-tab="settings"]');
+  check(await page.locator(".alert-warn").count()>0, "Settings tab warns that changes need a regenerate");
+  await page.click('.tab-btn[data-tab="schedule"]');
+  check(/rebalance to apply/i.test(await page.locator("body").textContent()), "Schedule tab flags the generated season as stale after a settings change");
+
+  await page.reload();
+  await page.waitForSelector(".tabs");
+  await page.click('.tab-btn[data-tab="settings"]');
+  for(const c of SLIDERS){
+    check((await page.inputValue(c.sel))===String(c.to), `${c.sel} still shows ${c.to} after a reload`);
+  }
+  for(const c of TOGGLES){
+    check((await page.isChecked(c.sel))===!c.back, `${c.sel} still ${!c.back?"checked":"unchecked"} after a reload`);
+  }
+
+  check(await page.isChecked(priorityRadio("balanced")), "roster-off priority still on Balanced after a reload");
+
+  // Restore the defaults, then prove a Settings change reaches the engine.
+  for(const c of SLIDERS) await nudgeSlider(c.sel, c.back);
+  for(const c of TOGGLES) await page.click(c.sel);
+  await page.click(priorityRadio("coverage"));
+  const s = (await savedState()).settings;
+  check(SLIDERS.every(c=>c.read(s)===c.back) && TOGGLES.every(c=>c.read(s)===c.back) && s.rosterOffPriority==="coverage", "every Settings control restored to its default");
+  await regenerate();
+  check(!/rebalance to apply/i.test(await page.locator("body").textContent()), "regenerating clears the stale-schedule warning");
+  const atDefault = await savedSchedules();
+  await page.click('.tab-btn[data-tab="settings"]');
+  await nudgeSlider("#prefSlider", 0);
+  await regenerate();
+  check((await savedSchedules())!==atDefault, "regenerating with the preference slider at 0 produces a different season than at the default");
+  await page.click('.tab-btn[data-tab="settings"]');
+  check(/was /.test(await page.locator("#seasonHeadlines").textContent()), "after regenerating, the at-a-glance card shows what each changed number was before");
+  await nudgeSlider("#prefSlider", 8);
+  await regenerate();
+  check((await savedSchedules())===atDefault, "returning the preference slider to its default reproduces the original season exactly");
+  await page.click('.tab-btn[data-tab="settings"]');
+  await shot(page, "05b-settings-after-change.png");
 
   // ---- Reports: force a lopsided roster and confirm the missed-games warning appears ----
   await page.click('.tab-btn[data-tab="setup"]');

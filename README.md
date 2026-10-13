@@ -12,7 +12,7 @@ short-staffed games. Runs entirely in the browser — no server, no build step, 
   the Hungarian algorithm (minimum-cost bipartite matching), not a heuristic.
 - **Season-wide roster-off search** — who's rostered off each game is decided across the
   whole season at once, balancing missed-games fairness against position coverage via a
-  tunable slider.
+  three-way setting.
 - **Fill-ins** — add guest players for short-staffed games, either saved for reuse or as
   a one-off for a single game.
 - **Manual overrides** — lock any slot or roster-off decision, then rebalance the rest of
@@ -45,6 +45,7 @@ npm install
 npm run lint    # ESLint (must be clean before committing)
 npm test        # unit tests for the roster/assignment engine (tests/run.js)
 npm run test:ui # headless browser smoke test (tests/ui-smoke.js, needs Playwright)
+npm run test:settings # sweeps every Settings control step by step (tests/settings-sweep.js)
 ```
 
 ## Project structure

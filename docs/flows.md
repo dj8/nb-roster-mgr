@@ -55,7 +55,7 @@ sequenceDiagram
         else squad is playable
             loop quarter 0..3 (Phase 2a)
                 Gen->>Solver: solveQuarterPositions({squad, benchSlotCount, lockedSlots, cumulative snapshot, settings})
-                Solver->>Solver: buildQuarterCostFns() — preference rank + purity + bench-balance cost per cell
+                Solver->>Solver: buildQuarterCostFns() — preference rank + variety + playing-time balance cost per cell
                 Solver->>Hung: solve(costMatrix)
                 Hung-->>Solver: assignment (row→column)
                 Solver-->>Gen: {onCourt, bench, offPreference, errors}

@@ -51,7 +51,7 @@ The 7 standard netball positions: `GS, GA, WA, C, WD, GD, GK`. Exactly one playe
 - `num_games` (e.g. 11)
 - `roster_size` (e.g. 11 players)
 - Derived totals used for fairness checks (see §4).
-- `settings`: the season-wide tunable knobs described in §5 and summarized in §11 — preference slider, roster-off fairness/coverage slider, allow-off-preference toggle, top-2-only toggle, bench weight, position-purity weight.
+- `settings`: the season-wide tunable knobs described in §5 and summarized in §11 — preference slider, allow-off-preference toggle, position-variety slider, roster-off priority.
 
 ## 3. Core Workflow
 
@@ -74,7 +74,7 @@ These are the goals the engine optimizes for, in priority order. This order chan
 2. **Roster-off (missed games) evenness, given known unavailability — a real, weighted, season-wide goal, pursued on a best-effort basis.** It is _not_ a strict rule that blocks or overrides objective 1. When a genuine conflict exists (e.g. a position only a few players cover), the app surfaces this to the coach rather than silently forcing perfect evenness at the cost of preference quality — see §5.4. A player who is unavailable for a game (§2.1 `availability_exceptions`) counts that toward their "missed games" total, and should generally need fewer additional roster-off games elsewhere to stay even with teammates.
 3. **On-court time (quarters played) evenness** for players who attend the same number of games.
 4. **Bench time (quarters benched, within games actually played) evenness.**
-5. **Position variety / balance**: where a player prefers multiple positions, preference their top 2 positions, and use their other preferenced positions only if needed. This is a configurable toggle: top-2-only vs. balance across the player's entire preference list.
+5. **Position variety / balance**: where a player prefers multiple positions, how far play is spread across their preference list rather than repeating their favourite. Tunable via the position-variety slider (§11); an earlier "top-2 only" toggle was removed because it had no measurable effect.
 6. **Within-game polish**: avoid benching the same player in back-to-back quarters where avoidable, and avoid one player being benched noticeably more than others in that same game.
 
 The app exposes the tunable parts of this ordering as sliders/toggles rather than hard-coding them — see §5 and the settings reference table in §11.
@@ -95,9 +95,9 @@ For each game's squad (as fixed by Phase 1), each quarter's on-court and bench a
 
 Cost per (player, position) cell:
 
-- **Preference cost**: the player's rank for that position if it's in their preference list (0 = top choice); if it's not in their list, a cost of "one worse than their whole list" (comparable in scale to a real rank, not an arbitrary large constant) — unless the off-preference toggle (§5.2) is off, in which case this cell is disqualified entirely.
+- **Preference cost**: the player's rank for that position if it's in their preference list (0 = top choice); if it's not in their list, one flat cost that is the same for every player and above any in-preference cell (comparable in scale to a real rank, not an arbitrary large constant; a cost tied to the player's own list length made short-list players the cheapest off-preference fill) — unless the off-preference toggle (§5.2) is off, in which case this cell is disqualified entirely.
 - **Balance cost**: how many quarters they've played _overall_ this season so far — under-used players cost less, regardless of position.
-- **Position-variety term**: how many times they've already played that exact position this season, tunable via the position-purity weight (§11) — spreads a player across their own preferred positions rather than always giving them the same favorite.
+- **Position-variety term**: how many times they've already played that exact position this season, tunable via the position-variety slider (§11) — spreads a player across their own preferred positions rather than always giving them the same favorite.
 
 Cost per (player, bench-slot) cell: based on how much bench time they've already had this season and this game — lower cost for players who've had less.
 
@@ -107,9 +107,10 @@ Solving each quarter exactly in sequence is still myopic _within_ a game: each q
 
 ### 5.1 Preference priority slider
 
-- A single slider/weight controls the trade-off between **preference cost** and **balance cost** in the Phase 2 cost model described above — not simply "how much off-preference is penalized." At the low end, balance cost can legitimately outweigh preference cost, meaning an under-used player can win a position even over a more-preferring but heavily-played specialist, and — if the off-preference toggle allows it — a fresh off-preference candidate can occasionally beat an overplayed specialist. At the high end, preference cost dominates: off-preference fills only occur when no in-preference candidate is eligible at all.
+- A single slider controls the trade-off between **preference cost** and **balance cost** in the Phase 2 cost model described above — not simply "how much off-preference is penalized." It is the only control over playing-time evenness (a separate bench weight used to scale the same ratio and was folded in). At the low end, balance cost can legitimately outweigh preference cost, meaning an under-used player can win a position even over a more-preferring but heavily-played specialist, and — if the off-preference toggle allows it — a fresh off-preference candidate can occasionally beat an overplayed specialist. At the high end, preference cost dominates: off-preference fills only occur when no in-preference candidate is eligible at all.
 - **The slider must have a monotonic, verifiable effect on the generated schedule**: increasing the slider toward "strict preference" must never _increase_ the number of off-preference fills for the same input data, and should generally decrease it.
-- The default should favour preference strongly, reflecting §4's priority reframing — this is a change from the original default, which was closer to neutral.
+- **Each step should make a comparable difference.** The preference:balance weight ratio grows by the same factor at every step from 0 to 9, rather than linearly (which bunched nearly all visible change into the last three steps). Preference weight never reaches zero — at 0, rank matters least, but off-preference is never free. 10 is the hard end: balance weight exactly zero.
+- The default (8) should favour preference strongly, reflecting §4's priority reframing — this is a change from the original default, which was closer to neutral.
 
 ### 5.2 "Allow off-preference positions" toggle
 
@@ -130,10 +131,10 @@ Solving each quarter exactly in sequence is still myopic _within_ a game: each q
 ### 5.4 Season-wide roster-off fairness ↔ position coverage
 
 - **Coverage-awareness is the default behavior for every game, season-wide — not an optional toggle.** When choosing who to roster off, Phase 1 avoids simultaneously rostering off multiple players who cover the same position(s), weighted by preference rank and by the overlap between the specific players being considered together in the same roster-off decision.
-- **A single slider (0–10)** controls the balance between "roster-off fairness" (even missed games) and "position coverage" (protecting scarce positions from being simultaneously stripped). This weight must apply consistently to _every_ decision point in Phase 1's search — both the initial allocation and any refinement pass — not just one part of it.
+- **A three-way choice** — even missed games / balanced / protect thin positions (default) — controls the balance between "roster-off fairness" and "position coverage" (protecting scarce positions from being simultaneously stripped). It replaced a 0–10 slider that only ever produced two outcomes (0, or anything else): the whole trade-off sits in a narrow band of coverage weight, where "balanced" is placed. This weight must apply consistently to _every_ decision point in Phase 1's search — both the initial allocation and any refinement pass — not just one part of it.
 - When the off-preference toggle (§5.2) is off, position-coverage protection becomes a **hard constraint** within this phase rather than a weighted preference — see §5.2.
 - **If perfectly even missed-games is not mathematically achievable** given the roster's actual position-preference distribution (e.g. a position preferred by only one or two players, such that removing them risks zero coverage more often than an even rotation would allow), the app must surface this plainly — naming the affected player(s) and position(s) — rather than silently producing an uneven result or leaving the coach unable to tell whether a setting is broken or the roster itself is the limiting factor.
-- In practice, on a roster with reasonable depth at every position (roughly 3+ players covering each), this trade-off rarely bites at all — the two objectives are usually simultaneously achievable, and the slider's main value is as a safety valve for thinner squads or thinner individual positions.
+- In practice, on a roster with reasonable depth at every position (roughly 3+ players covering each), this trade-off rarely bites at all — the two objectives are usually simultaneously achievable, and the choice's main value is as a safety valve for thinner squads or thinner individual positions.
 
 ### 5.5 Per-game strict specialist pairing
 
@@ -205,7 +206,7 @@ The app should be able to produce, at minimum:
 - **YES** — fill-in players for a short-staffed game can be saved for reuse in future games (§6), opt-in at creation time, defaulting to saved.
 - **Regeneration cadence**: "Generate" and "Rebalance" are the same underlying full re-run (§8) — there is no separate incremental algorithm. This was a deliberate simplification decided during algorithm design, not an oversight.
 - **Off-preference/position-assignment algorithm**: an exact minimum-cost bipartite matching (Hungarian algorithm) per quarter, plus a within-game local-search refinement pass — not a heuristic weighted-cost pass as originally specified. This was a deliberate upgrade during algorithm redesign, chosen specifically because speed is not a priority (§9) and preference-optimality is the dominant goal (§4).
-- **Roster-off algorithm**: a season-wide search (not sequential per-game selection), weighted between missed-games fairness and position coverage via a single tunable slider (§5.4) that must reach every decision point in the search — a partial implementation (affecting only some of the decision points) is treated as a defect, per real bugs found during development.
+- **Roster-off algorithm**: a season-wide search (not sequential per-game selection), weighted between missed-games fairness and position coverage via a single three-way setting (§5.4) that must reach every decision point in the search — a partial implementation (affecting only some of the decision points) is treated as a defect, per real bugs found during development.
 - **Priority reframing**: preference-honouring and optimal position placement were elevated above missed-games evenness as the dominant objective (§4), a direct reversal of the original priority order. Missed-games evenness remains real and weighted, but is now pursued on a best-effort basis with explicit reporting rather than strict enforcement.
 - **File structure**: no longer required to be a single HTML file (§9) — may be split for maintainability, provided it remains a static, zero-build, dependency-free site.
 
@@ -215,12 +216,12 @@ Every slider in the app must show explicit end-labels describing what moving in 
 
 |Setting|Range|Low end means|High end means|Applies to|
 |---|---|---|---|---|
-|Preference priority slider|0–10|Playing-time fairness & variety can outweigh preference rank|Strict preference honouring — off-preference only when truly unavoidable|Phase 2a/2b cost model (§5.1)|
-|Roster-off fairness ↔ coverage slider|0–10|Roster-off fairness (even missed games)|Position coverage (protect scarce positions)|Phase 1, both allocation and refinement (§5.4)|
+|Preference slider|0–10, default 8|Even court time for everyone|Players in their preferred positions — off-preference only when truly unavoidable|Phase 2a/2b cost model (§5.1)|
+|Position-variety slider|0–10, default 1|Repeat a player's favourite position|Spread play across their whole preference list|Phase 2a/2b variety term|
+|Roster-off priority|even missed games / balanced / protect thin positions (default)|—|—|Phase 1, both allocation and refinement (§5.4)|
 |Allow off-preference positions|on/off|—|—|Hard toggle, both phases (§5.2)|
-|Prefer top-2 positions only|on/off|—|—|Position-variety scope (§4 rule 5)|
-|Bench weight|1–10|Less priority on even bench rotation|More priority on even bench rotation|Phase 2a/2b bench-slot cost|
-|Position-purity weight|1–10|Repeat a player's favourite position more often|Spread play across their whole preference list|Phase 2a/2b variety term|
 |Strict specialist pairing|on/off, **per-game**|—|—|Phase 1 for one specific game only (§5.5)|
 
-Note: there is deliberately no standalone "missed-games weight" slider — that trade-off is controlled entirely by the roster-off fairness ↔ coverage slider above, not a separate dial. An earlier design had a redundant/inert missed-games slider; it was removed rather than fixed, on the basis that fewer, clearer controls beat more numerous overlapping ones.
+The Settings tab also shows the numbers these controls exist to move (off-preference rate, court-time range, first-choice share, positions per player, missed-games spread, thin-position warnings) for the last generated season, and what each was before the most recent regeneration.
+
+Note: there is deliberately no standalone "missed-games weight" slider — that trade-off is controlled entirely by the roster-off priority above, not a separate dial. Likewise there is no bench weight (folded into the preference slider) and no "prefer top-2" toggle. An earlier design had a redundant/inert missed-games slider; it was removed rather than fixed, on the basis that fewer, clearer controls beat more numerous overlapping ones.

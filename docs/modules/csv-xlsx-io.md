@@ -21,13 +21,13 @@ The one format for backing up, restoring and sharing a season. Fields are keyed 
 ```jsonc
 {
   "format": "netball-roster-backup",
-  "schemaVersion": 1,            // bump only for changes old files can't be read under
+  "schemaVersion": 2,            // v2: settings reduced to the four below. v1 files still import, but their retired settings are ignored (not migrated)
   "buildNumber": 38,             // informational
   "exportedAt": "2026-10-10T…Z",
   "plan": {                      // everything the coach enters
     "season": {"numGames": 11, "desiredBenchSize": 2},
-    "settings": {"preferenceSlider": 9, "allowOffPreference": true, "topTwoOnly": false,
-                 "rosterOffWeight": 10, "fairnessWeights": {"bench": 2, "positionPurity": 1}},
+    "settings": {"preferenceSlider": 8, "allowOffPreference": true,
+                 "positionVariety": 1, "rosterOffPriority": "coverage"},
     "players": [{"id", "name", "prefs": ["GS","GA"], "unavailable": [3]}],
     "fillIns": [{"id", "name", "prefs": [], "saved": true}],
     "games": {"1": {"isPlayed", "date", "time", "location", "rosterOffOverride",

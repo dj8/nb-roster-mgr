@@ -74,6 +74,7 @@ what's actually in `STATE.games[...].schedule`.
 | `computeOffPrefLog()` | every off-preference fill across the whole season, via `buildOffPrefLog` |
 | `describeOffPrefReason(o)` | one readable sentence from a log entry — shared by the Reports table and the XLSX export so wording never drifts between them |
 | `computeOffPrefRate(log?)` | `{count, totalSlots, rate}` |
+| `computeSeasonHeadlines()` | `null` until something is generated, else `{offPrefPct, courtTimeMinPct, courtTimeMaxPct, firstChoicePct, positionsPerPlayer, missedSpread, thinPositions}` — the numbers the Settings controls move, regular players only (Settings tab's at-a-glance card) |
 | `computeMissedGamesWarningForReports(summaries?)` | delegates to `RosterSolver.computeMissedGamesWarning` |
 | `computeRosterOffAchievabilityNotesForReports()` | delegates to `RosterSolver.computeRosterOffAchievabilityNotes` |
 

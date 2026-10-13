@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 50; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 51; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -36,11 +36,10 @@ function defaultState(){
     season:{numGames:11, desiredBenchSize:2},
     games:{},              // gameNum(string) -> gameState
     settings:{
-      preferenceSlider:9,        // 0..10 — defaults to strongly favouring preference (see Settings tab)
+      preferenceSlider:8,        // 0..10 — even court time <-> strict preference; defaults to strongly favouring preference
       allowOffPreference:true,
-      topTwoOnly:false,          // §4 rule 4 toggle
-      rosterOffWeight:10,        // 0..10 — roster-off fairness <-> position coverage; 10 reproduces the original hardcoded default ratio
-      fairnessWeights:{bench:2, positionPurity:1} // relative priority order, higher = more important
+      positionVariety:1,         // 0..10 — repeat a favourite position <-> spread across the whole preference list
+      rosterOffPriority:"coverage" // "fairness" | "balanced" | "coverage" (§5.4)
     },
     activeTab:"setup"
   };
@@ -136,12 +135,12 @@ function sanitizeSettingsAndSeason(state){
   fix(state.season, "desiredBenchSize", 0, 20, d.season.desiredBenchSize, "Desired bench size");
   state.settings = state.settings || Object.assign({}, d.settings);
   fix(state.settings, "preferenceSlider", 0, 10, d.settings.preferenceSlider, "Preference slider");
-  fix(state.settings, "rosterOffWeight", 0, 10, d.settings.rosterOffWeight, "Roster-off weight");
-  state.settings.fairnessWeights = state.settings.fairnessWeights || Object.assign({}, d.settings.fairnessWeights);
-  fix(state.settings.fairnessWeights, "bench", 1, 10, d.settings.fairnessWeights.bench, "Bench weight");
-  fix(state.settings.fairnessWeights, "positionPurity", 1, 10, d.settings.fairnessWeights.positionPurity, "Position-purity weight");
+  fix(state.settings, "positionVariety", 0, 10, d.settings.positionVariety, "Position variety");
+  if(!RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES.includes(state.settings.rosterOffPriority)){
+    corrected.push(`Roster-off priority (${JSON.stringify(state.settings.rosterOffPriority)} → ${d.settings.rosterOffPriority})`);
+    state.settings.rosterOffPriority = d.settings.rosterOffPriority;
+  }
   state.settings.allowOffPreference = !!state.settings.allowOffPreference;
-  state.settings.topTwoOnly = !!state.settings.topTwoOnly;
   return corrected;
 }
 
@@ -175,11 +174,10 @@ function loadState(){
       fillIns: parsed.fillIns||[],
       season: Object.assign(d.season, parsed.season||{}),
       games: parsed.games||{},
-      settings: Object.assign(d.settings, parsed.settings||{}, {fairnessWeights:Object.assign(d.settings.fairnessWeights,(parsed.settings&&parsed.settings.fairnessWeights)||{})})
+      settings: Object.assign(d.settings, parsed.settings||{})
     });
-    delete merged.settings.strictSpecialistMode; // superseded by the season-wide roster-off search's coverage term
-    delete merged.settings.fairnessWeights.missed; // missed-games evenness is a weighted objective now, not a tunable weight
-    delete merged.settings.fairnessWeights.onCourt; // merged into the single "bench" playing-time-evenness weight
+    // Controls that no longer exist (not migrated — the new ones start at their defaults).
+    ["strictSpecialistMode","topTwoOnly","rosterOffWeight","fairnessWeights"].forEach(k=>{ delete merged.settings[k]; });
     Object.values(merged.games||{}).forEach(g=>{
       delete g.strictSpecialistMode;
       g.date = sanitizeGameDate(g.date);
@@ -489,7 +487,7 @@ function computeSeasonRosterOff(preserveExisting){
   });
   const phase1 = RosterSolver.solveSeasonRosterOff({
     players: seasonPlayers, games: seasonGames,
-    weights: RosterSolver.deriveRosterOffWeights(STATE.settings.rosterOffWeight),
+    weights: RosterSolver.deriveRosterOffWeights(STATE.settings.rosterOffPriority),
     allowOffPreference: !!STATE.settings.allowOffPreference
   });
 
@@ -683,6 +681,41 @@ function computeOffPrefRate(log){
   let totalSlots=0;
   gameNums().forEach(num=>{ const g=getGame(num); if(g.schedule) totalSlots += g.schedule.quarters.length*7; });
   return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
+}
+
+/* The handful of numbers the Settings controls exist to move, for that tab's
+   "at a glance" card. Regular players only — fill-ins are excluded from
+   season fairness. null until at least one game has a schedule. */
+function computeSeasonHeadlines(){
+  const offPref = computeOffPrefRate();
+  if(!offPref.totalSlots) return null;
+  const prefsOf = {};
+  STATE.players.forEach(p=>{ prefsOf[p.id] = p.prefs||[]; });
+  let regularSlots = 0, firstChoice = 0, thinPositions = 0;
+  gameNums().forEach(num=>{
+    const game = getGame(num);
+    if(!game.schedule) return;
+    thinPositions += (game.coverageWarnings||[]).length;
+    game.schedule.quarters.forEach(q=>POSITIONS.forEach(pos=>{
+      const prefs = prefsOf[q.onCourt[pos]];
+      if(!prefs) return; // empty slot or fill-in
+      regularSlots++;
+      if(prefs[0]===pos) firstChoice++;
+    }));
+  });
+  const summaries = computePlayerSummaries();
+  const courtShares = summaries.filter(s=>s.onCourt+s.bench>0).map(s=>100*s.onCourt/(s.onCourt+s.bench));
+  const positionsEach = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.filter(pos=>s.positions[pos]>0).length);
+  const missed = summaries.map(s=>s.missed);
+  return {
+    offPrefPct: offPref.rate,
+    courtTimeMinPct: courtShares.length ? Math.min(...courtShares) : 0,
+    courtTimeMaxPct: courtShares.length ? Math.max(...courtShares) : 0,
+    firstChoicePct: regularSlots ? 100*firstChoice/regularSlots : 0,
+    positionsPerPlayer: positionsEach.length ? positionsEach.reduce((a,b)=>a+b,0)/positionsEach.length : 0,
+    missedSpread: missed.length ? Math.max(...missed)-Math.min(...missed) : 0,
+    thinPositions
+  };
 }
 
 /* Informational only — never fed back into generation. */
@@ -1104,6 +1137,7 @@ function parseCsv(text){
 let scheduleUiState = { openGame:null, filter:"all" };
 // Not persisted — describes drift between STATE and the last engine run this session.
 let dirtySinceGeneration = false;
+let headlinesBeforeLastGeneration = null; // Settings tab's "was ..." comparison; this session only, never saved
 
 function renderSchedule(root){
   const invalidMsg = regularRosterInvalid();
@@ -1143,6 +1177,7 @@ function renderSchedule(root){
     genBtn.disabled = true; rebalBtn.disabled = true;
     genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
     setTimeout(()=>{
+      headlinesBeforeLastGeneration = computeSeasonHeadlines();
       const r = runGeneration();
       dirtySinceGeneration = false;
       console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
@@ -1926,86 +1961,92 @@ function syncRangeFill(input){
   input.style.setProperty("--range-pct", pct+"%");
 }
 
-function labelledSliderHtml({id, dataWeight, min, max, step, value, valueId, leftLabel, rightLabel}){
-  const idAttr = id ? ` id="${id}"` : "";
-  const dataAttr = dataWeight ? ` data-weight="${dataWeight}"` : "";
-  const valIdAttr = valueId ? ` id="${valueId}"` : "";
+function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel}){
   return `
     <div class="slider-wrap">
-      <input type="range"${idAttr}${dataAttr} min="${min}" max="${max}" step="${step}" value="${value}">
-      <span class="slider-val mono"${valIdAttr}>${value}</span>
+      <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
+      <span class="slider-val mono" id="${valueId}">${value}</span>
     </div>
     <div class="slider-endlabels"><span>${esc(leftLabel)}</span><span>${esc(rightLabel)}</span></div>
   `;
 }
 
+/* Display strings for computeSeasonHeadlines(), in the order shown; `moves`
+   names the control each number responds to. */
+function headlineStats(h){
+  return [
+    {label:"Off-preference quarters", value:h.offPrefPct.toFixed(1)+"%", moves:"preference slider"},
+    {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
+    {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
+    {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
+    {label:"Missed-games spread", value:String(h.missedSpread), moves:"who sits out"},
+    {label:"Thin-position warnings", value:String(h.thinPositions), moves:"who sits out"}
+  ];
+}
+function seasonHeadlinesHtml(){
+  const now = computeSeasonHeadlines();
+  if(!now) return `<p class="hint">Generate the season from the Schedule tab to see what these settings produce.</p>`;
+  const before = headlinesBeforeLastGeneration ? headlineStats(headlinesBeforeLastGeneration) : null;
+  return `<div class="stat-grid">${headlineStats(now).map((st,i)=>{
+    const was = before && before[i].value!==st.value ? `<div class="was">was ${before[i].value}</div>` : "";
+    return `<div class="stat-box"><div class="num">${st.value}</div>${was}<div class="lbl">${st.label}<br>moved by: ${st.moves}</div></div>`;
+  }).join("")}</div>`;
+}
+
 function renderSettings(root){
   const s = STATE.settings;
-  const weightLabels = {
-    bench: {
-      title:"Playing-time evenness (on-court & bench)",
-      left:"Ignore season-long playing time",
-      right:"Actively even out playing time"
-    },
-    positionPurity: {
-      title:"Position preference purity",
-      left:"Repeat a player's favourite position",
-      right:"Spread play across their whole preference list"
-    }
-  };
+  const priorities = [
+    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible, even if that leaves a game thin at a position"},
+    {value:"balanced", label:"Balanced", desc:"Accepts a slightly uneven split to avoid the worst coverage gaps"},
+    {value:"coverage", label:"Protect thin positions", desc:"Avoids resting the players a position depends on; missed games may come out less even"}
+  ];
   root.innerHTML = `
     ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance from the Schedule tab.</div>` : ""}
     <div class="card">
-      <div class="card-head"><div><h2>Preference vs. fairness</h2><p>How strongly the engine favors a player's stated preference rank over even rotation. Defaults to strongly favouring preference — placing players in their preferred positions, every game and across the season, is the dominant objective.</p></div></div>
+      <div class="card-head"><div><h2>This season at a glance</h2><p>What the current settings produced the last time the season was generated${dirtySinceGeneration?" — regenerate to see the effect of your changes":""}.</p></div></div>
+      <div id="seasonHeadlines">${seasonHeadlinesHtml()}</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Preferences vs. even court time</h2><p>How far the engine bends players' preferences to share court time evenly. Defaults to strongly favouring preference.</p></div></div>
       <div class="field">
-        <label for="prefSlider">Priority slider — fairness &#8596; strict preference</label>
+        <label for="prefSlider">Even court time &#8596; strict preference</label>
         ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
-          leftLabel:"Playing-time fairness & variety", rightLabel:"Strict preference honouring"})}
-        <p class="hint">Higher values never increase off-preference fills for the same data — at maximum, off-preference is used only where truly unavoidable. Lower it to weight playing-time fairness and position variety more heavily against preference.</p>
+          leftLabel:"Even court time for everyone", rightLabel:"Players in their preferred positions"})}
+        <p class="hint">Each step trades a little court-time evenness for preference. Higher values never increase off-preference fills for the same data; at 10, court time is ignored and off-preference is used only where truly unavoidable.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" id="allowOffPref" ${s.allowOffPreference?"checked":""}>
         <span class="cb-label">Allow off-preference positions</span>
         <span class="cb-desc">When off, a position with no eligible in-preference player raises an error instead of a fallback assignment</span>
       </label>
-      <label class="checkbox-row">
-        <input type="checkbox" id="topTwoOnly" ${s.topTwoOnly?"checked":""}>
-        <span class="cb-label">Prefer top-2 positions only</span>
-        <span class="cb-desc">Off: balances a player's on-court time across their entire preference list, not just their top 2</span>
-      </label>
-      <p class="hint">The app aims to keep rostered-off games even given known unavailability, and will warn you on the Reports tab if that spread gets large — it won't sacrifice preference quality just to force perfect evenness.</p>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Roster-off fairness vs. position coverage</h2><p>How strongly the season-wide roster-off search favours perfectly even missed-games counts versus protecting thin positions from losing coverage.</p></div></div>
+      <div class="card-head"><div><h2>Position variety</h2><p>Whether a player keeps returning to their favourite position or rotates through everything they listed.</p></div></div>
       <div class="field">
-        <label for="rosterOffSlider">Priority slider — roster-off fairness &#8596; position coverage</label>
-        ${labelledSliderHtml({id:"rosterOffSlider", min:0, max:10, step:1, value:s.rosterOffWeight, valueId:"rosterOffSliderVal",
-          leftLabel:"Roster-off fairness", rightLabel:"Position coverage"})}
-        <p class="hint">With a roster that has good depth at every position, these two goals rarely conflict and this slider will have little visible effect — it mainly matters for positions only a few players prefer.</p>
+        <label for="varietySlider">Repeat favourite &#8596; spread across the list</label>
+        ${labelledSliderHtml({id:"varietySlider", min:0, max:10, step:1, value:s.positionVariety, valueId:"varietySliderVal",
+          leftLabel:"Repeat a player's favourite position", rightLabel:"Spread play across their whole preference list"})}
+        <p class="hint">A position costs a player more the more often they've already played it, so the other positions they listed get a turn. At 0 nothing discourages repeating a favourite.</p>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Fairness priority order</h2><p>Relative weight — higher number matters more when trade-offs arise.</p></div></div>
-      ${["bench","positionPurity"].map(k=>{
-        const l = weightLabels[k];
-        const sliderId = "weight_"+k;
-        return `<div class="field"><label for="${sliderId}">${l.title}</label>
-          ${labelledSliderHtml({id:sliderId, dataWeight:k, min:1, max:10, step:1, value:s.fairnessWeights[k], leftLabel:l.left, rightLabel:l.right})}
-        </div>`;
-      }).join("")}
-      <p class="hint">These weights bias the preference/balance trade-off and bench-rotation ordering; regenerate after changing them.</p>
+      <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what the season-wide roster-off search protects first.</p></div></div>
+      ${priorities.map(p=>`<label class="checkbox-row">
+        <input type="radio" name="rosterOffPriority" value="${p.value}" ${s.rosterOffPriority===p.value?"checked":""}>
+        <span class="cb-label">${p.label}</span>
+        <span class="cb-desc">${p.desc}</span>
+      </label>`).join("")}
+      <p class="hint">With a roster that has good depth at every position these goals rarely conflict and the choice will have little visible effect — it mainly matters for positions only a few players prefer. The Reports tab warns if the missed-games spread gets large.</p>
     </div>
   `;
   root.querySelectorAll('input[type=range]').forEach(syncRangeFill);
-  document.getElementById("prefSlider").oninput=e=>{ document.getElementById("sliderVal").textContent=e.target.value; syncRangeFill(e.target); };
-  document.getElementById("prefSlider").onchange=e=>{ s.preferenceSlider=Number(e.target.value); markStale(); };
-  document.getElementById("rosterOffSlider").oninput=e=>{ document.getElementById("rosterOffSliderVal").textContent=e.target.value; syncRangeFill(e.target); };
-  document.getElementById("rosterOffSlider").onchange=e=>{ s.rosterOffWeight=Number(e.target.value); markStale(); };
+  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"]].forEach(([id,valueId,key])=>{
+    document.getElementById(id).oninput=e=>{ document.getElementById(valueId).textContent=e.target.value; syncRangeFill(e.target); };
+    document.getElementById(id).onchange=e=>{ s[key]=Number(e.target.value); markStale(); };
+  });
   document.getElementById("allowOffPref").onchange=e=>{ s.allowOffPreference=e.target.checked; markStale(); };
-  document.getElementById("topTwoOnly").onchange=e=>{ s.topTwoOnly=e.target.checked; markStale(); };
-  root.querySelectorAll("[data-weight]").forEach(inp=>{
-    inp.oninput=e=>{ e.target.nextElementSibling.textContent=e.target.value; syncRangeFill(e.target); };
-    inp.onchange=e=>{ s.fairnessWeights[e.target.dataset.weight]=Number(e.target.value); markStale(); };
+  root.querySelectorAll('input[name="rosterOffPriority"]').forEach(inp=>{
+    inp.onchange=e=>{ if(e.target.checked){ s.rosterOffPriority=e.target.value; markStale(); } };
   });
 }
 
@@ -2062,7 +2103,7 @@ function downloadBlob(filename, blob){
    games. Keyed by name, not position, so adding a field never shifts anything.
    Device-only state (theme, active tab) is deliberately not exported. */
 const BACKUP_FORMAT = "netball-roster-backup";
-const BACKUP_SCHEMA_VERSION = 1;
+const BACKUP_SCHEMA_VERSION = 2; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority
 
 function buildBackup(){
   const planGames = {}, resultGames = {};
@@ -2093,9 +2134,8 @@ function buildBackup(){
     plan: {
       season: {numGames: STATE.season.numGames, desiredBenchSize: STATE.season.desiredBenchSize},
       settings: {
-        preferenceSlider: s.preferenceSlider, allowOffPreference: !!s.allowOffPreference, topTwoOnly: !!s.topTwoOnly,
-        rosterOffWeight: s.rosterOffWeight,
-        fairnessWeights: {bench: s.fairnessWeights.bench, positionPurity: s.fairnessWeights.positionPurity}
+        preferenceSlider: s.preferenceSlider, allowOffPreference: !!s.allowOffPreference,
+        positionVariety: s.positionVariety, rosterOffPriority: s.rosterOffPriority
       },
       players: STATE.players.map(p=>({id:p.id, name:p.name, prefs:(p.prefs||[]).slice(), unavailable:(p.unavailable||[]).slice()})),
       fillIns: STATE.fillIns.map(f=>({id:f.id, name:f.name, prefs:(f.prefs||[]).slice(), saved:f.saved!==false})),
@@ -2138,11 +2178,11 @@ function importBackup(text){
     if(typeof planSeason.numGames==="number") ns.season.numGames = planSeason.numGames;
     if(typeof planSeason.desiredBenchSize==="number") ns.season.desiredBenchSize = planSeason.desiredBenchSize;
 
+    // Settings a v1 file carried that no longer exist are ignored, not migrated.
     const set = isPlainObject(plan.settings) ? plan.settings : {};
-    ["preferenceSlider","rosterOffWeight"].forEach(k=>{ if(typeof set[k]==="number") ns.settings[k] = set[k]; });
-    ["allowOffPreference","topTwoOnly"].forEach(k=>{ if(typeof set[k]==="boolean") ns.settings[k] = set[k]; });
-    const weights = isPlainObject(set.fairnessWeights) ? set.fairnessWeights : {};
-    ["bench","positionPurity"].forEach(k=>{ if(typeof weights[k]==="number") ns.settings.fairnessWeights[k] = weights[k]; });
+    ["preferenceSlider","positionVariety"].forEach(k=>{ if(typeof set[k]==="number") ns.settings[k] = set[k]; });
+    if(typeof set.allowOffPreference==="boolean") ns.settings.allowOffPreference = set.allowOffPreference;
+    if(typeof set.rosterOffPriority==="string") ns.settings.rosterOffPriority = set.rosterOffPriority; // validated by sanitizeSettingsAndSeason
 
     ns.players = (Array.isArray(plan.players)?plan.players:[]).filter(isPlainObject).map(p=>({
       id:String(p.id==null?"":p.id), name:String(p.name==null?"":p.name), prefs:sanitizePrefs(p.prefs),

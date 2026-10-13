@@ -39,11 +39,10 @@ erDiagram
     }
 
     SETTINGS {
-        number preferenceSlider "0-10, fairness <-> strict preference"
+        number preferenceSlider "0-10, even court time <-> strict preference (default 8)"
         boolean allowOffPreference
-        boolean topTwoOnly "soft nudge, not a hard cutoff"
-        number rosterOffWeight "0-10, fairness <-> position coverage"
-        object fairnessWeights "bench 1-10, positionPurity 1-10"
+        number positionVariety "0-10, repeat favourite <-> spread across list (default 1)"
+        string rosterOffPriority "fairness | balanced | coverage (default)"
     }
 
     GAME {
