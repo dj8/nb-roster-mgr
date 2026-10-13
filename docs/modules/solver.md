@@ -23,6 +23,7 @@ the results back onto `STATE.games[...]`.
 | `buildQuarterCostFns(cumulative, settings)` | cumulative snapshot + settings | `{positionCellCost(p,pos), benchCellCost(p)}` | The cost model, exposed directly — used by both 2a and 2b so they score identically. |
 | `deriveRosterOffWeights(rosterOffPriority)` | `"fairness"`/`"balanced"`/`"coverage"` | `{fairness, coverage}` | Maps the Settings-tab three-way choice onto Phase 1's two internal weights (a lookup in `ROSTER_OFF_COVERAGE_WEIGHT`, whose keys are `ROSTER_OFF_PRIORITIES`). Anything unrecognised is treated as `"coverage"`. |
 | `derivePreferenceWeights(preferenceSlider)` | 0-10 slider value | `{preference, balance}` (sum to 1) | Maps the preference slider onto the cost model's two weights: ratio geometric from `PREFERENCE_RATIO_AT_0` to `PREFERENCE_RATIO_AT_9`, balance exactly 0 at 10. |
+| `isInPreference(p, pos)` | player, position | boolean | The one definition of "in-preference": the position is in the player's list, or the list is empty (a no-preference fill-in is happy anywhere, §6). Used for cost, the `offPreference` flag, and by `app.js` for coverage warnings, the off-preference log and manual-edit labels. |
 | `computeMissedGamesWarning(missedByPlayer, threshold?)` | `[{id,name,missed}]` | `null` or `{spread,max,min,mostMissed,leastMissed,suggestion}` | Reports-tab informational warning; never fed back into generation. |
 | `computeRosterOffAchievabilityNotes(players)` | `[{name,prefs}]` | `[{position,players,message}]` | Roster-composition note: a position with ≤1 preferrer can't be rested without risking zero coverage, independent of any setting. |
 | `clampSetting(v, lo, hi, fallback)` | untrusted value + bounds | number in `[lo,hi]` | Used everywhere an untrusted numeric setting (localStorage, CSV) needs coercing — `NaN` in used to poison every downstream comparison silently. |
@@ -74,10 +75,10 @@ slot:
 - **`preferenceCost(p, pos)`** — the player's rank in their own `prefs` list (0 = their
   #1 choice); off-preference costs the flat `OFF_PREFERENCE_COST` (7) for every player
   — above any in-preference cell, and independent of list length, so a short-list
-  player is never the cheap off-preference fill. A player with an *empty* list (a
-  no-preference fill-in, §6) instead costs `NO_PREFERENCE_COST` (1) everywhere: behind
-  anyone's #1 choice, but not benched all game. `null` (→ `BIG_M`, disqualified) when
-  `allowOffPreference` is off.
+  player is never the cheap off-preference fill — or `null` (→ `BIG_M`, disqualified)
+  when `allowOffPreference` is off. A player with an *empty* list (a no-preference
+  fill-in, §6) is in-preference everywhere (`isInPreference`) and costs
+  `NO_PREFERENCE_COST` (1) at every position, whatever the toggle says.
 - **`varietyTerm(p, pos)`** — a penalty for a position the player's already played a
   lot this season, scaled by `settings.positionVariety` (0 = none). Capped relative to
   the player's *own* list (`prefs.length - idx`), so a favourite can lose ground to a

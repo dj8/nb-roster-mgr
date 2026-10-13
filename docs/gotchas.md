@@ -129,7 +129,8 @@ fixed seed keeps every run — and every test that asserts an exact result
 
 ### The preference/fairness cost model is deliberately weight-bounded
 In `buildQuarterCostFns`, off-preference costs every player who has a preference list the
-same flat `OFF_PREFERENCE_COST` (a no-preference fill-in costs `NO_PREFERENCE_COST` instead), and the variety term is capped below it, so raising position
+same flat `OFF_PREFERENCE_COST` (a no-preference fill-in is in-preference everywhere and costs
+`NO_PREFERENCE_COST` — always ask `RosterSolver.isInPreference`, never `prefs.includes` directly), and the variety term is capped below it, so raising position
 variety can **never** make an off-preference cell cheaper than any in-preference one
 (`OFFPREF-FLAT-1`). That is a per-cell bound: a whole assignment can still, rarely, come
 out cheaper with an off-preference fill in it. The preference slider's weights

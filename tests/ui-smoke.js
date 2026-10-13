@@ -54,6 +54,9 @@ async function shot(page, name){
   const browser = await chromium.launch({headless:true});
   const page = await browser.newPage({viewport:{width:1320,height:960}});
 
+  // Generation is deferred via setTimeout; wait for it rather than guessing a delay.
+  const waitForGeneration = ()=>page.waitForFunction(()=>document.getElementById("genBtn").textContent==="Generate season");
+
   const consoleErrors = [];
   page.on("console", msg=>{ if(msg.type()==="error") consoleErrors.push(msg.text()); });
   page.on("pageerror", err=>consoleErrors.push("pageerror: "+err.message));
@@ -97,14 +100,17 @@ async function shot(page, name){
 
   // ---- Schedule: generate, check for errors, inspect a game's rotation grid ----
   await page.click('.tab-btn[data-tab="schedule"]');
-  await page.click("#genBtn");
   // runGeneration() is deferred via setTimeout(...,0), so the busy state is
-  // observable only in the instant right after the click, before it runs.
-  const genBtnTextWhileBusy = await page.locator("#genBtn").textContent();
-  const genBtnDisabledWhileBusy = await page.locator("#genBtn").isDisabled();
+  // observable only in the instant right after the click, before it runs —
+  // click and read in one in-page step, or the read races the generation.
+  const [genBtnTextWhileBusy, genBtnDisabledWhileBusy] = await page.evaluate(()=>{
+    const btn = document.getElementById("genBtn");
+    btn.click();
+    return [btn.textContent, btn.disabled];
+  });
   check(/generating/i.test(genBtnTextWhileBusy) && genBtnDisabledWhileBusy,
     `Generate button shows a disabled busy state immediately after clicking (text="${genBtnTextWhileBusy}", disabled=${genBtnDisabledWhileBusy})`);
-  await page.waitForTimeout(50);
+  await waitForGeneration();
   check((await page.locator("#genBtn").textContent())==="Generate season",
     "Generate button returns to its normal label once generation finishes");
   let errorPills = await page.locator(".pill-danger").allTextContents();
@@ -126,7 +132,7 @@ async function shot(page, name){
   await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
   await page.click('[data-toggle="1"]'); await page.click('[data-toggle="1"]'); // collapse/reopen to re-render fresh
   await page.click("#rebalBtn");
-  await page.waitForTimeout(50);
+  await waitForGeneration();
   const afterLockValue = await page.evaluate(()=>{
     const cell = document.querySelector("#gameBody-1 [data-slot].cell-locked");
     return cell ? cell.dataset.slot : null;
@@ -315,7 +321,7 @@ async function shot(page, name){
   async function regenerate(){
     await page.click('.tab-btn[data-tab="schedule"]');
     await page.click("#genBtn");
-    await page.waitForTimeout(50);
+    await waitForGeneration();
   }
   const SLIDERS = [
     {sel:"#prefSlider", read:s=>s.preferenceSlider, to:3, back:8},
@@ -384,9 +390,7 @@ async function shot(page, name){
   await page.fill("#pfUnavail", "1,2,3,4,5,6,7,8");
   await page.click('.modal [data-act="save"]');
   await page.waitForSelector(".modal-backdrop", {state:"detached", timeout:2000}).catch(()=>{});
-  await page.click('.tab-btn[data-tab="schedule"]');
-  await page.click("#genBtn");
-  await page.waitForTimeout(50);
+  await regenerate();
   await page.click('.tab-btn[data-tab="reports"]');
   const reportsText = await page.locator("body").textContent();
   check(/Missed-games spread/i.test(reportsText), "missed-games spread warning appears on a deliberately lopsided roster");

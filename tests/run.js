@@ -1409,9 +1409,8 @@ test("OFFPREF-FLAT-1: off-preference costs every player with a list the same, an
     const { positionCellCost } = S.buildQuarterCostFns(cumulative, {preferenceSlider:slider, allowOffPreference:true, positionVariety:10});
     assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(otherShortList,"WD"), `slider ${slider}: off-preference cost must not depend on list length`);
     assert.strictEqual(positionCellCost(shortList,"WD"), positionCellCost(longList,"GK"), `slider ${slider}: off-preference cost must not depend on list length`);
-    // A player with no list at all (a fill-in, §6) is priced apart: cheaper
-    // than anyone's off-preference fill so they get on court, never cheaper
-    // than a fresh #1 choice.
+    // A player with no list at all (a fill-in, §6) is happy anywhere: cheaper
+    // than anyone's off-preference fill, never cheaper than a fresh #1 choice.
     assert.ok(positionCellCost(noList,"WD") < positionCellCost(shortList,"WD"), `slider ${slider}: a no-preference player must cost less than an off-preference fill`);
     assert.ok(positionCellCost(noList,"GK") > positionCellCost(shortList,"GK"), `slider ${slider}: a no-preference player must cost more than someone's #1 choice`);
     longList.prefs.forEach(pos=>assert.ok(positionCellCost(longList,pos) < positionCellCost(shortList,pos),
@@ -1702,21 +1701,47 @@ test("BYE-2: bye/delete drop the game's one-off fill-ins; an imported bye ignore
   assert.strictEqual((g.rosteredOffIds||[]).length, 0);
 });
 
-test("FILLIN-NOPREFS-1: a fill-in with no stated preferences still gets court time at the default settings", ()=>{
+test("FILLIN-NOPREFS-1: a fill-in with no stated preferences is happy anywhere - plays, is never off-preference, and is unaffected by the off-preference toggle", ()=>{
   // Regression: charging a preference-less player the full flat off-preference
-  // cost benched them for every quarter from slider 5 up, default included.
+  // cost benched them for every quarter from slider 5 up, default included;
+  // and with the toggle off they were disqualified from every position.
+  [true,false].forEach(allowOffPreference=>{
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 4;
+    st.season.desiredBenchSize = 1;
+    st.settings.allowOffPreference = allowOffPreference;
+    ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+    engine.ensureGamesExist();
+    st.fillIns.push({id:"fi1", name:"Guest", prefs:[], saved:true});
+    engine.gameNums().forEach(n=>{ engine.getGame(n).fillInIds = ["fi1"]; });
+    engine.runGeneration();
+    let onCourt = 0;
+    engine.gameNums().forEach(n=>{
+      const g = engine.getGame(n);
+      assert.strictEqual(g.error, null, `allowOffPreference=${allowOffPreference}: game ${n} should generate: ${g.error}`);
+      g.schedule.quarters.forEach(q=>{ if(Object.values(q.onCourt).includes("fi1")) onCourt++; });
+    });
+    assert.ok(onCourt >= 4, `allowOffPreference=${allowOffPreference}: the guest should be on court for a fair share of the 16 quarters, got ${onCourt}`);
+    assert.strictEqual(engine.computeOffPrefLog().filter(o=>o.playerId==="fi1").length, 0, `allowOffPreference=${allowOffPreference}: none of the guest's quarters are off-preference`);
+  });
+});
+
+test("FILLIN-NOPREFS-2: a no-preference fill-in covers a position nobody else lists, even with off-preference disallowed", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
-  st.season.numGames = 4;
-  st.season.desiredBenchSize = 1;
-  ["GS","GA","WA","C","WD","GD","GK"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  st.season.numGames = 1;
+  st.season.desiredBenchSize = 0;
+  st.settings.allowOffPreference = false;
+  ["GS","GA","WA","C","WD","GD"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos])); // nobody lists GK
   engine.ensureGamesExist();
   st.fillIns.push({id:"fi1", name:"Guest", prefs:[], saved:true});
-  engine.gameNums().forEach(n=>{ engine.getGame(n).fillInIds = ["fi1"]; });
+  engine.getGame(1).fillInIds = ["fi1"];
   engine.runGeneration();
-  let onCourt = 0;
-  engine.gameNums().forEach(n=>engine.getGame(n).schedule.quarters.forEach(q=>{ if(Object.values(q.onCourt).includes("fi1")) onCourt++; }));
-  assert.ok(onCourt >= 4, `the guest should be on court for a fair share of the 16 quarters, got ${onCourt}`);
+  const g = engine.getGame(1);
+  assert.strictEqual(g.error, null, "the guest fills GK rather than the game erroring: "+g.error);
+  g.schedule.quarters.forEach(q=>assert.strictEqual(q.onCourt.GK, "fi1"));
+  assert.strictEqual(engine.computeOffPrefLog().length, 0);
 });
 
 test("HEADLINES-1: the Settings tab's at-a-glance numbers are empty before generation and count regular players only", ()=>{
@@ -1728,11 +1753,11 @@ test("HEADLINES-1: the Settings tab's at-a-glance numbers are empty before gener
   engine.ensureGamesExist();
   assert.strictEqual(engine.computeSeasonHeadlines(), null, "nothing generated yet");
 
-  // A preference-less fill-in makes the bench: off-preference whenever on court.
-  st.fillIns.push({id:"fi1", name:"Guest", prefs:[], saved:true});
+  // A fill-in the coach has locked out of position for one quarter.
+  st.fillIns.push({id:"fi1", name:"Guest", prefs:["GS"], saved:true});
   engine.getGame(1).fillInIds = ["fi1"];
   engine.getGame(2).fillInIds = ["fi1"];
-  st.settings.preferenceSlider = 0;
+  engine.getGame(1).lockedSlots = {"0-GK":"fi1"};
   engine.runGeneration();
   const h = engine.computeSeasonHeadlines();
   assert.ok(engine.computeOffPrefLog().length > 0, "sanity: the fill-in did play off-preference quarters");

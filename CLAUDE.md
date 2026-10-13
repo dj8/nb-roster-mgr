@@ -53,8 +53,10 @@ matching `docs/modules/*.md` / `data-model.md`.
   `Array.isArray`, not a length/truthy check. Both the JSON backup and localStorage preserve the distinction.
 - **Disqualified Hungarian cells use `BIG_M` (1e9), never `Infinity`** — `Infinity` yields NaN in the
   potentials arithmetic.
-- **Off-preference costs every player with a preference list the same flat `OFF_PREFERENCE_COST`** (a
-  no-preference fill-in costs `NO_PREFERENCE_COST`), and the variety term in
+- **An empty preference list means "happy anywhere"** (fill-ins only, §6): use
+  `RosterSolver.isInPreference(p,pos)`, not `prefs.includes(pos)`, wherever the player could be a fill-in
+  (Phase 1 and the roster-composition notes only ever see regulars, who always have a list).
+- **Off-preference costs every player the same flat `OFF_PREFERENCE_COST`**, and the variety term in
   `buildQuarterCostFns` is capped below it, so raising position variety can never make an off-preference
   cell cheaper than an in-preference one. The preference slider's weights (`derivePreferenceWeights`)
   are geometric with tuned endpoints. Re-run `npm run test:settings` if retuning any of it.
