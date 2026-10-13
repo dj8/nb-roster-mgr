@@ -47,7 +47,7 @@ matching `docs/modules/*.md` / `data-model.md`.
 - **Played games are frozen (§8.1).** Anything that writes to a game must check `game.isPlayed` first
   and skip it. Nothing enforces this structurally.
 - **Fill-ins are excluded from season fairness.** Any new aggregate over a quarter's `onCourt`/`bench`
-  must filter out fill-ins (`STATE.fillIns.some(f=>f.id===pid)`).
+  must filter out fill-ins (`isFillInId(pid)`).
 - **`rosterOffLockIds`: `null` ≠ `[]`.** `null` = auto, `[]` = explicit "nobody off". Use
   `Array.isArray`, not a length/truthy check. Both the JSON backup and localStorage preserve the distinction.
 - **Disqualified Hungarian cells use `BIG_M` (1e9), never `Infinity`** — `Infinity` yields NaN in the

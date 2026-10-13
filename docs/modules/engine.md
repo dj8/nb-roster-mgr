@@ -5,7 +5,7 @@
 The bridge between `STATE` and the pure `RosterSolver`/`Hungarian` functions: turns live
 application state into the plain-data shapes the solver expects, calls it, and writes the
 results back onto `STATE.games[...]`. Also owns the season-wide "cumulative" running
-totals (on-court/bench/missed counts per player) that Phase 2's cost model depends on for
+totals (on-court/bench/position counts per player) that Phase 2's cost model depends on for
 fairness, and the report aggregations the Reports tab reads. This is the largest
 conceptual module but not a separate file — it's interleaved with everything else in
 `app.js`.
@@ -46,9 +46,8 @@ back by `solver.js`'s cost functions to know "how much has this player already p
 
 | Function | Params | Returns | Notes |
 |---|---|---|---|
-| `emptyCumulative()` | — | `{missed:{}, onCourt:{}, bench:{}, posCount:{}}` | Fresh accumulator |
+| `emptyCumulative()` | — | `{onCourt:{}, bench:{}, posCount:{}}` | Fresh accumulator |
 | `applyQuarterToCumulative(cumulative, q, sign)` | accumulator, `{onCourt,bench}`, `+1`/`-1` | — (mutates `cumulative`) | Add or *remove* one quarter's contribution — the `-1` direction is what lets Phase 2b's refinement be reconciled without recomputing from scratch (see `runGeneration` below) |
-| `foldGameIntoCumulative(cumulative, rosteredOffIds, unavailableIds, schedule)` | — | — (mutates) | A whole game's contribution — missed counts always, on-court/bench counts only if `schedule` is non-null (a `null` schedule, e.g. an errored game, still counts as missed for those who were off/unavailable) |
 | `buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds)` | — | one log entry `{game,quarter,playerId,playerName,position,unavailableSpecialists,benchedSpecialists}` | Explains *why* an off-preference fill happened — who else prefers that position and why they weren't available (unavailable/rostered-off vs. benched this specific quarter) |
 
 Fill-ins are excluded from all of this — see
@@ -59,7 +58,7 @@ Fill-ins are excluded from all of this — see
 | Function | Params | Returns | Side effects |
 |---|---|---|---|
 | `computeSeasonRosterOff(preserveExisting?)` | optional boolean | Phase 1 `stats` object | **Phase 1 only.** Builds `RosterSolver.solveSeasonRosterOff` input from every game's `planGameAvailability`, calls it, writes `rosteredOffIds`/`unavailableIds`/`shortfall`/`minFillIns`/`recommendedFillIns`/`coverageWarnings`/`noBenchOnly`/`squadIds` onto every non-played game. `preserveExisting=true` (used only by backup import) treats a non-played, non-locked game that already has a non-empty `rosteredOffIds` as fixed, so re-deriving display fields after a backup load doesn't silently pick a different roster-off set than what was exported. |
-| `runGeneration()` | — | `{invalid, offPrefLog, phase1Stats, elapsedMs, cumulative}` | **The full pipeline** — see [`flows.md`](../flows.md#1-season-generation-generate-season--rebalance-remaining-games). Calls `computeSeasonRosterOff()`, then for every non-played game: `planGameSquad` → 4× `RosterSolver.solveQuarterPositions` (folding cumulative after each) → `RosterSolver.refineGameQuarters` → reconcile cumulative → write `game.schedule`/`generated`/`error`. Ends with `saveState()`. This is fully synchronous and can take several seconds — the caller (`renderSchedule`) defers it one tick via `setTimeout(fn, 0)` so a "Generating…" busy state can actually paint first. |
+| `runGeneration()` | — | `{invalid, phase1Stats, elapsedMs, cumulative}` | **The full pipeline** — see [`flows.md`](../flows.md#1-season-generation-generate-season--rebalance-remaining-games). Calls `computeSeasonRosterOff()`, then for every non-played game: `planGameSquad` → 4× `RosterSolver.solveQuarterPositions` (folding cumulative after each) → `RosterSolver.refineGameQuarters` → reconcile cumulative → write `game.schedule`/`generated`/`error`. Ends with `saveState()`. This is fully synchronous and can take several seconds — the caller (`renderSchedule`) defers it one tick via `setTimeout(fn, 0)` so a "Generating…" busy state can actually paint first. |
 
 ## Report aggregations
 
@@ -74,8 +73,8 @@ what's actually in `STATE.games[...].schedule`.
 | `computePlayerSummaries()` | one row per player: `{onCourt, bench, missed, gamesPlayedIn, positions:{pos:count}, offPrefPositions:{pos:count}, offPrefTotal}` |
 | `computeOffPrefLog()` | every off-preference fill across the whole season, via `buildOffPrefLog` |
 | `describeOffPrefReason(o)` | one readable sentence from a log entry — shared by the Reports table and the XLSX export so wording never drifts between them |
-| `computeOffPrefRate()` | `{count, totalSlots, rate}` |
-| `computeMissedGamesWarningForReports()` | delegates to `RosterSolver.computeMissedGamesWarning` |
+| `computeOffPrefRate(log?)` | `{count, totalSlots, rate}` |
+| `computeMissedGamesWarningForReports(summaries?)` | delegates to `RosterSolver.computeMissedGamesWarning` |
 | `computeRosterOffAchievabilityNotesForReports()` | delegates to `RosterSolver.computeRosterOffAchievabilityNotes` |
 
 ## Callers

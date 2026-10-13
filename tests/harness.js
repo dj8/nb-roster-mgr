@@ -101,6 +101,7 @@ if(typeof module!=="undefined" && module.exports){
     ensureGamesExist: ensureGamesExist,
     deleteGame: deleteGame,
     makeBye: makeBye,
+    purgePersonFromGames: purgePersonFromGames,
     gameNums: gameNums,
     POSITIONS: POSITIONS,
     uid: uid,

@@ -81,8 +81,8 @@ case. See [`flows.md`](flows.md#3-manual-roster-off-override).
 
 ### Fill-ins are invisible to season fairness
 A fill-in can occupy a real on-court or bench slot, but every fairness computation
-(`applyQuarterToCumulative`, `foldGameIntoCumulative`, `computePlayerSummaries`) explicitly
-filters them out via `STATE.fillIns.some(f=>f.id===pid)` checks. This is intentional (§6)
+(`applyQuarterToCumulative`, `computePlayerSummaries`) explicitly
+filters them out via `isFillInId(pid)` checks. This is intentional (§6)
 but easy to forget when adding a new aggregate — a new stat that iterates a quarter's
 `onCourt`/`bench` without this check will silently include guests in season totals.
 
@@ -153,3 +153,20 @@ failing to find the function.
   `STATE` wholesale (players, fill-ins, season, settings, every game and its schedule).
 
 They read completely different file formats and are not interchangeable.
+
+## Ids are untrusted too
+
+A backup file's player/fill-in ids are arbitrary strings (`importBackup` only rejects empty and
+duplicate ones). Wrap them in `esc()` like any other user-supplied string whenever they go into
+markup (`data-*`, `value=`); read them back through `dataset`/`.value`, which un-escape.
+
+## Shortening the season deletes games
+
+Lowering "Number of games" prunes every game beyond the new count (`ensureGamesExist`). The Setup
+handler asks for confirmation first when any of those games is played, generated, or has a
+date/location.
+
+## An empty slot can't be locked
+
+`lockedSlots` only ever holds a player id. Choosing "unassigned" with "Lock this slot" ticked
+stores no lock (the solver has no notion of a deliberately empty position), and the toast says so.
