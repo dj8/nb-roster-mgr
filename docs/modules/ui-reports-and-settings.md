@@ -44,7 +44,7 @@ whenever `dirtySinceGeneration` is already true from a previous change.
 | `seasonHeadlinesHtml()` | The at-a-glance card body: `computeSeasonHeadlines()` (see [`engine.md`](engine.md#report-aggregations)) as six stat boxes, each naming the control that moves it, or a prompt to generate if there's no schedule yet. A number that differs from `headlinesBeforeLastGeneration` also shows `was …`. |
 | `headlineStats(h)` | Formats a headlines object into the six `{label, value, moves}` entries, in display order. |
 
-`headlinesBeforeLastGeneration` is a module variable set by the Schedule tab's
+`headlinesBeforeLastGeneration` is a module variable set by the topbar's
 `runGenerationWithBusyState` just before each generation — session-only, never saved, so
 the "was" comparison disappears on reload.
 

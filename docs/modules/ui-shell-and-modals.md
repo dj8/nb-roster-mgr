@@ -12,9 +12,11 @@ library; every `render*` function returns a template-literal HTML string assigne
 
 | Function | Params | Returns | Side effects |
 |---|---|---|---|
-| `render()` | — | — | Sets `<html data-theme>`, rebuilds the entire `#app` shell (brand, theme toggle, tab bar), wires the theme toggle and tab-click/arrow-key handlers, then calls `renderMain()`. Called once at boot and after anything that changes `STATE.theme`. |
+| `render()` | — | — | Sets `<html data-theme>`, rebuilds the entire `#app` shell (brand, Generate/Rebalance buttons, theme toggle, tab bar), wires those buttons, the theme toggle and tab-click/arrow-key handlers, then calls `renderMain()`. Called once at boot and after anything that changes `STATE.theme`. |
 | `syncTabButtons()` | — | — | Updates `.active`/`aria-selected` on the tab buttons without a full `render()` — used after `renderMain()` so switching tabs doesn't also re-render the topbar |
-| `renderMain()` | — | — | Looks up `STATE.activeTab` in a `{tabId: renderFn}` map and calls the matching tab's render function into a fresh `#panelRoot` |
+| `syncGenerateButtons()` | — | — | Disables the topbar's Generate/Rebalance buttons when the roster is empty or invalid. They sit outside every tab panel, so nothing re-renders them: `renderMain()` calls this, as does the Setup bench-size handler (which re-renders only its own tab) |
+| `runGenerationWithBusyState(pastTenseLabel)` | toast wording | — | Click handler for both buttons: shows a disabled "Generating…" state, defers one tick so it paints, snapshots `headlinesBeforeLastGeneration`, runs `runGeneration()`, clears `dirtySinceGeneration`, toasts a summary and calls `renderMain()` for whichever tab is open |
+| `renderMain()` | — | — | Calls `syncGenerateButtons()`, then looks up `STATE.activeTab` in a `{tabId: renderFn}` map and calls the matching tab's render function into a fresh `#panelRoot` |
 
 The tab bar is a real `role="tablist"` with arrow-key navigation (`ArrowLeft`/`ArrowRight`
 cycles `STATE.activeTab`) and a scroll-fade cue (`wireScrollFade`, below) for narrow

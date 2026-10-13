@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 53; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 54; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -874,6 +874,8 @@ function render(){
           </div>
         </div>
         <div class="topbar-actions">
+          <button class="btn btn-sm btn-primary" id="genBtn" title="Runs the assignment engine across every unplayed game, in order">Generate season</button>
+          <button class="btn btn-sm" id="rebalBtn" title="Re-runs the same engine honoring every lock and edit — played games and locked slots are never touched">Rebalance remaining games</button>
           <button class="icon-btn" id="themeToggle" title="Toggle dark / light mode">${STATE.theme==="dark"?"&#9728;":"&#9789;"}</button>
         </div>
       </div>
@@ -897,7 +899,39 @@ function render(){
     document.getElementById("tabbtn-"+TABS[next].id).focus();
   });
   wireScrollFade(document.getElementById("tabs"));
+  document.getElementById("genBtn").onclick=()=>runGenerationWithBusyState("Season generated");
+  document.getElementById("rebalBtn").onclick=()=>runGenerationWithBusyState("Remaining games rebalanced");
   renderMain();
+}
+/* The topbar's Generate/Rebalance buttons sit outside every tab panel, so
+   nothing re-renders them — call this wherever roster validity can change. */
+function syncGenerateButtons(){
+  const blocked = !STATE.players.length || !!regularRosterInvalid();
+  ["genBtn","rebalBtn"].forEach(id=>{ document.getElementById(id).disabled = blocked; });
+}
+/* runGeneration() is synchronous and can take seconds with no yield
+   points — deferring it one tick via setTimeout lets the disabled/
+   "Generating…" state actually paint before the freeze, so the UI doesn't
+   look identically hung the whole time. */
+function runGenerationWithBusyState(pastTenseLabel){
+  const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
+  const labels = [genBtn.textContent, rebalBtn.textContent];
+  genBtn.disabled = true; rebalBtn.disabled = true;
+  genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
+  setTimeout(()=>{
+    headlinesBeforeLastGeneration = computeSeasonHeadlines();
+    const r = runGeneration();
+    dirtySinceGeneration = false;
+    console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
+    const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
+    const errored = gameNums().filter(n=>getGame(n).error).length;
+    const bits = [`${gameNums().length} games`];
+    if(errored) bits.push(`${errored} couldn't be scheduled`);
+    else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
+    toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
+    genBtn.textContent = labels[0]; rebalBtn.textContent = labels[1];
+    renderMain(); // whichever tab is open; also re-enables the buttons
+  }, 0);
 }
 function syncTabButtons(){
   document.querySelectorAll("[data-tab]").forEach(b=>{
@@ -909,6 +943,7 @@ function syncTabButtons(){
 function renderMain(){
   const main = document.getElementById("main");
   ensureGamesExist();
+  syncGenerateButtons();
   const fns = {setup:renderSetup, schedule:renderSchedule, fillins:renderFillIns, reports:renderReports, settings:renderSettings, data:renderData};
   main.innerHTML = `<div class="panel active" id="panelRoot" role="tabpanel" aria-labelledby="tabbtn-${STATE.activeTab}"></div>`;
   fns[STATE.activeTab](document.getElementById("panelRoot"));
@@ -962,7 +997,7 @@ function renderSetup(root){
     confirmDialog("Shorten the season", `Changing to ${v} game(s) permanently deletes ${losing.map(gameTag).join(", ")}${played?` — including ${played} played game(s)`:""}, with their schedules and details. This cannot be undone.`, apply, {confirmLabel:"Delete games", danger:true});
   };
   document.getElementById("benchSize").onchange=e=>{
-    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; renderSetup(root);
+    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; syncGenerateButtons(); renderSetup(root);
   };
   document.getElementById("addPlayerBtn").onclick=()=>openPlayerDialog(null);
   document.getElementById("importCsvBtn").onclick=()=>document.getElementById("csvFileInput").click();
@@ -1138,53 +1173,18 @@ function renderSchedule(root){
   const invalidMsg = regularRosterInvalid();
   const hasAnyGenerated = gameNums().some(n=>getGame(n).generated || getGame(n).isPlayed);
   const FILTERS = [["all","All"],["attention","Needs attention"],["played","Played"]];
+  const notice = !STATE.players.length ? `<p class="hint">Add players in the Setup tab first.</p>` :
+    invalidMsg ? `<div class="alert alert-danger">${esc(invalidMsg)}</div>` :
+    dirtySinceGeneration && hasAnyGenerated ? `<div class="alert alert-warn">Settings or overrides changed since the last generation — rebalance to apply them.</div>` : "";
   root.innerHTML = `
-    <div class="card">
-      <div class="card-head">
-        <div><h2>Generate &amp; rebalance</h2><p>Runs the assignment engine across every unplayed game, in order.</p></div>
-        <div class="btn-row">
-          <button class="btn btn-primary" id="genBtn" ${invalidMsg||!STATE.players.length?"disabled":""}>Generate season</button>
-          <button class="btn" id="rebalBtn" ${invalidMsg||!STATE.players.length?"disabled":""}>Rebalance remaining games</button>
-        </div>
-      </div>
-      ${!STATE.players.length? `<p class="hint">Add players in the Setup tab first.</p>` :
-        invalidMsg ? `<div class="alert alert-danger">${esc(invalidMsg)}</div>` :
-        `<p class="hint">Rebalance re-runs the same engine honoring every lock and edit you've made — played games and manually locked slots are never touched, but the fairness math folds their results in.</p>`}
-      ${dirtySinceGeneration && hasAnyGenerated? `<div class="alert alert-warn" style="margin-top:10px;">Settings or overrides changed since the last generation — rebalance to apply them.</div>` : ""}
-      <div id="genSummary"></div>
-    </div>
+    ${notice}
     <div class="btn-row" role="group" aria-label="Filter games">
       ${FILTERS.map(([id,label])=>`<button class="btn btn-sm ${scheduleUiState.filter===id?'btn-primary':''}" data-filter="${id}">${label}</button>`).join("")}
     </div>
     <div id="gamesList" style="margin-top:10px;"></div>
   `;
-  document.getElementById("genBtn").onclick=()=>runGenerationWithBusyState("Season generated");
-  document.getElementById("rebalBtn").onclick=()=>runGenerationWithBusyState("Remaining games rebalanced");
   root.querySelectorAll("[data-filter]").forEach(b=>b.onclick=()=>{ scheduleUiState.filter=b.dataset.filter; renderSchedule(root); });
   renderGamesList(document.getElementById("gamesList"));
-
-  /* runGeneration() is synchronous and can take seconds with no yield
-     points — deferring it one tick via setTimeout lets the disabled/
-     "Generating…" state actually paint before the freeze, so the UI doesn't
-     look identically hung the whole time. */
-  function runGenerationWithBusyState(pastTenseLabel){
-    const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
-    genBtn.disabled = true; rebalBtn.disabled = true;
-    genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
-    setTimeout(()=>{
-      headlinesBeforeLastGeneration = computeSeasonHeadlines();
-      const r = runGeneration();
-      dirtySinceGeneration = false;
-      console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
-      const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
-      const errored = gameNums().filter(n=>getGame(n).error).length;
-      const bits = [`${gameNums().length} games`];
-      if(errored) bits.push(`${errored} couldn't be scheduled`);
-      else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
-      toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
-      renderSchedule(root);
-    }, 0);
-  }
 }
 
 function renderGamesList(el){
@@ -1978,7 +1978,7 @@ function headlineStats(h){
 }
 function seasonHeadlinesHtml(){
   const now = computeSeasonHeadlines();
-  if(!now) return `<p class="hint">Generate the season from the Schedule tab to see what these settings produce.</p>`;
+  if(!now) return `<p class="hint">Generate the season (button at the top) to see what these settings produce.</p>`;
   const before = headlinesBeforeLastGeneration ? headlineStats(headlinesBeforeLastGeneration) : null;
   return `<div class="stat-grid">${headlineStats(now).map((st,i)=>{
     const was = before && before[i].value!==st.value ? `<div class="was">was ${before[i].value}</div>` : "";
@@ -1994,7 +1994,7 @@ function renderSettings(root){
     {value:"coverage", label:"Protect thin positions", desc:"Avoids resting the players a position depends on; missed games may come out less even"}
   ];
   root.innerHTML = `
-    ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance from the Schedule tab.</div>` : ""}
+    ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance (buttons at the top).</div>` : ""}
     <div class="card">
       <div class="card-head"><div><h2>This season at a glance</h2><p>What the current settings produced the last time the season was generated${dirtySinceGeneration?" — regenerate to see the effect of your changes":""}.</p></div></div>
       <div id="seasonHeadlines">${seasonHeadlinesHtml()}</div>
