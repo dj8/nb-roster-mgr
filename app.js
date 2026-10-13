@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 55; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 56; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -548,15 +548,12 @@ function runGeneration(){
     const played = cumulative.onCourt[p.id]||0;
     return {id:p.id, floor:played, cap:played+4*(gamesLeft[p.id]||0)};
   }), courtQuartersToShare);
-  // Only when missed games can't come out even may the players missing fewer
-  // be benched one more time a game, to hand court time to those missing more.
   const missedById = {};
   STATE.players.forEach(p=>{ missedById[p.id]=0; });
   nums.forEach(num=>{
     const game = getGame(num);
     (game.rosteredOffIds||[]).concat(game.unavailableIds||[]).forEach(id=>{ if(missedById[id]!=null) missedById[id]++; });
   });
-  const mostMissed = Math.max(0, ...Object.values(missedById));
 
   nums.forEach(num=>{
     const game = getGame(num);
@@ -575,15 +572,11 @@ function runGeneration(){
     game.error = null;
 
     const benchCount = plan.squad.length-7;
-    const baseCap = RosterSolver.baseBenchCap(plan.squad.length, benchCount);
-    const benchQuota = {}, benchCap = {};
-    plan.squad.forEach(p=>{
-      if(p.isFillIn){ benchQuota[p.id] = 4*benchCount/plan.squad.length; benchCap[p.id] = baseCap; return; }
-      const left = gamesLeft[p.id]--;
-      const courtDue = courtTargets[p.id]-(cumulative.onCourt[p.id]||0);
-      benchQuota[p.id] = Math.max(0, Math.min(4, 4-courtDue/left));
-      benchCap[p.id] = baseCap + (missedById[p.id]<mostMissed ? 1 : 0);
+    const { benchQuota, benchCap } = RosterSolver.planGameBench({
+      squad: plan.squad, benchSlotCount: benchCount, courtTargets,
+      onCourtSoFar: cumulative.onCourt, gamesLeft, missed: missedById
     });
+    plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
     const gameBenchSoFar = {};
     let benchedLastQuarter = new Set();
@@ -601,8 +594,6 @@ function runGeneration(){
       lockedSlotsPerQuarter.push(lockedSlots);
       const snapshot = {
         posCount: Object.assign({}, cumulative.posCount),
-        onCourt: Object.assign({}, cumulative.onCourt),
-        bench: Object.assign({}, cumulative.bench),
         gameBenchSoFar: Object.assign({}, gameBenchSoFar),
         benchedLastQuarter: new Set(benchedLastQuarter),
         benchQuota, benchCap
@@ -944,7 +935,8 @@ function render(){
   renderMain();
 }
 /* The topbar's Generate/Rebalance buttons sit outside every tab panel, so
-   nothing re-renders them — call this wherever roster validity can change. */
+   no tab render touches them: renderMain() calls this, which is why a handler
+   that changes roster validity must end in renderMain(), not a tab's own render. */
 function syncGenerateButtons(){
   const blocked = !STATE.players.length || !!regularRosterInvalid();
   ["genBtn","rebalBtn"].forEach(id=>{ document.getElementById(id).disabled = blocked; });
@@ -1037,7 +1029,7 @@ function renderSetup(root){
     confirmDialog("Shorten the season", `Changing to ${v} game(s) permanently deletes ${losing.map(gameTag).join(", ")}${played?` — including ${played} played game(s)`:""}, with their schedules and details. This cannot be undone.`, apply, {confirmLabel:"Delete games", danger:true});
   };
   document.getElementById("benchSize").onchange=e=>{
-    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; syncGenerateButtons(); renderSetup(root);
+    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; renderMain();
   };
   document.getElementById("addPlayerBtn").onclick=()=>openPlayerDialog(null);
   document.getElementById("importCsvBtn").onclick=()=>document.getElementById("csvFileInput").click();

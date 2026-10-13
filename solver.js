@@ -472,6 +472,30 @@ function baseBenchCap(squadSize, benchSlotCount){
   return Math.max(1, Math.ceil(4*benchSlotCount/Math.max(1,squadSize)));
 }
 
+/* §4 rules 2-3 for one game about to be solved: the bench quarters each squad
+   member is due in it, and the most they may sit before the cap penalty.
+   A regular is due whatever leaves them on pace for their season target over
+   the games they have left; a fill-in (outside season fairness) an even share
+   of this game's bench. Only when missed games can't come out even may the
+   players missing fewer be benched one more time, to hand court time to
+   those missing more.
+   input: { squad:[{id,isFillIn}], benchSlotCount, courtTargets:{id:n},
+            onCourtSoFar:{id:n}, gamesLeft:{id:n} (this game included), missed:{id:n} }
+   -> { benchQuota:{id:n}, benchCap:{id:n} } */
+function planGameBench(input){
+  const squad = input.squad||[];
+  const baseCap = baseBenchCap(squad.length, input.benchSlotCount);
+  const mostMissed = Math.max(0, ...Object.values(input.missed||{}));
+  const benchQuota = {}, benchCap = {};
+  squad.forEach(p=>{
+    if(p.isFillIn){ benchQuota[p.id] = 4*input.benchSlotCount/squad.length; benchCap[p.id] = baseCap; return; }
+    const courtDue = (input.courtTargets[p.id]||0) - (input.onCourtSoFar[p.id]||0);
+    benchQuota[p.id] = Math.max(0, Math.min(4, 4 - courtDue/Math.max(1, input.gamesLeft[p.id]||1)));
+    benchCap[p.id] = baseCap + ((input.missed[p.id]||0)<mostMissed ? 1 : 0);
+  });
+  return { benchQuota, benchCap };
+}
+
 /* The preference slider sets how the two sides of a cell's cost are weighed
    (derivePreferenceWeights): preference rank plus the variety term on one
    side, playing-time evenness on the other. Evenness lives entirely in the
@@ -483,8 +507,8 @@ function baseBenchCap(squadSize, benchSlotCount){
    same for every player, so raising it can never make an off-preference
    cell cheaper than any in-preference one.
    cumulative: {posCount, gameBenchSoFar:{id:n}, benchedLastQuarter:Set,
-                benchQuota:{id:n} (bench quarters this player should sit out this game — runGeneration derives it from computeCourtTargets),
-                benchCap:{id:n}   (most bench quarters this game before BENCH_CAP_PENALTY applies)} */
+                benchQuota:{id:n} (bench quarters this player should sit out this game),
+                benchCap:{id:n}   (most bench quarters this game before BENCH_CAP_PENALTY applies) — both from planGameBench} */
 function buildQuarterCostFns(cumulative, settings){
   const { preference: prefWeight, balance: balanceWeight } = derivePreferenceWeights(settings.preferenceSlider);
   const allowOff = !!settings.allowOffPreference;
@@ -524,7 +548,7 @@ function buildQuarterCostFns(cumulative, settings){
     // Off-preference (prefs listed, this position not among them) is a last
     // resort at every slider value: used only when the quarter can't be filled
     // in-preference, never to even out court time.
-    const lastResort = (p.prefs.length && prefRank(p,pos)<0) ? OFF_PREFERENCE_LAST_RESORT : 0;
+    const lastResort = isInPreference(p,pos) ? 0 : OFF_PREFERENCE_LAST_RESORT;
     return lastResort + prefWeight*(pc + varietyTerm(p,pos));
   }
   /* Bench-slot cost: how far benching this player now would put them past
@@ -533,15 +557,15 @@ function buildQuarterCostFns(cumulative, settings){
      and the back-to-back tie-break. All of it scales with the balance
      weight, so it is exactly 0 at slider=10: bench-rotation pressure can
      never be the reason an in-preference candidate loses to an
-     off-preference one at max preference (§5.1). Never negative (a quota is
-     at most 4), which keeps it clear of Hungarian's BIG_M arithmetic. */
+     off-preference one at max preference (§5.1). Never negative (planGameBench
+     keeps a quota within 0..4), which keeps it clear of Hungarian's BIG_M arithmetic. */
   function benchCellCost(p){
     const thisGame = (cumulative.gameBenchSoFar && cumulative.gameBenchSoFar[p.id])||0;
     const quota = (cumulative.benchQuota && cumulative.benchQuota[p.id])||0;
     const cap = (cumulative.benchCap && cumulative.benchCap[p.id]) || 1;
     const overCap = Math.max(0, thisGame+1-cap);
-    const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has && cumulative.benchedLastQuarter.has(p.id)) ? BACK_TO_BACK_BENCH_PENALTY : 0;
-    return balanceWeight*COURT_TIME_WEIGHT*(thisGame + 4 - Math.min(4,quota) + overCap*BENCH_CAP_PENALTY + backToBack);
+    const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has(p.id)) ? BACK_TO_BACK_BENCH_PENALTY : 0;
+    return balanceWeight*COURT_TIME_WEIGHT*(thisGame + 4 - quota + overCap*BENCH_CAP_PENALTY + backToBack);
   }
   return { positionCellCost, benchCellCost };
 }
@@ -647,7 +671,6 @@ function refineGameQuarters(input){
     const locks = lockedSlotsPerQuarter[qi]||{};
     return !!locks[key];
   }
-  const benchOf = qi=>Object.keys(qs[qi]).filter(k=>k.charAt(0)==="B").map(k=>qs[qi][k]);
   function gameCost(){
     const gameBenchSoFar = {};
     let benchedLastQuarter = new Set();
@@ -655,12 +678,14 @@ function refineGameQuarters(input){
     for(let qi=0; qi<nQ; qi++){
       const cumulative = Object.assign({}, cumulativeSnapshots[qi], {gameBenchSoFar, benchedLastQuarter});
       const { positionCellCost, benchCellCost } = buildQuarterCostFns(cumulative, settings);
+      const bench = [];
       Object.keys(qs[qi]).forEach(key=>{
         const pid = qs[qi][key]; if(!pid) return;
+        const isBench = key.charAt(0)==="B";
+        if(isBench) bench.push(pid);
         const p = playerById[pid]; if(!p) return;
-        total += key.charAt(0)==="B" ? benchCellCost(p) : positionCellCost(p,key);
+        total += isBench ? benchCellCost(p) : positionCellCost(p,key);
       });
-      const bench = benchOf(qi);
       bench.forEach(pid=>{ gameBenchSoFar[pid] = (gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(bench);
     }
@@ -762,6 +787,7 @@ const RosterSolver = {
   solveSeasonRosterOff,
   computeCourtTargets,
   baseBenchCap,
+  planGameBench,
   buildQuarterCostFns,
   solveQuarterPositions,
   refineGameQuarters,

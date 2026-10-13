@@ -24,6 +24,7 @@ the results back onto `STATE.games[...]`.
 | `deriveRosterOffWeights(rosterOffPriority)` | `"fairness"`/`"balanced"`/`"coverage"` | `{fairness, coverage}` | Maps the Settings-tab three-way choice onto Phase 1's two internal weights (a lookup in `ROSTER_OFF_COVERAGE_WEIGHT`, whose keys are `ROSTER_OFF_PRIORITIES`). Anything unrecognised is treated as the default, `"fairness"`, whose coverage weight is a tie-break only (1e-6: a whole season of coverage penalties can't outweigh one step of missed-games evenness). |
 | `computeCourtTargets(players, total)` | `[{id, floor, cap}]`, on-court quarters to share | `{id: target}` | Season on-court target per regular (§4 rule 2) — see the cost model below. |
 | `baseBenchCap(squadSize, benchSlotCount)` | two counts | integer ≥ 1 | Fewest bench stints per game everyone can be held to (§4 rule 3). |
+| `planGameBench(input)` | `{squad:[{id,isFillIn}], benchSlotCount, courtTargets, onCourtSoFar, gamesLeft, missed}` | `{benchQuota:{id:n}, benchCap:{id:n}}` | One game's bench quarters due and bench limit per squad member; goes into the `cumulative` snapshot. |
 | `derivePreferenceWeights(preferenceSlider)` | 0-10 slider value | `{preference, balance}` (sum to 1) | Maps the preference slider onto the cost model's two weights: ratio geometric from `PREFERENCE_RATIO_AT_0` to `PREFERENCE_RATIO_AT_9`, balance exactly 0 at 10. |
 | `isInPreference(p, pos)` | player, position | boolean | The one definition of "in-preference": the position is in the player's list, or the list is empty (a no-preference fill-in is happy anywhere, §6). Used for cost, the `offPreference` flag, and by `app.js` for coverage warnings, the off-preference log and manual-edit labels. |
 | `computeMissedGamesWarning(missedByPlayer, threshold?)` | `[{id,name,missed}]` | `null` or `{spread,max,min,mostMissed,leastMissed,suggestion}` | Reports-tab informational warning; never fed back into generation. |
@@ -100,11 +101,12 @@ slot:
 `computeCourtTargets(players, total)` gives each regular's season on-court target: one
 common level, clamped to `[floor, cap]` per player (quarters already played in frozen
 games; those plus every quarter of every game still to come) so the targets sum to
-`total`. `runGeneration` turns a target into a per-game `benchQuota`
-(`4 − courtStillDue / gamesLeft`), which is what makes a player who misses more games sit
-out less. `baseBenchCap(squadSize, benchSlots)` is the per-game bench limit
-(`max(1, ceil(4·bench / squad))`); `runGeneration` adds 1 for players who miss fewer games
-than the most-missing player (§4 rule 3).
+`total`. `planGameBench(input)` turns the targets into one game's `benchQuota`
+(`4 − courtStillDue / gamesLeft`, which is what makes a player who misses more games sit
+out less; a fill-in gets an even share of that game's bench) and `benchCap`:
+`baseBenchCap(squadSize, benchSlots)` (`max(1, ceil(4·bench / squad))`), plus 1 for
+players who miss fewer games than the most-missing player (§4 rule 3). `runGeneration`
+calls it at the start of each game with the live on-court totals.
 
 `solveQuarterPositions` builds the `(squad) × (open positions + bench slots)` matrix from
 these, calls `Hungarian.solve`, and maps the result back — any cell that only got

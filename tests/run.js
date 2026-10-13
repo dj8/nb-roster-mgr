@@ -1393,7 +1393,7 @@ function buildFlexibleRoster(engine){
   const st = engine._getState();
   st.season.numGames = 11;
   st.season.desiredBenchSize = 2;
-  const POS = ["GS","GA","WA","C","WD","GD","GK"];
+  const POS = engine.POSITIONS;
   for(let i=0;i<11;i++) addPlayer(engine, "P"+i, POS.map((_,k)=>POS[(i+k)%7]));
   engine.ensureGamesExist();
   return st;
@@ -1411,6 +1411,15 @@ test("COURT-TARGET-1: season court targets are level, except for players who can
   assert.strictEqual(S.baseBenchCap(9,2), 1);
   assert.strictEqual(S.baseBenchCap(8,1), 1);
   assert.strictEqual(S.baseBenchCap(10,3), 2, "12 bench stints can't go round 10 players once each");
+
+  // planGameBench: a regular behind on court time is due less bench; only those missing fewer games get the relaxed cap.
+  const plan = S.planGameBench({
+    squad:[{id:"a"},{id:"b"},{id:"g",isFillIn:true}].concat(["c","d","e","f","h","i"].map(id=>({id}))), benchSlotCount:2,
+    courtTargets:{a:28,b:28}, onCourtSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3}
+  });
+  assert.ok(near(plan.benchQuota.a,0.5) && near(plan.benchQuota.b,0), JSON.stringify(plan.benchQuota));
+  assert.ok(near(plan.benchQuota.g,8/9), "a fill-in is due an even share of this game's bench");
+  assert.deepStrictEqual([plan.benchCap.a, plan.benchCap.b, plan.benchCap.g], [2,1,1]);
 });
 
 test("COURT-EVEN-1: when missed games are even, nobody is benched more than once in a game", ()=>{
@@ -1477,10 +1486,10 @@ test("PREF-WEIGHTS-1: the preference slider is evenly (geometrically) spaced fro
   }
   assert.strictEqual(S.derivePreferenceWeights(10).balance, 0);
 
-  // BENCH-MAXSLIDER-1 (M2 regression): at 10 the season bench-rate term is
-  // exactly zero, so bench rotation can never be why an in-preference
-  // candidate loses out (§5.1).
-  const cumulative = {posCount:{}, onCourt:{a:40}, bench:{a:0}, gameBenchSoFar:{}, benchedLastQuarter:new Set()};
+  // BENCH-MAXSLIDER-1 (M2 regression): at 10 the whole bench cost — quota,
+  // cap penalty, back-to-back — is exactly zero, so bench rotation can never
+  // be why an in-preference candidate loses out (§5.1).
+  const cumulative = {posCount:{}, gameBenchSoFar:{a:3}, benchedLastQuarter:new Set(["a"]), benchQuota:{a:0}, benchCap:{a:1}};
   const atMax = S.buildQuarterCostFns(cumulative, {preferenceSlider:10, allowOffPreference:true, positionVariety:1});
   assert.strictEqual(atMax.benchCellCost({id:"a", prefs:["GS"]}), 0);
   assert.strictEqual(atMax.positionCellCost({id:"a", prefs:["GS"]}, "GS"), 0);
