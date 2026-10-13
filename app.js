@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 54; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 55; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -520,17 +520,49 @@ function runGeneration(){
   const cumulative = emptyCumulative();
   const nums = scheduledGameNums();
 
+  // §8.1: a played game is locked — every stored field stays untouched; only
+  // fold its already-frozen result into cumulative fairness. Done up front,
+  // so the season court-time targets below see every played quarter whatever
+  // its place in the order.
   nums.forEach(num=>{
     const game = getGame(num);
+    if(game.isPlayed && game.schedule) game.schedule.quarters.forEach(q=>applyQuarterToCumulative(cumulative,q,1));
+  });
 
-    if(game.isPlayed){
-      // §8.1: locked — every stored field stays untouched; only fold its
-      // already-frozen result into cumulative fairness for the rest of the season.
-      if(game.schedule) game.schedule.quarters.forEach(q=>applyQuarterToCumulative(cumulative,q,1));
-      return;
-    }
+  /* §4 rules 3-4: who should sit out how much. Phase 1 has fixed every
+     game's squad, so each regular's remaining games are known; their season
+     on-court target follows (RosterSolver.computeCourtTargets), and from it
+     the bench quarters they're due in each game still to come. */
+  const planByNum = {};
+  const gamesLeft = {}; // regular id -> unplayed games they're in the squad for, from the current game on
+  let courtQuartersToShare = STATE.players.reduce((sum,p)=>sum+(cumulative.onCourt[p.id]||0), 0);
+  nums.forEach(num=>{
+    if(getGame(num).isPlayed) return;
+    const plan = planByNum[num] = planGameSquad(num);
+    if(plan.squad.length<7) return;
+    const regulars = plan.squad.filter(p=>!p.isFillIn);
+    regulars.forEach(p=>{ gamesLeft[p.id] = (gamesLeft[p.id]||0)+1; });
+    courtQuartersToShare += 28*regulars.length/plan.squad.length; // fill-ins take an equal share of the court
+  });
+  const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>{
+    const played = cumulative.onCourt[p.id]||0;
+    return {id:p.id, floor:played, cap:played+4*(gamesLeft[p.id]||0)};
+  }), courtQuartersToShare);
+  // Only when missed games can't come out even may the players missing fewer
+  // be benched one more time a game, to hand court time to those missing more.
+  const missedById = {};
+  STATE.players.forEach(p=>{ missedById[p.id]=0; });
+  nums.forEach(num=>{
+    const game = getGame(num);
+    (game.rosteredOffIds||[]).concat(game.unavailableIds||[]).forEach(id=>{ if(missedById[id]!=null) missedById[id]++; });
+  });
+  const mostMissed = Math.max(0, ...Object.values(missedById));
 
-    const plan = planGameSquad(num);
+  nums.forEach(num=>{
+    const game = getGame(num);
+    if(game.isPlayed) return;
+
+    const plan = planByNum[num];
     game.squadIds = plan.squad.map(p=>p.id);
     game.noBenchOnly = plan.noBenchOnly;
     game.coverageWarnings = computeCoverageWarnings(plan);
@@ -543,6 +575,15 @@ function runGeneration(){
     game.error = null;
 
     const benchCount = plan.squad.length-7;
+    const baseCap = RosterSolver.baseBenchCap(plan.squad.length, benchCount);
+    const benchQuota = {}, benchCap = {};
+    plan.squad.forEach(p=>{
+      if(p.isFillIn){ benchQuota[p.id] = 4*benchCount/plan.squad.length; benchCap[p.id] = baseCap; return; }
+      const left = gamesLeft[p.id]--;
+      const courtDue = courtTargets[p.id]-(cumulative.onCourt[p.id]||0);
+      benchQuota[p.id] = Math.max(0, Math.min(4, 4-courtDue/left));
+      benchCap[p.id] = baseCap + (missedById[p.id]<mostMissed ? 1 : 0);
+    });
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
     const gameBenchSoFar = {};
     let benchedLastQuarter = new Set();
@@ -563,7 +604,8 @@ function runGeneration(){
         onCourt: Object.assign({}, cumulative.onCourt),
         bench: Object.assign({}, cumulative.bench),
         gameBenchSoFar: Object.assign({}, gameBenchSoFar),
-        benchedLastQuarter: new Set(benchedLastQuarter)
+        benchedLastQuarter: new Set(benchedLastQuarter),
+        benchQuota, benchCap
       };
       cumulativeSnapshots.push(snapshot);
 
@@ -580,10 +622,8 @@ function runGeneration(){
 
       // fold this quarter immediately so later quarters in same game see updated counts
       applyQuarterToCumulative(cumulative, {onCourt:result.onCourt, bench:result.bench}, 1);
-      result.bench.forEach(pid=>{
-        if(isFillInId(pid)) return;
-        gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1;
-      });
+      // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
+      result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(result.bench);
       quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
     }
@@ -1968,7 +2008,7 @@ function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, righ
    names the control each number responds to. */
 function headlineStats(h){
   return [
-    {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"preference slider"},
+    {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"allow off-preference"},
     {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
     {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
     {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
@@ -1989,7 +2029,7 @@ function seasonHeadlinesHtml(){
 function renderSettings(root){
   const s = STATE.settings;
   const priorities = [
-    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible, even if that leaves a game thin at a position"},
+    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible (counting games they're unavailable for); coverage only decides between equally even splits"},
     {value:"balanced", label:"Balanced", desc:"Accepts a slightly uneven split to avoid the worst coverage gaps"},
     {value:"coverage", label:"Protect thin positions", desc:"Avoids resting the players a position depends on; missed games may come out less even"}
   ];
@@ -2005,12 +2045,12 @@ function renderSettings(root){
         <label for="prefSlider">Even court time &#8596; strict preference</label>
         ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
           leftLabel:"Even court time for everyone", rightLabel:"Players in their preferred positions"})}
-        <p class="hint">Each step trades a little court-time evenness for preference. Higher values never increase off-preference fills for the same data; at 10, court time is ignored and off-preference is used only where truly unavoidable.</p>
+        <p class="hint">Sets how firmly even court time outranks a player's order of preference among the positions they listed. Players who miss more games are given more quarters in the games they attend. At 10, court time is ignored. It never causes an off-preference fill.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" id="allowOffPref" ${s.allowOffPreference?"checked":""}>
         <span class="cb-label">Allow off-preference positions</span>
-        <span class="cb-desc">When off, a position with no eligible in-preference player raises an error instead of a fallback assignment</span>
+        <span class="cb-desc">A last resort only: used when a quarter can't be filled in-preference, never to even out court time. When off, that quarter raises an error instead</span>
       </label>
     </div>
     <div class="card">

@@ -132,8 +132,10 @@ In `buildQuarterCostFns`, off-preference costs every player who has a preference
 same flat `OFF_PREFERENCE_COST` (a no-preference fill-in is in-preference everywhere and costs
 `NO_PREFERENCE_COST` — always ask `RosterSolver.isInPreference`, never `prefs.includes` directly), and the variety term is capped below it, so raising position
 variety can **never** make an off-preference cell cheaper than any in-preference one
-(`OFFPREF-FLAT-1`). That is a per-cell bound: a whole assignment can still, rarely, come
-out cheaper with an off-preference fill in it. The preference slider's weights
+(`OFFPREF-FLAT-1`). On top of that every off-preference cell carries
+`OFF_PREFERENCE_LAST_RESORT`, so court-time evenness can never buy an off-preference fill
+either — without it, the evenness terms produced a fill or two more at some mid-slider
+values than at lower ones. The preference slider's weights
 (`derivePreferenceWeights`) are spaced geometrically, never let preference weight reach
 0, and put balance weight at exactly 0 at slider 10 (`PREF-WEIGHTS-1`) — together that
 is what makes "higher preference slider never increases off-preference fills" hold
@@ -141,6 +143,16 @@ is what makes "higher preference slider never increases off-preference fills" ho
 ratios were chosen with that sweep; several nearby values break monotonicity by a single
 fill. Retuning without re-running it risks silently breaking the guarantee — it won't
 throw, it'll just start being wrong in a way only the sweeps catch.
+
+### Court-time evenness is target-driven, and lives in the bench cell
+`runGeneration` gives every regular one season on-court target
+(`RosterSolver.computeCourtTargets`) and derives the bench quarters each is due per game
+from it — so a player who misses more games is benched less in the games they attend. Don't
+"simplify" this back to on-court *rates*: a rate treats a player with fewer games as already
+even, which is exactly what leaves them short of court time. The per-game bench limit
+(`benchCap`) is a penalty, not a constraint — with two specialists who must both stay on,
+or a bench of 3+, somebody has to sit twice. `COURT_TIME_WEIGHT`, `BENCH_CAP_PENALTY` and
+the default slider were tuned together; re-run `npm run test:settings` after touching them.
 
 ### `app.js` exports nothing — tests patch it at load time
 There is no `module.exports` anywhere in `app.js` itself (it's a browser-only IIFE).

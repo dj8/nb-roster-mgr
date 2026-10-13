@@ -56,9 +56,13 @@ matching `docs/modules/*.md` / `data-model.md`.
 - **An empty preference list means "happy anywhere"** (fill-ins only, §6): use
   `RosterSolver.isInPreference(p,pos)`, not `prefs.includes(pos)`, wherever the player could be a fill-in
   (Phase 1 and the roster-composition notes only ever see regulars, who always have a list).
-- **Off-preference costs every player the same flat `OFF_PREFERENCE_COST`**, and the variety term in
-  `buildQuarterCostFns` is capped below it, so raising position variety can never make an off-preference
-  cell cheaper than an in-preference one. The preference slider's weights (`derivePreferenceWeights`)
+- **Off-preference is a last resort, never a trade.** It costs every player the same flat
+  `OFF_PREFERENCE_COST` plus `OFF_PREFERENCE_LAST_RESORT`; the variety term in `buildQuarterCostFns` is
+  capped below the former and the bench (court-time) side can never total the latter, so neither position
+  variety nor court-time evenness can make an off-preference cell win over an in-preference one.
+- **Court-time evenness is target-driven** (`computeCourtTargets` → per-game `benchQuota`/`benchCap`, all
+  in the bench cell): players who miss more games sit out less. The per-game bench limit is a strong
+  penalty, not a hard cap. The preference slider's weights (`derivePreferenceWeights`)
   are geometric with tuned endpoints. Re-run `npm run test:settings` if retuning any of it.
 - **Phase 1 is deterministic** (seeded `mulberry32`, never `Math.random()`); tests assert exact results.
 - **Hardcoded shape:** 4 quarters, 7 positions (`GS GA WA C WD GD GK`). Not configurable.

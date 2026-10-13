@@ -4,6 +4,8 @@
    (document/localStorage/URL/Blob are stubbed — see harness.js). */
 "use strict";
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
 const { loadEngine } = require("./harness.js");
 
 const results = [];
@@ -638,7 +640,7 @@ test("FR-7: a player is benched in consecutive quarters only when squad size lea
 test("SETTINGS-DEFAULT-1: the four settings and their defaults (preference 8 - strongly favours preference)", ()=>{
   const engine = freshEngine();
   assert.deepStrictEqual(JSON.parse(JSON.stringify(engine._getState().settings)),
-    {preferenceSlider:8, allowOffPreference:true, positionVariety:1, rosterOffPriority:"coverage"});
+    {preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
 });
 
 /* ============================================================
@@ -854,8 +856,8 @@ test("BACKUP-IMPORT-SANITIZE-2 (C1 regression): non-numeric settings are clamped
   const st = engine._getState();
   assert.ok(Number.isFinite(st.settings.preferenceSlider), "preferenceSlider must be a finite number after import: "+st.settings.preferenceSlider);
   assert.ok(Number.isFinite(st.settings.positionVariety), "positionVariety must be a finite number after import: "+st.settings.positionVariety);
-  assert.strictEqual(st.settings.rosterOffPriority, "coverage", "an unrecognised roster-off priority must fall back to the default");
-  assert.strictEqual(st.settings.allowOffPreference, true, "a non-boolean toggle must be ignored, leaving the default");
+  assert.strictEqual(st.settings.rosterOffPriority, "fairness", "an unrecognised roster-off priority must fall back to the default");
+  assert.strictEqual(st.settings.allowOffPreference, false, "a non-boolean toggle must be ignored, leaving the default");
 
   // The real regression check: generation must not throw.
   const r = engine.runGeneration();
@@ -882,7 +884,7 @@ test("SETTINGS-SANITIZE-1 (C1 regression): a corrupted localStorage blob is clam
   assert.strictEqual(reloaded.season.desiredBenchSize, 0, "a negative bench size should be clamped to 0");
   assert.ok(Number.isFinite(reloaded.settings.preferenceSlider), "a non-numeric preferenceSlider should fall back to a finite default");
   assert.strictEqual(reloaded.settings.positionVariety, 10, "an out-of-range positionVariety (999) should be clamped to the max (10)");
-  assert.strictEqual(reloaded.settings.rosterOffPriority, "coverage", "an unrecognised roster-off priority should fall back to the default");
+  assert.strictEqual(reloaded.settings.rosterOffPriority, "fairness", "an unrecognised roster-off priority should fall back to the default");
   ["rosterOffWeight","topTwoOnly","fairnessWeights"].forEach(k=>assert.ok(!(k in reloaded.settings), `retired setting ${k} should be dropped on load`));
 });
 
@@ -1356,15 +1358,107 @@ test("VARIETY-SWEEP-1 (M1 regression): raising position variety measurably sprea
 test("PLAYTIME-SWEEP-1: lowering the preference slider evens out court time, steadily rather than all at the top end", ()=>{
   const engine = freshEngine();
   buildRealisticRosterFixture(engine);
-  function benchSpreadAt(slider){
+  function courtSpreadAt(slider){
     engine._getState().settings.preferenceSlider = slider;
     engine.runGeneration();
-    const bench = engine.computePlayerSummaries().map(s=>s.bench);
-    return Math.max(...bench)-Math.min(...bench);
+    const onCourt = engine.computePlayerSummaries().map(s=>s.onCourt);
+    return Math.max(...onCourt)-Math.min(...onCourt);
   }
-  const spreads = [0,5,10].map(benchSpreadAt);
-  assert.ok(spreads[0] < spreads[1] && spreads[1] < spreads[2],
-    `bench-quarter spread should widen across both halves of the slider: ${JSON.stringify(spreads)}`);
+  // Court-time evenness outranks preference rank (§4), so it is as even as
+  // in-preference play allows across most of the slider; it gives way at the top.
+  const spreads = [0,5,8,10].map(courtSpreadAt);
+  assert.ok(spreads[0] <= spreads[1] && spreads[1] <= spreads[2] && spreads[2] < spreads[3],
+    `on-court spread should never narrow as the slider rises, and widen at the top end: ${JSON.stringify(spreads)}`);
+});
+
+/* Per player: season on-court quarters, missed games and the most bench
+   quarters they sat in any one game. */
+function courtTimeFacts(engine){
+  const facts = {};
+  engine.computePlayerSummaries().forEach(s=>{ facts[s.name] = {onCourt:s.onCourt, missed:s.missed, maxBenchInGame:0}; });
+  const nameOf = {};
+  engine._getState().players.forEach(p=>{ nameOf[p.id]=p.name; });
+  engine.gameNums().forEach(n=>{
+    const sched = engine.getGame(n).schedule; if(!sched) return;
+    const count = {};
+    sched.quarters.forEach(q=>q.bench.forEach(id=>{ count[id]=(count[id]||0)+1; }));
+    Object.keys(count).forEach(id=>{ const f=facts[nameOf[id]]; if(f) f.maxBenchInGame=Math.max(f.maxBenchInGame,count[id]); });
+  });
+  return facts;
+}
+
+/* 11 players who each list all seven positions (in rotated order), bench of
+   2: preference never forces who sits, so court-time rules can be tested alone. */
+function buildFlexibleRoster(engine){
+  const st = engine._getState();
+  st.season.numGames = 11;
+  st.season.desiredBenchSize = 2;
+  const POS = ["GS","GA","WA","C","WD","GD","GK"];
+  for(let i=0;i<11;i++) addPlayer(engine, "P"+i, POS.map((_,k)=>POS[(i+k)%7]));
+  engine.ensureGamesExist();
+  return st;
+}
+
+test("COURT-TARGET-1: season court targets are level, except for players who can't reach the level or are already past it", ()=>{
+  const S = freshEngine().RosterSolver;
+  const near = (a,b)=>Math.abs(a-b)<1e-6;
+  const even = S.computeCourtTargets([{id:"a",floor:0,cap:40},{id:"b",floor:0,cap:36},{id:"c",floor:0,cap:36}], 90);
+  assert.ok(near(even.a,30) && near(even.b,30) && near(even.c,30), JSON.stringify(even));
+  const capped = S.computeCourtTargets([{id:"a",floor:0,cap:40},{id:"b",floor:0,cap:40},{id:"c",floor:0,cap:16}], 90);
+  assert.ok(near(capped.c,16) && near(capped.a,37) && near(capped.b,37), "a player short of games plays all of theirs; the rest share what's left: "+JSON.stringify(capped));
+  const past = S.computeCourtTargets([{id:"a",floor:36,cap:40},{id:"b",floor:0,cap:40},{id:"c",floor:0,cap:40}], 90);
+  assert.ok(near(past.a,36) && near(past.b,27) && near(past.c,27), "quarters already played in frozen games can't be taken back: "+JSON.stringify(past));
+  assert.strictEqual(S.baseBenchCap(9,2), 1);
+  assert.strictEqual(S.baseBenchCap(8,1), 1);
+  assert.strictEqual(S.baseBenchCap(10,3), 2, "12 bench stints can't go round 10 players once each");
+});
+
+test("COURT-EVEN-1: when missed games are even, nobody is benched more than once in a game", ()=>{
+  // Everyone can play anywhere, so preference never forces a second stint
+  // (two specialists sharing a position can't both sit, however the bench falls).
+  const engine = freshEngine();
+  buildFlexibleRoster(engine); // everyone misses exactly 2 of 11 games
+  engine.runGeneration();
+  const facts = courtTimeFacts(engine);
+  Object.keys(facts).forEach(name=>{
+    assert.strictEqual(facts[name].missed, 2, `sanity: ${name} should miss exactly 2 games`);
+    assert.ok(facts[name].maxBenchInGame<=1, `${name} was benched ${facts[name].maxBenchInGame} times in one game`);
+  });
+});
+
+test("COURT-EVEN-2: players who miss more games play more of the games they attend, and only the others may be benched twice", ()=>{
+  const engine = freshEngine();
+  const st = buildFlexibleRoster(engine);
+  // Three players each away for three games: they end the season on more missed games than the rest.
+  [["P0",[1,2,3]], ["P1",[4,5,6]], ["P2",[7,8,9]]].forEach(([name,away])=>{ st.players.find(p=>p.name===name).unavailable = away; });
+  st.settings.preferenceSlider = 4; // court time firmly ahead of preference rank (at the default 8, rank still costs a quarter or two)
+  engine.runGeneration();
+  const facts = courtTimeFacts(engine);
+  const names = Object.keys(facts);
+  const most = Math.max(...names.map(n=>facts[n].missed));
+  const missMore = names.filter(n=>facts[n].missed===most), missFewer = names.filter(n=>facts[n].missed<most);
+  assert.ok(missFewer.length>0, "sanity: missed games are uneven in this season");
+  const avg = list=>list.reduce((sum,n)=>sum+facts[n].onCourt,0)/list.length;
+  assert.ok(Math.abs(avg(missMore)-avg(missFewer))<=1.5,
+    `season court time should come out level despite the uneven missed games: ${avg(missMore).toFixed(1)} vs ${avg(missFewer).toFixed(1)}`);
+  assert.ok(Math.max(...names.map(n=>facts[n].onCourt))-Math.min(...names.map(n=>facts[n].onCourt))<=2, "on-court quarters should be within 2 of each other: "+JSON.stringify(facts));
+  missMore.forEach(n=>assert.ok(facts[n].maxBenchInGame<=1, `${n} misses the most games, so should never be benched twice in one (got ${facts[n].maxBenchInGame})`));
+  assert.ok(missFewer.every(n=>facts[n].maxBenchInGame<=2), "nobody should be benched three times in a game");
+});
+
+test("ROSTEROFF-TIEBREAK-1: 'even missed games' never gives up evenness for coverage, but still prefers the better-covered of two equally even splits", ()=>{
+  const engine = freshEngine();
+  const S = engine.RosterSolver;
+  const w = S.deriveRosterOffWeights("fairness");
+  assert.ok(w.coverage>0, "coverage must still break ties");
+  // The worst coverage penalty a whole season can carry must stay below the smallest evenness gain (2/n in variance).
+  const worstSeasonPenalty = 60*7*S.CONSTANTS.COVERAGE_GAP_ONE_PENALTY*7;
+  assert.ok(w.coverage*worstSeasonPenalty < w.fairness*2/20, "a tie-break only: coverage can't outweigh one step of evenness");
+  // 8 players, one game, one to rest: resting the sole GK is equally "even" but leaves GK uncovered.
+  const players = ["GK","GS","GA","WA","C","WD","GD","GS"].map((pos,i)=>({id:"p"+i, prefs:[pos], unavailableCount:0}));
+  const games = [{num:1, availableIds:players.map(p=>p.id), rosterOffCount:1, fixedOffIds:null}];
+  const r = S.solveSeasonRosterOff({players, games, weights:w});
+  assert.ok(["p1","p7"].includes(r.rosterOffByGame[1][0]), "should rest one of the two GS players, got "+r.rosterOffByGame[1][0]);
 });
 
 test("PREF-WEIGHTS-1: the preference slider is evenly (geometrically) spaced from 0 to 9 and removes balance entirely at 10", ()=>{
@@ -1436,10 +1530,9 @@ test("SLIDER-SWEEP-REALISTIC-1 (H1): off-preference count is monotonically non-i
     assert.ok(counts[i] <= counts[i-1],
       `off-preference count should not increase from slider=${i-1} (${counts[i-1]}) to slider=${i} (${counts[i]}): ${JSON.stringify(counts)}`);
   }
-  // Guards against reverting to the old saturated model, where "monotonic"
-  // was trivially true only because counts barely moved at all.
-  assert.ok(counts[1] - counts[10] > 5,
-    `expected the slider to meaningfully reduce off-preference fills from slider=1 (${counts[1]}) to slider=10 (${counts[10]}), not stay essentially flat: ${JSON.stringify(counts)}`);
+  // Off-preference is a last resort at every slider value (never traded for
+  // court-time evenness), so a roster with this depth never needs one.
+  assert.ok(counts.every(c=>c===0), `no off-preference fill should be needed on this roster at any slider: ${JSON.stringify(counts)}`);
 });
 
 test("ED-6: a played game's schedule is frozen across regeneration even when settings/roster change", ()=>{
@@ -1780,7 +1873,49 @@ test("BACKUP-V1-1: a version-1 file still imports; its retired settings are igno
   const st = engine._getState();
   assert.strictEqual(st.players.length, 1, "the rest of a v1 file imports normally");
   assert.deepStrictEqual(JSON.parse(JSON.stringify(st.settings)),
-    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"coverage"});
+    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+});
+
+/* tests/fixtures/season-backup-v1.json is a real coach's export from build 39 (the venue name is
+   replaced; everything else is as exported): 11 regulars, 11 games, one fill-in game and one
+   game with every slot locked. */
+test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates cleanly", ()=>{
+  const text = fs.readFileSync(path.join(__dirname, "fixtures", "season-backup-v1.json"), "utf8");
+  const src = JSON.parse(text);
+  const engine = freshEngine();
+  engine.importBackup(text);
+  const st = engine._getState();
+  const plain = v => JSON.parse(JSON.stringify(v));
+
+  assert.strictEqual(src.schemaVersion, 1, "sanity: the fixture must stay an old-format file");
+  assert.deepStrictEqual(plain(st.players), src.plan.players);
+  assert.deepStrictEqual(plain(st.fillIns), src.plan.fillIns);
+  assert.deepStrictEqual(plain(st.settings),
+    {preferenceSlider:1, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+  assert.deepStrictEqual([...engine.gameNums()], [1,2,3,4,5,6,7,8,9,10,11]);
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n), plan = src.plan.games[n], res = src.results.games[n];
+    ["date","time","location","fillInIds","lockedSlots","rosterOffLockIds","allowOffPreference"].forEach(k=>
+      assert.deepStrictEqual(plain(g[k]), plan[k], `game ${n} ${k}`));
+    // Import keeps only the `true` off-preference flags; a locked game exports explicit `false`s too.
+    const expected = res.schedule.quarters.map(q=>({onCourt:q.onCourt, bench:q.bench,
+      offPreference:Object.fromEntries(Object.entries(q.offPreference).filter(([,v])=>v===true))}));
+    assert.deepStrictEqual(plain(g.schedule), {quarters:expected}, `game ${n} schedule`);
+  });
+
+  const locked4 = plain(engine.getGame(4).lockedSlots);
+  assert.strictEqual(Object.keys(locked4).length, 28, "sanity: game 4 is fully locked in the fixture");
+  engine.runGeneration();
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n);
+    assert.strictEqual(g.error, null, `game ${n} should regenerate without error`);
+    assert.strictEqual(g.schedule.quarters.length, 4);
+  });
+  Object.keys(locked4).forEach(k=>{
+    const [q, pos] = k.split("-");
+    assert.strictEqual(engine.getGame(4).schedule.quarters[q].onCourt[pos], locked4[k], `locked slot ${k} must survive regeneration`);
+  });
+  assert.deepStrictEqual([...engine.getGame(7).fillInIds], ["fi_bga58q12hq1"]);
 });
 
 /* ============================================================

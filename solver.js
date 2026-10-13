@@ -21,20 +21,25 @@ const MISSED_GAMES_WARNING_SPREAD = 2;  // Reports-tab warning threshold (max-mi
 const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
 const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers, resting anyone risks zero coverage
-const BENCH_SCALE_BOOST = 10;           // keeps bench-slot cost comparable to a position cell's once scaled by the balance weight, below
+const COURT_TIME_WEIGHT = 24;           // bench-cell cost per bench quarter a player is ahead of their share this game (before the balance weight): at the default slider, about two preference-rank steps
+const BENCH_CAP_PENALTY = 6;            // §4 rule 4: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
+const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 6, in the same units
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
+const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
 const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) is happy anywhere: level with a #2 choice, never ahead of a #1
-const PLAYING_TIME_WEIGHT = 2;          // fixed strength of the playing-time-evenness term; the preference slider alone sets how much it counts
 const PREFERENCE_RATIO_AT_0 = 0.5;     // preference:balance weight ratio at slider 0 — low, but never 0 (0 would make off-preference free)
 const PREFERENCE_RATIO_AT_9 = 16;       // ...and at slider 9; geometric in between, so each step multiplies the ratio by the same factor
 /* The season-wide settings' defaults — app.js's defaultState() and the
    fallbacks below both read this, so a retune can't leave them disagreeing. */
-const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:true, positionVariety:1, rosterOffPriority:"coverage" });
-/* Phase 1 coverage weight per roster-off priority. "balanced" sits inside the
-   narrow band (~0.002-0.02) where fairness and coverage actually trade off —
-   above it coverage wins every conflict, which is why this is a three-way
-   choice and not a 0-10 slider. */
-const ROSTER_OFF_COVERAGE_WEIGHT = Object.freeze({ fairness:0, balanced:0.006, coverage:PHASE1_COVERAGE_WEIGHT });
+const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness" });
+/* Phase 1 coverage weight per roster-off priority. "fairness" is a pure
+   tie-break: small enough that a whole season's coverage penalties can't
+   outweigh the smallest possible gain in missed-games evenness, but not 0,
+   so equally even splits still prefer the better-covered one. "balanced" sits
+   inside the narrow band (~0.002-0.02) where fairness and coverage actually
+   trade off — above it coverage wins every conflict, which is why this is a
+   three-way choice and not a 0-10 slider. */
+const ROSTER_OFF_COVERAGE_WEIGHT = Object.freeze({ fairness:1e-6, balanced:0.006, coverage:PHASE1_COVERAGE_WEIGHT });
 const ROSTER_OFF_PRIORITIES = Object.keys(ROSTER_OFF_COVERAGE_WEIGHT);
 const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed -> deterministic, reproducible restarts (no Math.random)
 const STRICT_SPECIALIST_COVERAGE_BOOST = 3; // §5.5: multiplies a game's own coverage weight when its strictSpecialistPairing flag is on
@@ -441,15 +446,45 @@ function computeRosterOffAchievabilityNotes(players){
    PHASE 2a — exact per-quarter Hungarian position assignment
    ============================================================ */
 
+/* §4 rule 3: each regular's season on-court target. Everyone gets the same
+   number of quarters ("level") unless they can't reach it (`cap`: too many
+   missed games) or are already past it (`floor`: quarters already played in
+   frozen games) — the rest then share what's left evenly. This is what makes
+   a player who misses more games play more of the games they do attend.
+   players: [{id, floor, cap}], total: on-court quarters to share -> {id: target} */
+function computeCourtTargets(players, total){
+  const clampTo = (p, level)=>Math.max(p.floor, Math.min(p.cap, level));
+  let lo = 0, hi = Math.max(0, ...players.map(p=>p.cap));
+  for(let i=0;i<50;i++){
+    const mid = (lo+hi)/2;
+    if(players.reduce((sum,p)=>sum+clampTo(p,mid),0) < total) lo = mid; else hi = mid;
+  }
+  const targets = {};
+  players.forEach(p=>{ targets[p.id] = clampTo(p,hi); });
+  return targets;
+}
+
+/* §4 rule 4: the fewest bench quarters per game that "nobody is benched more
+   than this" can be held to — 1 while there's at most one bench stint each to
+   go round (a bench of 1 or 2 with a full squad), more only when the bench is
+   too big for that. */
+function baseBenchCap(squadSize, benchSlotCount){
+  return Math.max(1, Math.ceil(4*benchSlotCount/Math.max(1,squadSize)));
+}
+
 /* The preference slider sets how the two sides of a cell's cost are weighed
    (derivePreferenceWeights): preference rank plus the variety term on one
-   side, playing-time evenness on the other. Evenness sets bench cell cost (so
-   bench rotation emerges from the same optimization, not a separate pass) and
-   tie-breaks position cells tied on preference toward whoever's had less
-   on-court time. `settings.positionVariety` nudges a player away from an
+   side, playing-time evenness on the other. Evenness lives entirely in the
+   bench cell (so bench rotation emerges from the same optimization, not a
+   separate pass): every player takes exactly one cell per quarter, so a
+   per-player on-court cost would only be the same number with the sign
+   flipped. `settings.positionVariety` nudges a player away from an
    over-played position; it is capped below OFF_PREFERENCE_COST, which is the
    same for every player, so raising it can never make an off-preference
-   cell cheaper than any in-preference one. */
+   cell cheaper than any in-preference one.
+   cumulative: {posCount, gameBenchSoFar:{id:n}, benchedLastQuarter:Set,
+                benchQuota:{id:n} (bench quarters this player should sit out this game — runGeneration derives it from computeCourtTargets),
+                benchCap:{id:n}   (most bench quarters this game before BENCH_CAP_PENALTY applies)} */
 function buildQuarterCostFns(cumulative, settings){
   const { preference: prefWeight, balance: balanceWeight } = derivePreferenceWeights(settings.preferenceSlider);
   const allowOff = !!settings.allowOffPreference;
@@ -483,39 +518,30 @@ function buildQuarterCostFns(cumulative, settings){
     const safeCap = Math.max(0, (p.prefs.length-idx) - 0.05);
     return Math.min(0.15*varietyWeight*Math.log2(1+posCount), safeCap);
   }
-  /* Squad-quarters (on-court + bench) decided so far this season, per this
-     quarter's cumulative snapshot. Used to turn onCourt/bench totals into
-     RATES rather than raw counts, so a player half-way through an 11-game
-     season and one three games into a 20-game season look equally
-     "overplayed" — an unbounded raw count would otherwise keep climbing all
-     season and quietly outweigh preference cost regardless of the slider. */
-  function quartersSoFar(p){
-    return ((cumulative.onCourt&&cumulative.onCourt[p.id])||0) + ((cumulative.bench&&cumulative.bench[p.id])||0);
-  }
-  function balanceCost(p){
-    const played = quartersSoFar(p);
-    const onCourtRate = played>0 ? ((cumulative.onCourt&&cumulative.onCourt[p.id])||0)/played : 0;
-    return onCourtRate*PLAYING_TIME_WEIGHT;
-  }
   function positionCellCost(p,pos){
     const pc = preferenceCost(p,pos);
     if(pc===null) return BIG_M;
-    return prefWeight*(pc + varietyTerm(p,pos)) + balanceWeight*balanceCost(p);
+    // Off-preference (prefs listed, this position not among them) is a last
+    // resort at every slider value: used only when the quarter can't be filled
+    // in-preference, never to even out court time.
+    const lastResort = (p.prefs.length && prefRank(p,pos)<0) ? OFF_PREFERENCE_LAST_RESORT : 0;
+    return lastResort + prefWeight*(pc + varietyTerm(p,pos));
   }
-  /* Bench-slot cost, scaled by the same balance weight as balanceCost (and
-     boosted by BENCH_SCALE_BOOST to keep a comparable magnitude at the
-     default slider). This makes it exactly 0 at slider=10, guaranteeing
-     bench-rotation pressure can never be the reason an in-preference
-     candidate loses to an off-preference one at max preference (§5.1).
-     Back-to-back-bench avoidance (§4 rule 6) is left unscaled — a small,
-     preference-neutral tie-break, not part of the slider's trade-off. */
+  /* Bench-slot cost: how far benching this player now would put them past
+     the bench quarters they're due this game (benchQuota — higher for a
+     player who is ahead on season court time), plus the strong per-game cap
+     and the back-to-back tie-break. All of it scales with the balance
+     weight, so it is exactly 0 at slider=10: bench-rotation pressure can
+     never be the reason an in-preference candidate loses to an
+     off-preference one at max preference (§5.1). Never negative (a quota is
+     at most 4), which keeps it clear of Hungarian's BIG_M arithmetic. */
   function benchCellCost(p){
-    const played = quartersSoFar(p);
-    const benchRate = played>0 ? ((cumulative.bench&&cumulative.bench[p.id])||0)/played : 0;
     const thisGame = (cumulative.gameBenchSoFar && cumulative.gameBenchSoFar[p.id])||0;
-    const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has && cumulative.benchedLastQuarter.has(p.id)) ? 2 : 0;
-    const scaledSeasonSide = balanceWeight*BENCH_SCALE_BOOST*(benchRate*PLAYING_TIME_WEIGHT + thisGame*0.3);
-    return scaledSeasonSide + backToBack;
+    const quota = (cumulative.benchQuota && cumulative.benchQuota[p.id])||0;
+    const cap = (cumulative.benchCap && cumulative.benchCap[p.id]) || 1;
+    const overCap = Math.max(0, thisGame+1-cap);
+    const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has && cumulative.benchedLastQuarter.has(p.id)) ? BACK_TO_BACK_BENCH_PENALTY : 0;
+    return balanceWeight*COURT_TIME_WEIGHT*(thisGame + 4 - Math.min(4,quota) + overCap*BENCH_CAP_PENALTY + backToBack);
   }
   return { positionCellCost, benchCellCost };
 }
@@ -586,12 +612,13 @@ function solveQuarterPositions(input){
 /* ============================================================
    PHASE 2b — within-game local-search refinement
    ============================================================
-   Confined to one game's own quarters. Each quarter's cost is scored against
-   a *fixed* cumulative snapshot taken at the start of that quarter in the
-   Phase 2a forward pass, rather than re-propagating cascading effects
-   through downstream quarters — keeps refinement simple and fast while still
-   closing most of the gap between "each quarter optimal alone" and "this
-   game, as a whole, is good."
+   Confined to one game's own quarters. Each quarter's season-level signals
+   (position counts, bench quota/cap) come from the *fixed* cumulative
+   snapshot taken at the start of that quarter in the Phase 2a forward pass;
+   the within-game ones (bench stints so far this game, benched last quarter)
+   are re-derived from the candidate lineup itself, so a swap that would bench
+   someone past their cap is priced as exactly that. A swap is scored on the
+   whole game's cost, since moving a bench stint changes later quarters' too.
    input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
             cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
             settings, timeBudgetMs }
@@ -620,14 +647,23 @@ function refineGameQuarters(input){
     const locks = lockedSlotsPerQuarter[qi]||{};
     return !!locks[key];
   }
-  function costOfQuarter(qi){
-    const { positionCellCost, benchCellCost } = buildQuarterCostFns(cumulativeSnapshots[qi]||{}, settings);
+  const benchOf = qi=>Object.keys(qs[qi]).filter(k=>k.charAt(0)==="B").map(k=>qs[qi][k]);
+  function gameCost(){
+    const gameBenchSoFar = {};
+    let benchedLastQuarter = new Set();
     let total = 0;
-    Object.keys(qs[qi]).forEach(key=>{
-      const pid = qs[qi][key]; if(!pid) return;
-      const p = playerById[pid]; if(!p) return;
-      total += key.charAt(0)==="B" ? benchCellCost(p) : positionCellCost(p,key);
-    });
+    for(let qi=0; qi<nQ; qi++){
+      const cumulative = Object.assign({}, cumulativeSnapshots[qi], {gameBenchSoFar, benchedLastQuarter});
+      const { positionCellCost, benchCellCost } = buildQuarterCostFns(cumulative, settings);
+      Object.keys(qs[qi]).forEach(key=>{
+        const pid = qs[qi][key]; if(!pid) return;
+        const p = playerById[pid]; if(!p) return;
+        total += key.charAt(0)==="B" ? benchCellCost(p) : positionCellCost(p,key);
+      });
+      const bench = benchOf(qi);
+      bench.forEach(pid=>{ gameBenchSoFar[pid] = (gameBenchSoFar[pid]||0)+1; });
+      benchedLastQuarter = new Set(bench);
+    }
     return total;
   }
   function swap(qi,keyA,qj,keyB){
@@ -645,6 +681,7 @@ function refineGameQuarters(input){
 
   let swaps = 0;
   let improved = true;
+  let best = gameCost();
   outer:
   while(improved){
     improved = false;
@@ -659,10 +696,9 @@ function refineGameQuarters(input){
             if(playerA===playerB) continue;
             if(wouldDuplicate(qi,keyA,playerB)) continue;
             if(wouldDuplicate(qj,keyB,playerA)) continue;
-            const before = costOfQuarter(qi)+costOfQuarter(qj);
             swap(qi,keyA,qj,keyB);
-            const after = costOfQuarter(qi)+costOfQuarter(qj);
-            if(after < before-1e-9){ improved = true; swaps++; }
+            const after = gameCost();
+            if(after < best-1e-9){ best = after; improved = true; swaps++; }
             else { swap(qi,keyA,qj,keyB); } // revert (map-swap is its own inverse)
           }
         }
@@ -712,8 +748,8 @@ const RosterSolver = {
     PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
-    BENCH_SCALE_BOOST, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
-    OFF_PREFERENCE_COST, PLAYING_TIME_WEIGHT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
+    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
+    OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
     ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS
   },
   variance,
@@ -724,6 +760,8 @@ const RosterSolver = {
   deriveRosterOffWeights,
   derivePreferenceWeights,
   solveSeasonRosterOff,
+  computeCourtTargets,
+  baseBenchCap,
   buildQuarterCostFns,
   solveQuarterPositions,
   refineGameQuarters,
