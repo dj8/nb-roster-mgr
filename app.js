@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 45; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 46; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -206,6 +206,20 @@ function getGame(num){
   const key=String(num);
   if(!STATE.games[key]) STATE.games[key]=newGameState();
   return STATE.games[key];
+}
+/* Remove game `num` and renumber the later ones down by one (games are keyed
+   1..numGames). Player unavailability is by game number, so it shifts too. */
+function deleteGame(num){
+  const n = STATE.season.numGames;
+  if(n<=1 || num<1 || num>n) return false;
+  for(let i=num;i<n;i++) STATE.games[String(i)] = STATE.games[String(i+1)];
+  delete STATE.games[String(n)];
+  STATE.season.numGames = n-1;
+  STATE.players.forEach(p=>{
+    if(Array.isArray(p.unavailable)) p.unavailable = p.unavailable.filter(g=>g!==num).map(g=>g>num?g-1:g);
+  });
+  ensureGamesExist();
+  return true;
 }
 function ensureGamesExist(){
   gameNums().forEach(n=>getGame(n));
@@ -1245,6 +1259,9 @@ function renderGameBody(num){
           <span class="cb-desc">Lets this game's roster-off pick bend fairness slightly to avoid leaving a position short on specialists. Other games are unaffected.</span>
         </label>
       </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+        <button class="btn btn-sm btn-danger" data-delgame="${num}" ${STATE.season.numGames<=1?'disabled title="A season needs at least one game."':""}>Delete game</button>
+      </div>
     </div>
   `;
 }
@@ -1350,6 +1367,17 @@ function wireGameCard(el, num){
     game.isPlayed = !game.isPlayed;
     saveState(); toast(game.isPlayed?`${gameLabel(num)} locked as played.`:`${gameLabel(num)} unlocked.`);
     renderGamesList(el);
+  };
+  const delGame = card.querySelector(`[data-delgame="${num}"]`);
+  if(delGame) delGame.onclick=()=>{
+    const label = gameLabel(num);
+    confirmDialog("Delete game", `Delete ${label}? ${getGame(num).isPlayed?"It is locked as played. ":""}Later games will be renumbered, and the schedule should be regenerated. This cannot be undone.`, ()=>{
+      if(!deleteGame(num)) return;
+      scheduleUiState.openGame = null;
+      saveState(); dirtySinceGeneration = true;
+      toast(`${label} deleted.`);
+      renderMain();
+    }, {confirmLabel:"Delete game", danger:true});
   };
   card.querySelectorAll("[data-slot].cell-clickable").forEach(cellEl=>{
     const open = ()=>{

@@ -1589,6 +1589,22 @@ test("PERF-2: a forced low Phase 1 time budget on a larger/conflict-heavy input 
   });
 });
 
+test("DG-1: deleteGame renumbers later games and shifts player unavailability", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 4;
+  const p = addPlayer(engine, "Liv", ["GA"], [1,2,4]);
+  engine.ensureGamesExist();
+  [1,2,3,4].forEach(n=>{ engine.getGame(n).location = "L"+n; });
+  assert.strictEqual(engine.deleteGame(2), true);
+  assert.strictEqual(st.season.numGames, 3);
+  assert.strictEqual(engine.gameNums().map(n=>engine.getGame(n).location).join(), "L1,L3,L4");
+  assert.strictEqual(st.games["4"], undefined);
+  assert.strictEqual(p.unavailable.join(), "1,3");
+  st.season.numGames = 1; // never delete the last game
+  assert.strictEqual(engine.deleteGame(1), false);
+});
+
 /* ============================================================
    Report
    ============================================================ */
