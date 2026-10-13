@@ -53,7 +53,8 @@ matching `docs/modules/*.md` / `data-model.md`.
   `Array.isArray`, not a length/truthy check. Both the JSON backup and localStorage preserve the distinction.
 - **Disqualified Hungarian cells use `BIG_M` (1e9), never `Infinity`** — `Infinity` yields NaN in the
   potentials arithmetic.
-- **Off-preference costs every player the same flat `OFF_PREFERENCE_COST`**, and the variety term in
+- **Off-preference costs every player with a preference list the same flat `OFF_PREFERENCE_COST`** (a
+  no-preference fill-in costs `NO_PREFERENCE_COST`), and the variety term in
   `buildQuarterCostFns` is capped below it, so raising position variety can never make an off-preference
   cell cheaper than an in-preference one. The preference slider's weights (`derivePreferenceWeights`)
   are geometric with tuned endpoints. Re-run `npm run test:settings` if retuning any of it.
@@ -75,7 +76,7 @@ matching `docs/modules/*.md` / `data-model.md`.
    *optional* field needs no schema bump (a missing value falls back to its default on import).
    Renaming, removing or changing the meaning of a field **does**: bump `BACKUP_SCHEMA_VERSION` in
    `app.js`, add a migration in `importBackup` that upgrades each older `schemaVersion` to the current
-   shape before it's read (today there are none — files are only checked as `<=` current; the v1→v2 settings change was deliberately not migrated, old files just fall back to default settings), and add a
+   shape before it's read (today there are none — files are only checked as `<=` current; the v1→v2 settings change was deliberately not migrated: retired settings are ignored and `preferenceSlider` keeps its number on the new scale), and add a
    test that imports a saved old-format file. Also update the example file in
    `docs/modules/csv-xlsx-io.md`.
 4. If the engine consumes it, thread it through `app.js` into the plain-data input of `solver.js`.
@@ -92,4 +93,5 @@ Worked example: per-game `allowOffPreference` (`null` = follow Settings, else bo
   (type-check it in `importBackup`).
 - Create a new branch off an up-to-date `main` for each new set of features or fixes (named succinctly for the update, e.g. `per-game-off-preference` or `fix-roster-off-dialog`); don't commit feature work directly to `main`. Merge via PR (`gh pr create --base main`) and delete the branch afterwards. There is no long-lived `dev` branch.
 - **Before every commit:** run `npm run lint` and `npm test` and fix anything they report (lint must be clean, not just "no new errors"); run `npm run test:ui` too if you touched the UI. Don't commit while either fails.
+- **Before every merge:** run `/simplify` on the branch's diff and apply what it finds, then run `/code-review` and fix or explicitly dismiss each finding. Re-run the pre-commit checks above after any resulting change. Only then merge the PR.
 - Bump `BUILD_NUMBER` (top of `app.js`) by 1 in every commit, as part of that commit. It's a plain integer shown in the app header and written into backup files as `buildNumber`; it replaced the old `APP_VERSION` string.

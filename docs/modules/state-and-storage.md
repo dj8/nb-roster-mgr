@@ -15,7 +15,7 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
 | `newGameState()` | — | a fresh per-game object (see `data-model.md` → `GAME`) | None |
 | `loadState()` | — | a validated/migrated `STATE` object | Reads `localStorage`; on any parse/validation failure, logs a warning and falls back to `defaultState()` |
 | `saveState()` | — | — | Writes `JSON.stringify(STATE)` to `localStorage`; on failure (quota, private mode), toasts and swallows the error |
-| `sanitizeSettingsAndSeason(state)` | a state object (mutated in place) | array of correction descriptions | Clamps `season.numGames`/`desiredBenchSize` and every `settings.*` numeric via `RosterSolver.clampSetting`; resets an unrecognised `rosterOffPriority` to its default; coerces `allowOffPreference` to a real boolean |
+| `sanitizeSettingsAndSeason(state)` | a state object (mutated in place) | array of correction descriptions | Clamps `season.numGames`/`desiredBenchSize` and every `settings.*` numeric via `RosterSolver.clampSetting`; drops any `settings` key `defaultState()` doesn't have; resets an unrecognised `rosterOffPriority` to its default; coerces `allowOffPreference` to a real boolean |
 | `sanitizePrefs(prefs)` | raw array (possibly from an imported file) | array of valid position codes, deduped, order-preserved | None — pure |
 | `sanitizeUnavailable(nums)` | raw array | array of finite positive integers | None — pure |
 | `gameNums()` | — | `[1..STATE.season.numGames]` | None |
@@ -34,7 +34,7 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
 - **`loadState()` is a migration pass, not a raw parse.** It merges parsed JSON onto
   `defaultState()` (so new fields introduced since the save was written pick up their
   default), deletes fields retired since earlier versions
-  (`settings.strictSpecialistMode`, `topTwoOnly`, `rosterOffWeight`, `fairnessWeights` — dropped, not migrated),
+  (any `settings` key not in `defaultState().settings` — dropped by `sanitizeSettingsAndSeason`, not migrated),
   re-sanitizes every player's/fill-in's `prefs`, and validates `activeTab` against
   `VALID_TABS` (falls back to `"setup"` — an unrecognized tab would otherwise crash
   `renderMain`'s dispatch outright on next load).
