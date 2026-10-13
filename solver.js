@@ -154,6 +154,7 @@ function solveSeasonRosterOff(input){
   }
   // Each game's available players (invariant for the whole solve) and its
   // memoised coverage term per roster-off choice.
+  const COVERAGE_CACHE_MAX_PER_GAME = 5000; // bounds memory on a long solve; a cleared entry is just recomputed
   const poolByNum = {}, coverageTermCache = {};
   games.forEach(g=>{
     poolByNum[g.num] = g.availableIds.map(id=>playerById[id]).filter(Boolean);
@@ -172,6 +173,7 @@ function solveSeasonRosterOff(input){
       if(term===undefined){
         const offSet = new Set(offIds);
         term = effectiveCoverageWeight(g)*gameCoveragePenalty(poolByNum[g.num].filter(p=>!offSet.has(p.id)));
+        if(coverageTermCache[g.num].size>=COVERAGE_CACHE_MAX_PER_GAME) coverageTermCache[g.num].clear();
         coverageTermCache[g.num].set(key, term);
       }
       coverageTerm += term;

@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 49; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 50; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -220,6 +220,7 @@ function getGame(num){
 function deleteGame(num){
   const n = STATE.season.numGames;
   if(n<=1 || num<1 || num>n) return false;
+  const fillInIds = (getGame(num).fillInIds||[]).slice();
   for(let i=num;i<n;i++) STATE.games[String(i)] = STATE.games[String(i+1)];
   delete STATE.games[String(n)];
   STATE.season.numGames = n-1;
@@ -227,6 +228,7 @@ function deleteGame(num){
     if(Array.isArray(p.unavailable)) p.unavailable = p.unavailable.filter(g=>g!==num).map(g=>g>num?g-1:g);
   });
   ensureGamesExist();
+  dropOrphanOneOffFillIns(fillInIds);
   return true;
 }
 /* Reset game `num` to an empty bye (§8.1: refuses played games). */
@@ -235,7 +237,39 @@ function makeBye(num){
   if(game.isPlayed) return false;
   const {date, time, location} = game; // a bye still has a slot in the calendar
   STATE.games[String(num)] = Object.assign(newGameState(), {isBye:true, date, time, location});
+  dropOrphanOneOffFillIns(game.fillInIds||[]);
   return true;
+}
+/* A removed player/fill-in is dropped from every unplayed game's plan and
+   schedule (their slots become unassigned). §8.1: played games keep their
+   record, where the id then renders as "(removed)". */
+function purgePersonFromGames(id){
+  gameNums().forEach(n=>{
+    const g = getGame(n);
+    if(g.isPlayed) return;
+    g.fillInIds = (g.fillInIds||[]).filter(x=>x!==id);
+    if(Array.isArray(g.rosterOffLockIds) && g.rosterOffLockIds.includes(id)){
+      g.rosterOffLockIds = g.rosterOffLockIds.filter(x=>x!==id);
+      if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null; // the lock named only them — back to auto, not "nobody off"
+    }
+    ["squadIds","rosteredOffIds","unavailableIds"].forEach(k=>{ if(Array.isArray(g[k])) g[k] = g[k].filter(x=>x!==id); });
+    Object.keys(g.lockedSlots||{}).forEach(k=>{ if(g.lockedSlots[k]===id) delete g.lockedSlots[k]; });
+    if(g.schedule) g.schedule.quarters.forEach(q=>{
+      POSITIONS.forEach(pos=>{
+        if(q.onCourt[pos]!==id) return;
+        q.onCourt[pos] = null;
+        if(q.offPreference) delete q.offPreference[pos];
+      });
+      q.bench = (q.bench||[]).filter(x=>x!==id);
+    });
+  });
+}
+/* One-off fill-ins (§6) exist only for the game they were created in — drop
+   any of `ids` that no remaining game still uses. */
+function dropOrphanOneOffFillIns(ids){
+  const used = new Set();
+  Object.values(STATE.games).forEach(g=>(g.fillInIds||[]).forEach(id=>used.add(id)));
+  STATE.fillIns = STATE.fillIns.filter(f=>f.saved!==false || !ids.includes(f.id) || used.has(f.id));
 }
 function ensureGamesExist(){
   gameNums().forEach(n=>getGame(n));
@@ -886,11 +920,21 @@ function renderSetup(root){
   renderPlayerList(document.getElementById("playerList"));
 
   document.getElementById("numGames").onchange=e=>{
-    const v = clamp(parseInt(e.target.value||"1",10),1,60);
-    STATE.season.numGames=v; ensureGamesExist(); saveState(); renderSetup(root);
+    const v = clamp(parseInt(e.target.value,10)||1,1,60);
+    const apply = ()=>{
+      const dropped = gameNums().filter(n=>n>v).flatMap(n=>getGame(n).fillInIds||[]);
+      STATE.season.numGames=v; ensureGamesExist(); dropOrphanOneOffFillIns(dropped);
+      saveState(); dirtySinceGeneration = true; renderSetup(root);
+    };
+    // Shortening the season prunes the games beyond it — ask before losing anything a coach entered or generated.
+    const losing = gameNums().filter(n=>{ const g=getGame(n); return n>v && (g.isPlayed || g.schedule || g.date || g.location); });
+    if(!losing.length){ apply(); return; }
+    e.target.value = STATE.season.numGames; // stays as-is unless confirmed
+    const played = losing.filter(n=>getGame(n).isPlayed).length;
+    confirmDialog("Shorten the season", `Changing to ${v} game(s) permanently deletes ${losing.map(gameTag).join(", ")}${played?` — including ${played} played game(s)`:""}, with their schedules and details. This cannot be undone.`, apply, {confirmLabel:"Delete games", danger:true});
   };
   document.getElementById("benchSize").onchange=e=>{
-    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value||"0",10),0,20); saveState(); renderSetup(root);
+    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; renderSetup(root);
   };
   document.getElementById("addPlayerBtn").onclick=()=>openPlayerDialog(null);
   document.getElementById("importCsvBtn").onclick=()=>document.getElementById("csvFileInput").click();
@@ -919,17 +963,18 @@ function renderPlayerList(el){
         </div>
       </div>
       <div class="btn-row btn-row-tight">
-        <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
-        <button class="btn btn-sm btn-danger" data-del="${p.id}">Remove</button>
+        <button class="btn btn-sm" data-edit="${esc(p.id)}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-del="${esc(p.id)}">Remove</button>
       </div>
     </div>
   `).join("");
   el.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>openPlayerDialog(b.dataset.edit));
   el.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
     const p = byId(STATE.players,b.dataset.del);
-    confirmDialog("Remove player", `Remove ${p.name} from the roster? This also clears them from any generated schedule.`, ()=>{
+    confirmDialog("Remove player", `Remove ${p.name} from the roster? This also clears them from every unplayed game's schedule; played games keep their record.`, ()=>{
       STATE.players = STATE.players.filter(x=>x.id!==b.dataset.del);
-      saveState(); renderMain();
+      purgePersonFromGames(b.dataset.del);
+      saveState(); dirtySinceGeneration = true; renderMain();
     }, {confirmLabel:`Remove ${p.name}`, danger:true});
   });
 }
@@ -998,7 +1043,7 @@ function openPlayerDialog(playerId){
       draft.unavailable = sanitizeUnavailable(modal.querySelector("#pfUnavail").value.split(",").map(s=>parseInt(s.trim(),10)));
       if(existing){ Object.assign(existing, draft); }
       else STATE.players.push(draft);
-      saveState(); closeModal(); renderMain();
+      saveState(); dirtySinceGeneration = true; closeModal(); renderMain();
     };
   });
 }
@@ -1024,6 +1069,7 @@ function importPlayersCsv(text){
       STATE.players.push({id:uid("p"), name, prefs, unavailable:[]});
       added++;
     }
+    if(added) dirtySinceGeneration = true;
     saveState(); renderMain();
     const notes = [];
     if(skipped) notes.push(`skipped ${skipped} duplicate(s)`);
@@ -1198,7 +1244,7 @@ function renderGameBody(num){
   const avail = planGameAvailability(num);
   const rosteredOffNames = playerNames(game.rosteredOffIds).join(", ")||"—";
   const unavailNames = playerNames(game.unavailableIds).join(", ")||"—";
-  const fillinChips = (game.fillInIds||[]).map(fid=>{ const f=byId(STATE.fillIns,fid); return f?`<span class="pill pill-warn">${esc(f.name)} <button data-rmfillin="${fid}" style="background:none;border:none;color:inherit;cursor:pointer;">&times;</button></span>`:""; }).join(" ");
+  const fillinChips = (game.fillInIds||[]).map(fid=>{ const f=byId(STATE.fillIns,fid); return f?`<span class="pill pill-warn">${esc(f.name)}${game.isPlayed?"":` <button data-rmfillin="${esc(fid)}" title="Unassign" style="background:none;border:none;color:inherit;cursor:pointer;">&times;</button>`}</span>`:""; }).join(" ");
 
   let gapHtml="";
   if(avail.shortfall){
@@ -1289,7 +1335,7 @@ function renderRotationGrid(num){
       const isOffPref = q.offPreference && q.offPreference[pos];
       const lockKey = qi+"-"+pos;
       const isLocked = game.lockedSlots && game.lockedSlots[lockKey];
-      const name = pid ? (anyPlayer(pid)||{}).name : "—";
+      const name = pid ? (anyPlayer(pid)||{name:"(removed)"}).name : "—";
       const classes = ["grid-cell","cell-oncourt"];
       classes.push(editable ? "cell-clickable" : "cell-readonly");
       if(isFillIn) classes.push("cell-fillin");
@@ -1304,7 +1350,7 @@ function renderRotationGrid(num){
     const benchNames = (q.bench||[]).map(pid=>{
       const isFillIn = isFillInId(pid);
       const p = anyPlayer(pid);
-      return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:'?')}</span>`;
+      return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:"(removed)")}</span>`;
     }).join("") || '<span class="hint">—</span>';
     return `<tr><td class="mono">Q${qi+1}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
   }).join("");
@@ -1366,8 +1412,10 @@ function wireGameCard(el, num){
   const assignFillin = card.querySelector(`[data-assignfillin="${num}"]`);
   if(assignFillin) assignFillin.onclick=()=>openAssignFillInDialog(num);
   card.querySelectorAll("[data-rmfillin]").forEach(b=>b.onclick=()=>{
-    const game=getGame(num); game.fillInIds=(game.fillInIds||[]).filter(id=>id!==b.dataset.rmfillin);
-    saveState(); renderGamesList(el);
+    const game=getGame(num);
+    if(game.isPlayed) return; // §8.1
+    game.fillInIds=(game.fillInIds||[]).filter(id=>id!==b.dataset.rmfillin);
+    saveState(); dirtySinceGeneration = true; renderMain();
   });
   const togglePlayed = card.querySelector(`[data-toggleplayed="${num}"]`);
   if(togglePlayed) togglePlayed.onclick=()=>{
@@ -1446,7 +1494,7 @@ function openRosterOffDialog(num){
     </div>
   `, modal=>{
     modal.querySelector("#offList").innerHTML = STATE.players.filter(p=>availIds.includes(p.id)).map(p=>`
-      <label class="checkbox-row"><input type="checkbox" value="${p.id}" ${current.has(p.id)?"checked":""}>
+      <label class="checkbox-row"><input type="checkbox" value="${esc(p.id)}" ${current.has(p.id)?"checked":""}>
         <span class="cb-label">${esc(p.name)}</span></label>`).join("");
     function updateCountLine(){
       const n = modal.querySelectorAll("#offList input:checked").length;
@@ -1463,7 +1511,7 @@ function openRosterOffDialog(num){
       // every display reading this shows blank until the next generation —
       // not the just-cleared, now-stale selection.
       game.rosteredOffIds=null;
-      saveState(); closeModal(); toast("Cleared — regenerate to auto-select.");
+      saveState(); dirtySinceGeneration = true; closeModal(); toast("Cleared — regenerate to auto-select.");
       scheduleUiState.openGame=num; renderMain();
     };
     modal.querySelector('[data-act="save"]').onclick=()=>{
@@ -1472,7 +1520,8 @@ function openRosterOffDialog(num){
       // Unlike Clear, this selection IS known — sync it into rosteredOffIds
       // immediately so displays reading that field reflect it right away.
       game.rosteredOffIds = ids.slice();
-      saveState(); closeModal();
+      saveState(); dirtySinceGeneration = true; closeModal();
+      if(game.schedule) toast("Roster-off saved — regenerate to rebuild this game's positions.");
       scheduleUiState.openGame=num; renderMain();
     };
   });
@@ -1487,7 +1536,7 @@ function openAssignFillInDialog(num){
 
   function paint(modal){
     modal.querySelector("#finList").innerHTML = candidates.length ? candidates.map(f=>`
-      <label class="checkbox-row"><input type="checkbox" value="${f.id}" ${assigned.has(f.id)?"checked":""}>
+      <label class="checkbox-row"><input type="checkbox" value="${esc(f.id)}" ${assigned.has(f.id)?"checked":""}>
         <span class="cb-label">${esc(f.name)}</span>
         <span class="cb-desc">${f.prefs.map(esc).join(", ")||"no preferences set"}</span></label>`).join("")
       : `<div class="empty-state"><div class="glyph">&#128100;</div><div>No saved fill-ins yet.</div><div class="cta">Add one below.</div></div>`;
@@ -1509,7 +1558,7 @@ function openAssignFillInDialog(num){
     m.querySelector('[data-act="cancel"]').onclick=closeModal;
     m.querySelector('[data-act="save"]').onclick=()=>{
       game.fillInIds = Array.from(m.querySelectorAll("#finList input:checked")).map(i=>i.value);
-      saveState(); closeModal(); scheduleUiState.openGame=num; renderMain();
+      saveState(); dirtySinceGeneration = true; closeModal(); scheduleUiState.openGame=num; renderMain();
     };
     m.querySelector("#newFillinBtn").onclick=()=>{
       openFillInDialog(null, num, ()=>{ openAssignFillInDialog(num); });
@@ -1567,7 +1616,7 @@ function openSlotEditDialog(num, qi, pos){
     <div class="field"><label>Assign player</label>
       <select id="slotSelect">
         <option value="">— unassigned —</option>
-        ${options.map(p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(pos)?' (off-preference)':''}</option>`).join("")}
+        ${options.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.prefs&&!p.prefs.includes(pos)?' (off-preference)':''}</option>`).join("")}
       </select>
     </div>
     <label class="checkbox-row"><input type="checkbox" id="slotLock" ${isLocked?"checked":""}>
@@ -1586,7 +1635,8 @@ function openSlotEditDialog(num, qi, pos){
       const lock = modal.querySelector("#slotLock").checked;
       const qDraft = deepClone(q);
       const lockedSlotsDraft = Object.assign({}, game.lockedSlots||{});
-      if(lock) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
+      // Only a player can be locked in; an empty slot has nothing for Rebalance to honour.
+      if(lock && pid) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
 
       if(pid===oldPid){
         // No player change — only the lock toggle above applies.
@@ -1601,7 +1651,7 @@ function openSlotEditDialog(num, qi, pos){
         if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
         refreshOffPreferenceFlag(qDraft, pos);
         commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
-        toast(`${POS_LABEL[pos]} left unassigned this quarter — remember to fill it before the game is played.`);
+        toast(`${POS_LABEL[pos]} left unassigned this quarter${lock?" (an empty slot can't be locked — Rebalance will refill it)":""} — remember to fill it before the game is played.`);
         return;
       }
 
@@ -1644,7 +1694,7 @@ function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedS
   const displacedPlayer = displacedPid ? anyPlayer(displacedPid) : null;
   const benchPlayers = (qDraft.bench||[]).map(anyPlayer).filter(Boolean);
 
-  const optionHtml = p=>`<option value="${p.id}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
+  const optionHtml = p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.prefs&&!p.prefs.includes(vacantPos)?' (off-preference)':''}</option>`;
   openModal(`
     <h3>${esc(gameLabel(num))} · Q${qi+1} · ${vacantPos} is now empty</h3>
     <p class="modal-sub">${POS_LABEL[vacantPos]} — who fills it? Cancelling discards this whole edit — nothing has been saved yet.</p>
@@ -1707,18 +1757,18 @@ function renderFillIns(root){
               :usedIn.length?`<span class="pill pill-accent pill-inline">Used in ${usedIn.length} game(s)</span>`:""}</div>
         </div>
         <div class="btn-row btn-row-tight">
-          <button class="btn btn-sm" data-editfi="${f.id}">Edit</button>
-          <button class="btn btn-sm btn-danger" data-delfi="${f.id}">Remove</button>
+          <button class="btn btn-sm" data-editfi="${esc(f.id)}">Edit</button>
+          <button class="btn btn-sm btn-danger" data-delfi="${esc(f.id)}">Remove</button>
         </div>
       </div>`;
     }).join("");
     listEl.querySelectorAll("[data-editfi]").forEach(b=>b.onclick=()=>openFillInDialog(b.dataset.editfi));
     listEl.querySelectorAll("[data-delfi]").forEach(b=>b.onclick=()=>{
       const f = byId(STATE.fillIns, b.dataset.delfi);
-      confirmDialog("Remove fill-in", "Remove this fill-in and unassign them from any games?", ()=>{
+      confirmDialog("Remove fill-in", "Remove this fill-in and unassign them from every unplayed game? Played games keep their record.", ()=>{
         STATE.fillIns = STATE.fillIns.filter(f=>f.id!==b.dataset.delfi);
-        gameNums().forEach(n=>{ const g=getGame(n); g.fillInIds=(g.fillInIds||[]).filter(id=>id!==b.dataset.delfi); });
-        saveState(); renderMain();
+        purgePersonFromGames(b.dataset.delfi);
+        saveState(); dirtySinceGeneration = true; renderMain();
       }, {confirmLabel:`Remove ${f?f.name:"fill-in"}`, danger:true});
     });
   }
@@ -1769,7 +1819,7 @@ function openFillInDialog(fillInId, contextGameNum, onSaved){
         game.fillInIds = game.fillInIds||[];
         if(!game.fillInIds.includes(draft.id)) game.fillInIds.push(draft.id);
       }
-      saveState(); closeModal();
+      saveState(); dirtySinceGeneration = true; closeModal();
       if(onSaved) onSaved(draft); else renderMain();
     };
   });
@@ -2128,6 +2178,7 @@ function importBackup(text){
     Object.keys(resultGames).filter(k=>GAME_KEY_RE.test(k) && isPlainObject(resultGames[k])).forEach(key=>{
       const src = resultGames[key];
       const g = ns.games[key] || (ns.games[key]=newGameState());
+      if(g.isBye) return; // a bye has no results; the engine never revisits it to clear stale ones
       if(Array.isArray(src.rosteredOffIds)) g.rosteredOffIds = toStringArray(src.rosteredOffIds); // frozen fact for played games; recomputed for others
       if(Array.isArray(src.unavailableIds)) g.unavailableIds = toStringArray(src.unavailableIds);
       g.error = typeof src.error==="string" && src.error ? src.error : null;

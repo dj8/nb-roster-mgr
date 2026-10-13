@@ -153,3 +153,20 @@ failing to find the function.
   `STATE` wholesale (players, fill-ins, season, settings, every game and its schedule).
 
 They read completely different file formats and are not interchangeable.
+
+## Ids are untrusted too
+
+A backup file's player/fill-in ids are arbitrary strings (`importBackup` only rejects empty and
+duplicate ones). Wrap them in `esc()` like any other user-supplied string whenever they go into
+markup (`data-*`, `value=`); read them back through `dataset`/`.value`, which un-escape.
+
+## Shortening the season deletes games
+
+Lowering "Number of games" prunes every game beyond the new count (`ensureGamesExist`). The Setup
+handler asks for confirmation first when any of those games is played, generated, or has a
+date/location.
+
+## An empty slot can't be locked
+
+`lockedSlots` only ever holds a player id. Choosing "unassigned" with "Lock this slot" ticked
+stores no lock (the solver has no notion of a deliberately empty position), and the toast says so.

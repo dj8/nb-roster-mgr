@@ -1630,6 +1630,52 @@ test("BYE-1: a bye is emptied, skipped by generation and fairness, and can't be 
   assert.strictEqual(engine.makeBye(1), false, "played game can't become a bye");
 });
 
+test("PURGE-1: removing a person clears them from unplayed games only (played games stay frozen)", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 2; st.season.desiredBenchSize = 1;
+  ["GS","GA","WA","C","WD","GD","GK","GS"].forEach((pos,i)=>addPlayer(engine, "P"+i, [pos]));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const victim = st.players[0].id;
+  engine.getGame(1).isPlayed = true;
+  const g2 = engine.getGame(2);
+  g2.lockedSlots["0-GS"] = victim; g2.rosterOffLockIds = [victim];
+  const inGame = g=>g.schedule.quarters.some(q=>Object.values(q.onCourt).includes(victim) || q.bench.includes(victim));
+  const playedBefore = JSON.stringify(engine.getGame(1));
+  st.players = st.players.filter(p=>p.id!==victim);
+  engine.purgePersonFromGames(victim);
+  assert.strictEqual(JSON.stringify(engine.getGame(1)), playedBefore, "played game untouched");
+  assert.strictEqual(inGame(g2), false, "gone from the unplayed schedule");
+  assert.ok(!g2.squadIds.includes(victim));
+  assert.strictEqual(g2.lockedSlots["0-GS"], undefined);
+  assert.strictEqual(g2.rosterOffLockIds, null, "a lock naming only them reverts to auto, not []");
+});
+
+test("BYE-2: bye/delete drop the game's one-off fill-ins; an imported bye ignores results", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 3;
+  engine.ensureGamesExist();
+  st.fillIns.push({id:"fi1", name:"One-off", prefs:[], saved:false}, {id:"fi2", name:"Saved", prefs:[], saved:true}, {id:"fi3", name:"One-off 3", prefs:[], saved:false});
+  engine.getGame(2).fillInIds = ["fi1","fi2"];
+  engine.getGame(3).fillInIds = ["fi3"];
+  engine.makeBye(2);
+  assert.strictEqual(st.fillIns.map(f=>f.id).join(), "fi2,fi3");
+  engine.deleteGame(3);
+  assert.strictEqual(st.fillIns.map(f=>f.id).join(), "fi2");
+
+  const q = {onCourt:{GS:"p1"}, bench:[], offPreference:{}};
+  engine.importBackup(makeBackup(
+    {players:[{id:"p1", name:"Liv", prefs:["GS"], unavailable:[]}], games:{"1":{isBye:true}}},
+    {games:{"1":{rosteredOffIds:["p1"], unavailableIds:[], schedule:{quarters:[q,q,q,q]}}}}
+  ));
+  const g = engine.getGame(1);
+  assert.strictEqual(g.isBye, true);
+  assert.strictEqual(g.schedule, null);
+  assert.strictEqual((g.rosteredOffIds||[]).length, 0);
+});
+
 /* ============================================================
    Report
    ============================================================ */

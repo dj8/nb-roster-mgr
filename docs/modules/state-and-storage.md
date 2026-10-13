@@ -26,6 +26,8 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
 | `ensureGamesExist()` | — | — | Calls `getGame()` for every number in `gameNums()` (materializing any missing ones), then deletes any `STATE.games` entry whose key exceeds the current `numGames` (pruning after the season was shortened) |
 | `deleteGame(num)` | game number | `boolean` | Removes game `num`, shifts later games down one key, decrements `numGames`, and renumbers every `player.unavailable` entry (drops `num`, decrements higher). Returns `false` (no-op) if only one game remains or `num` is out of range. Called from the Delete-game button in the expanded schedule card, behind `confirmDialog`; played games may be deleted too. |
 | `makeBye(num)` | game number | `boolean` | Resets game `num` to `newGameState()` with `isBye:true` (clears schedule, fill-ins, locks; keeps date/time/location). Returns `false` for played games (§8.1). Bye games are excluded from `computeSeasonRosterOff` and `runGeneration` (no roster-off, no fairness/missed counts) and can't be marked played. Persisted as `plan.games[n].isBye` in the JSON backup. |
+| `purgePersonFromGames(id)` | player or fill-in id | — | Drops a removed person from every **unplayed** game: `fillInIds`, `rosterOffLockIds` (a lock naming only them reverts to `null`), `squadIds`/`rosteredOffIds`/`unavailableIds`, `lockedSlots`, and the schedule (their slot becomes unassigned). Played games are left untouched (§8.1) and show the id as "(removed)". |
+| `dropOrphanOneOffFillIns(ids)` | fill-in ids | — | Removes any of `ids` that is a one-off (`saved:false`) and no longer assigned to any game. Called by `deleteGame`, `makeBye` and when the season is shortened. |
 
 ## Notable behavior
 
