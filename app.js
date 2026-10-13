@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 53; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 57; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -520,17 +520,44 @@ function runGeneration(){
   const cumulative = emptyCumulative();
   const nums = scheduledGameNums();
 
+  // §8.1: a played game is locked — every stored field stays untouched; only
+  // fold its already-frozen result into cumulative fairness. Done up front,
+  // so the season court-time targets below see every played quarter whatever
+  // its place in the order.
   nums.forEach(num=>{
     const game = getGame(num);
+    if(game.isPlayed && game.schedule) game.schedule.quarters.forEach(q=>applyQuarterToCumulative(cumulative,q,1));
+  });
 
-    if(game.isPlayed){
-      // §8.1: locked — every stored field stays untouched; only fold its
-      // already-frozen result into cumulative fairness for the rest of the season.
-      if(game.schedule) game.schedule.quarters.forEach(q=>applyQuarterToCumulative(cumulative,q,1));
-      return;
-    }
+  /* §4 rules 2-3: who should sit out how much. Phase 1 has fixed every
+     game's squad, so each regular's remaining games are known; their season
+     on-court target follows (RosterSolver.computeCourtTargets), and from it
+     the bench quarters they're due in each game still to come. */
+  const planByNum = {};
+  const gamesLeft = {};     // regular id -> unplayed games they're in the squad for, from the current game on
+  const courtShareOf = {};  // game num -> on-court quarters its regulars will share
+  let courtQuartersLeft = 0;
+  nums.forEach(num=>{
+    if(getGame(num).isPlayed) return;
+    const plan = planByNum[num] = planGameSquad(num);
+    if(plan.squad.length<7) return;
+    const regulars = plan.squad.filter(p=>!p.isFillIn);
+    regulars.forEach(p=>{ gamesLeft[p.id] = (gamesLeft[p.id]||0)+1; });
+    courtShareOf[num] = 28*regulars.length/plan.squad.length; // fill-ins take an equal share of the court
+    courtQuartersLeft += courtShareOf[num];
+  });
+  const missedById = {};
+  STATE.players.forEach(p=>{ missedById[p.id]=0; });
+  nums.forEach(num=>{
+    const game = getGame(num);
+    (game.rosteredOffIds||[]).concat(game.unavailableIds||[]).forEach(id=>{ if(missedById[id]!=null) missedById[id]++; });
+  });
 
-    const plan = planGameSquad(num);
+  nums.forEach(num=>{
+    const game = getGame(num);
+    if(game.isPlayed) return;
+
+    const plan = planByNum[num];
     game.squadIds = plan.squad.map(p=>p.id);
     game.noBenchOnly = plan.noBenchOnly;
     game.coverageWarnings = computeCoverageWarnings(plan);
@@ -543,6 +570,18 @@ function runGeneration(){
     game.error = null;
 
     const benchCount = plan.squad.length-7;
+    // Targets are re-derived from what has actually been scheduled so far, so
+    // a game that couldn't be scheduled doesn't leave phantom quarters in them.
+    const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>{
+      const sofar = cumulative.onCourt[p.id]||0;
+      return {id:p.id, floor:sofar, cap:sofar+4*(gamesLeft[p.id]||0)};
+    }), STATE.players.reduce((sum,p)=>sum+(cumulative.onCourt[p.id]||0), 0) + courtQuartersLeft);
+    const { benchQuota, benchCap } = RosterSolver.planGameBench({
+      squad: plan.squad, benchSlotCount: benchCount, courtTargets,
+      onCourtSoFar: cumulative.onCourt, gamesLeft, missed: missedById
+    });
+    plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
+    courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
     const gameBenchSoFar = {};
     let benchedLastQuarter = new Set();
@@ -560,10 +599,9 @@ function runGeneration(){
       lockedSlotsPerQuarter.push(lockedSlots);
       const snapshot = {
         posCount: Object.assign({}, cumulative.posCount),
-        onCourt: Object.assign({}, cumulative.onCourt),
-        bench: Object.assign({}, cumulative.bench),
         gameBenchSoFar: Object.assign({}, gameBenchSoFar),
-        benchedLastQuarter: new Set(benchedLastQuarter)
+        benchedLastQuarter: new Set(benchedLastQuarter),
+        benchQuota, benchCap
       };
       cumulativeSnapshots.push(snapshot);
 
@@ -580,10 +618,8 @@ function runGeneration(){
 
       // fold this quarter immediately so later quarters in same game see updated counts
       applyQuarterToCumulative(cumulative, {onCourt:result.onCourt, bench:result.bench}, 1);
-      result.bench.forEach(pid=>{
-        if(isFillInId(pid)) return;
-        gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1;
-      });
+      // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
+      result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(result.bench);
       quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
     }
@@ -874,6 +910,8 @@ function render(){
           </div>
         </div>
         <div class="topbar-actions">
+          <button class="btn btn-sm btn-primary" id="genBtn">Generate season</button>
+          <button class="btn btn-sm" id="rebalBtn">Rebalance remaining games</button>
           <button class="icon-btn" id="themeToggle" title="Toggle dark / light mode">${STATE.theme==="dark"?"&#9728;":"&#9789;"}</button>
         </div>
       </div>
@@ -897,7 +935,56 @@ function render(){
     document.getElementById("tabbtn-"+TABS[next].id).focus();
   });
   wireScrollFade(document.getElementById("tabs"));
+  document.getElementById("genBtn").onclick=()=>runGenerationWithBusyState("Season generated");
+  document.getElementById("rebalBtn").onclick=()=>runGenerationWithBusyState("Remaining games rebalanced");
   renderMain();
+}
+/* The topbar's Generate/Rebalance buttons sit outside every tab panel, so
+   no tab render touches them: renderMain() calls this, which is why a handler
+   that changes roster validity must end in renderMain(), not a tab's own render. */
+const GENERATE_BUTTON_TITLES = {
+  genBtn: "Runs the assignment engine across every unplayed game, in order",
+  rebalBtn: "Re-runs the same engine honoring every lock and edit — played games and locked slots are never touched"
+};
+function syncGenerateButtons(){
+  const blockedBy = !STATE.players.length ? "Add players in the Setup tab first." : regularRosterInvalid();
+  Object.keys(GENERATE_BUTTON_TITLES).forEach(id=>{
+    const btn = document.getElementById(id);
+    btn.disabled = !!blockedBy;
+    btn.title = blockedBy || GENERATE_BUTTON_TITLES[id]; // a disabled button on another tab should still say why
+  });
+}
+/* runGeneration() is synchronous and can take seconds with no yield
+   points — deferring it one tick via setTimeout lets the disabled/
+   "Generating…" state actually paint before the freeze, so the UI doesn't
+   look identically hung the whole time. */
+function runGenerationWithBusyState(pastTenseLabel){
+  // These buttons are reachable from every tab, so the click that lands here
+  // may also have blurred a field whose change handler just opened a dialog
+  // (e.g. shortening the season) — let the coach answer that first.
+  if(document.querySelector(".modal-backdrop")) return;
+  const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
+  const labels = [genBtn.textContent, rebalBtn.textContent];
+  genBtn.disabled = true; rebalBtn.disabled = true;
+  genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
+  setTimeout(()=>{
+    try{
+      headlinesBeforeLastGeneration = computeSeasonHeadlines();
+      const r = runGeneration();
+      dirtySinceGeneration = false;
+      console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
+      const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
+      const errored = gameNums().filter(n=>getGame(n).error).length;
+      const bits = [`${gameNums().length} games`];
+      if(errored) bits.push(`${errored} couldn't be scheduled`);
+      else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
+      toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
+    } finally {
+      // No tab render rebuilds these buttons, so a throw must not strand them on "Generating…".
+      genBtn.textContent = labels[0]; rebalBtn.textContent = labels[1];
+      renderMain(); // whichever tab is open; also re-enables the buttons
+    }
+  }, 0);
 }
 function syncTabButtons(){
   document.querySelectorAll("[data-tab]").forEach(b=>{
@@ -909,6 +996,7 @@ function syncTabButtons(){
 function renderMain(){
   const main = document.getElementById("main");
   ensureGamesExist();
+  syncGenerateButtons();
   const fns = {setup:renderSetup, schedule:renderSchedule, fillins:renderFillIns, reports:renderReports, settings:renderSettings, data:renderData};
   main.innerHTML = `<div class="panel active" id="panelRoot" role="tabpanel" aria-labelledby="tabbtn-${STATE.activeTab}"></div>`;
   fns[STATE.activeTab](document.getElementById("panelRoot"));
@@ -962,7 +1050,7 @@ function renderSetup(root){
     confirmDialog("Shorten the season", `Changing to ${v} game(s) permanently deletes ${losing.map(gameTag).join(", ")}${played?` — including ${played} played game(s)`:""}, with their schedules and details. This cannot be undone.`, apply, {confirmLabel:"Delete games", danger:true});
   };
   document.getElementById("benchSize").onchange=e=>{
-    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; renderSetup(root);
+    STATE.season.desiredBenchSize = clamp(parseInt(e.target.value,10)||0,0,20); saveState(); dirtySinceGeneration = true; renderMain();
   };
   document.getElementById("addPlayerBtn").onclick=()=>openPlayerDialog(null);
   document.getElementById("importCsvBtn").onclick=()=>document.getElementById("csvFileInput").click();
@@ -1138,53 +1226,18 @@ function renderSchedule(root){
   const invalidMsg = regularRosterInvalid();
   const hasAnyGenerated = gameNums().some(n=>getGame(n).generated || getGame(n).isPlayed);
   const FILTERS = [["all","All"],["attention","Needs attention"],["played","Played"]];
+  const notice = !STATE.players.length ? `<p class="hint">Add players in the Setup tab first.</p>` :
+    invalidMsg ? `<div class="alert alert-danger">${esc(invalidMsg)}</div>` :
+    dirtySinceGeneration && hasAnyGenerated ? `<div class="alert alert-warn">Settings or overrides changed since the last generation — rebalance to apply them.</div>` : "";
   root.innerHTML = `
-    <div class="card">
-      <div class="card-head">
-        <div><h2>Generate &amp; rebalance</h2><p>Runs the assignment engine across every unplayed game, in order.</p></div>
-        <div class="btn-row">
-          <button class="btn btn-primary" id="genBtn" ${invalidMsg||!STATE.players.length?"disabled":""}>Generate season</button>
-          <button class="btn" id="rebalBtn" ${invalidMsg||!STATE.players.length?"disabled":""}>Rebalance remaining games</button>
-        </div>
-      </div>
-      ${!STATE.players.length? `<p class="hint">Add players in the Setup tab first.</p>` :
-        invalidMsg ? `<div class="alert alert-danger">${esc(invalidMsg)}</div>` :
-        `<p class="hint">Rebalance re-runs the same engine honoring every lock and edit you've made — played games and manually locked slots are never touched, but the fairness math folds their results in.</p>`}
-      ${dirtySinceGeneration && hasAnyGenerated? `<div class="alert alert-warn" style="margin-top:10px;">Settings or overrides changed since the last generation — rebalance to apply them.</div>` : ""}
-      <div id="genSummary"></div>
-    </div>
+    ${notice}
     <div class="btn-row" role="group" aria-label="Filter games">
       ${FILTERS.map(([id,label])=>`<button class="btn btn-sm ${scheduleUiState.filter===id?'btn-primary':''}" data-filter="${id}">${label}</button>`).join("")}
     </div>
     <div id="gamesList" style="margin-top:10px;"></div>
   `;
-  document.getElementById("genBtn").onclick=()=>runGenerationWithBusyState("Season generated");
-  document.getElementById("rebalBtn").onclick=()=>runGenerationWithBusyState("Remaining games rebalanced");
   root.querySelectorAll("[data-filter]").forEach(b=>b.onclick=()=>{ scheduleUiState.filter=b.dataset.filter; renderSchedule(root); });
   renderGamesList(document.getElementById("gamesList"));
-
-  /* runGeneration() is synchronous and can take seconds with no yield
-     points — deferring it one tick via setTimeout lets the disabled/
-     "Generating…" state actually paint before the freeze, so the UI doesn't
-     look identically hung the whole time. */
-  function runGenerationWithBusyState(pastTenseLabel){
-    const genBtn = document.getElementById("genBtn"), rebalBtn = document.getElementById("rebalBtn");
-    genBtn.disabled = true; rebalBtn.disabled = true;
-    genBtn.textContent = "Generating…"; rebalBtn.textContent = "Generating…";
-    setTimeout(()=>{
-      headlinesBeforeLastGeneration = computeSeasonHeadlines();
-      const r = runGeneration();
-      dirtySinceGeneration = false;
-      console.log(`${pastTenseLabel} in ${r.elapsedMs}ms.`);
-      const needsFillIns = gameNums().filter(n=>getGame(n).shortfall).length;
-      const errored = gameNums().filter(n=>getGame(n).error).length;
-      const bits = [`${gameNums().length} games`];
-      if(errored) bits.push(`${errored} couldn't be scheduled`);
-      else if(needsFillIns) bits.push(`${needsFillIns} need fill-ins`);
-      toast(`${pastTenseLabel} · ${bits.join(", ")}.`);
-      renderSchedule(root);
-    }, 0);
-  }
 }
 
 function renderGamesList(el){
@@ -1968,7 +2021,7 @@ function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, righ
    names the control each number responds to. */
 function headlineStats(h){
   return [
-    {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"preference slider"},
+    {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"allow off-preference"},
     {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
     {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
     {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
@@ -1978,7 +2031,7 @@ function headlineStats(h){
 }
 function seasonHeadlinesHtml(){
   const now = computeSeasonHeadlines();
-  if(!now) return `<p class="hint">Generate the season from the Schedule tab to see what these settings produce.</p>`;
+  if(!now) return `<p class="hint">Generate the season (button at the top) to see what these settings produce.</p>`;
   const before = headlinesBeforeLastGeneration ? headlineStats(headlinesBeforeLastGeneration) : null;
   return `<div class="stat-grid">${headlineStats(now).map((st,i)=>{
     const was = before && before[i].value!==st.value ? `<div class="was">was ${before[i].value}</div>` : "";
@@ -1989,12 +2042,12 @@ function seasonHeadlinesHtml(){
 function renderSettings(root){
   const s = STATE.settings;
   const priorities = [
-    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible, even if that leaves a game thin at a position"},
+    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible (counting games they're unavailable for); coverage only decides between equally even splits"},
     {value:"balanced", label:"Balanced", desc:"Accepts a slightly uneven split to avoid the worst coverage gaps"},
     {value:"coverage", label:"Protect thin positions", desc:"Avoids resting the players a position depends on; missed games may come out less even"}
   ];
   root.innerHTML = `
-    ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance from the Schedule tab.</div>` : ""}
+    ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance (buttons at the top).</div>` : ""}
     <div class="card">
       <div class="card-head"><div><h2>This season at a glance</h2><p>What the current settings produced the last time the season was generated${dirtySinceGeneration?" — regenerate to see the effect of your changes":""}.</p></div></div>
       <div id="seasonHeadlines">${seasonHeadlinesHtml()}</div>
@@ -2005,12 +2058,12 @@ function renderSettings(root){
         <label for="prefSlider">Even court time &#8596; strict preference</label>
         ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
           leftLabel:"Even court time for everyone", rightLabel:"Players in their preferred positions"})}
-        <p class="hint">Each step trades a little court-time evenness for preference. Higher values never increase off-preference fills for the same data; at 10, court time is ignored and off-preference is used only where truly unavoidable.</p>
+        <p class="hint">Sets how firmly even court time outranks a player's order of preference among the positions they listed. Players who miss more games are given more quarters in the games they attend. At 10, court time is ignored. It never causes an off-preference fill.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" id="allowOffPref" ${s.allowOffPreference?"checked":""}>
         <span class="cb-label">Allow off-preference positions</span>
-        <span class="cb-desc">When off, a position with no eligible in-preference player raises an error instead of a fallback assignment</span>
+        <span class="cb-desc">A last resort only: used when a quarter can't be filled in-preference, never to even out court time. When off, that quarter raises an error instead</span>
       </label>
     </div>
     <div class="card">

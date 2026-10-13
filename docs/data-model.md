@@ -42,7 +42,7 @@ erDiagram
         number preferenceSlider "0-10, even court time <-> strict preference (default 8)"
         boolean allowOffPreference
         number positionVariety "0-10, repeat favourite <-> spread across list (default 1)"
-        string rosterOffPriority "fairness | balanced | coverage (default)"
+        string rosterOffPriority "fairness (default) | balanced | coverage"
     }
 
     GAME {

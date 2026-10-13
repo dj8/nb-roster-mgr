@@ -69,7 +69,7 @@ Unless a case says otherwise, regenerate from identical saved input when compari
 |P2A-2|Locked slots pulled out before solving|Lock a slot (§8 manual lock), regenerate|Locked player/position pair is excluded from the matrix entirely; Hungarian solves only the remaining open positions and players|
 |P2A-3|Off-preference cell cost|`allowOffPreference` on, player has no rank for a position|Cost cell = `prefs.length` (worse than every stated preference), not an arbitrary large constant, per the documented cost design|
 |P2A-4|Off-preference disqualified|`allowOffPreference` off|Cell = `BIG_M`; if the optimal solution would require it, surface the explicit "no eligible player" error (same class as the original OP-5/OP-9 behavior) rather than silently assigning it|
-|P2A-5|Bench cost reflects playing time|Two players tied on preference cost, one has played more quarters this season|Lower-court-time player is preferred for the open position slot (via the documented `balanceCost` term); higher-court-time player more likely lands on a bench column|
+|P2A-5|Bench cost reflects playing time|Two players tied on preference cost, one has played more quarters this season|The player further ahead of their season court-time target is due more bench quarters this game (`benchQuota`) and lands on a bench column first|
 |P2A-6|Slider monotonicity holds under the new cost model|Regenerate the same dataset at every `preferenceSlider` value 0–10|Off-preference fill count is monotonically non-increasing as the slider rises (re-verify this still holds — the cost formula changed since it was last confirmed)|
 
 ---
@@ -89,10 +89,10 @@ Unless a case says otherwise, regenerate from identical saved input when compari
 
 |ID|Case|Steps|Expected|
 |---|---|---|---|
-|FR-1|Even games-missed|Generate a full season|Spread of (rostered-off + unavailable) counts across players is minimized; no player misses markedly more than peers absent similar availability constraints|
+|FR-1|Even games-missed|Generate a full season|Spread of (rostered-off + unavailable) counts across players is minimized; no player misses markedly more than peers absent similar availability constraints. At the default roster-off priority, coverage only breaks ties (`ROSTEROFF-TIEBREAK-1`)|
 |FR-2|Unavailability reduces need for rostered-off|Player unavailable for 1 game|That player is rostered off less often in remaining games than a peer with no unavailability, converging toward the same total missed-games|
-|FR-3|Even on-court quarters|Generate a full season|Players who attend the same number of games have on-court quarter counts within a small tolerance of each other|
-|FR-4|Even bench quarters|Generate a full season|Same tolerance check for bench quarters among players attending the same number of games|
+|FR-3|Even on-court quarters|Generate a full season|Season on-court quarter counts are within a small tolerance of each other for *all* players — one who misses more games plays more of the games they attend (`COURT-TARGET-1`, `COURT-EVEN-2`)|
+|FR-4|Per-game bench limit|Generate a season where missed games are even, then one where they are not|Even: nobody benched more than once in a game. Uneven: only players who miss fewer games may be benched twice (`COURT-EVEN-1`, `COURT-EVEN-2`). A strong goal — preference constraints can still force a second stint|
 |FR-5|_Retired_ — the "prefer top 2 only" toggle was removed (no measurable effect; see §22)|—|—|
 |FR-6|Full-preference balance mode|Disable the toggle|Players' on-court time spread across their _entire_ preference list, not concentrated on preference #1|
 |FR-7|No back-to-back bench (soft)|Inspect any single game|Same player benched in consecutive quarters only when unavoidable given squad size|

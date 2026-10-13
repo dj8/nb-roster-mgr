@@ -328,7 +328,7 @@ async function shot(page, name){
     {sel:"#varietySlider", read:s=>s.positionVariety, to:6, back:1}
   ];
   const TOGGLES = [
-    {sel:"#allowOffPref", read:s=>s.allowOffPreference, back:true}
+    {sel:"#allowOffPref", read:s=>s.allowOffPreference, back:false}
   ];
   const priorityRadio = v=>`input[name="rosterOffPriority"][value="${v}"]`;
   for(const c of SLIDERS){
@@ -342,7 +342,7 @@ async function shot(page, name){
     const saved = c.read((await savedState()).settings);
     check(saved===!c.back, `${c.sel} toggled: saved as ${!c.back} (got ${JSON.stringify(saved)})`);
   }
-  check(await page.isChecked(priorityRadio("coverage")), "roster-off priority defaults to protecting thin positions");
+  check(await page.isChecked(priorityRadio("fairness")), "roster-off priority defaults to even missed games");
   await page.click(priorityRadio("balanced"));
   check((await savedState()).settings.rosterOffPriority==="balanced", "choosing a roster-off priority saves it");
   await page.click('.tab-btn[data-tab="settings"]');
@@ -365,9 +365,9 @@ async function shot(page, name){
   // Restore the defaults, then prove a Settings change reaches the engine.
   for(const c of SLIDERS) await nudgeSlider(c.sel, c.back);
   for(const c of TOGGLES) await page.click(c.sel);
-  await page.click(priorityRadio("coverage"));
+  await page.click(priorityRadio("fairness"));
   const s = (await savedState()).settings;
-  check(SLIDERS.every(c=>c.read(s)===c.back) && TOGGLES.every(c=>c.read(s)===c.back) && s.rosterOffPriority==="coverage", "every Settings control restored to its default");
+  check(SLIDERS.every(c=>c.read(s)===c.back) && TOGGLES.every(c=>c.read(s)===c.back) && s.rosterOffPriority==="fairness", "every Settings control restored to its default");
   await regenerate();
   check(!/rebalance to apply/i.test(await page.locator("body").textContent()), "regenerating clears the stale-schedule warning");
   const atDefault = await savedSchedules();

@@ -22,7 +22,7 @@ Neither is persisted — see [`gotchas.md`](../gotchas.md#global--module-level-s
 
 | Function | Returns | Notes |
 |---|---|---|
-| `renderSchedule(root)` | — | Generate/Rebalance buttons (disabled if the roster is invalid or empty), the stale-schedule banner (`dirtySinceGeneration && hasAnyGenerated`), the filter control (All / Needs attention / Played), then `renderGamesList`. |
+| `renderSchedule(root)` | — | One notice at most (no players / invalid roster / stale-schedule banner when `dirtySinceGeneration && hasAnyGenerated`), the filter control (All / Needs attention / Played), then `renderGamesList`. |
 | `renderGamesList(el)` | — | Filters `gameNums()` by `scheduleUiState.filter` ("attention" = not played AND (error OR shortfall OR coverage warnings OR not yet generated)), renders each as a card via `renderGameCard`, wires each via `wireGameCard`. |
 | `statusPillsForGame(game)` | HTML string | Builds the small pill row shown in a card's header: "Played & locked", a short generic "Error"/"Shortfall" pill (full text is a `title` attribute — the full message lives in the card *body* instead, not the header, to avoid squeezing/wrapping the header on mobile), "Generated"/"Not yet generated", and one pill per coverage warning. |
 | `renderGameCard(num)` | HTML string | Collapsed: game number, a one-line summary ("Off: Amy, Bea · 2 fill-in(s)") when collapsed and non-empty, status pills, Details/Hide toggle (`aria-expanded`). Expanded: calls `renderGameBody`. |

@@ -21,7 +21,10 @@ the results back onto `STATE.games[...]`.
 | `solveQuarterPositions(input)` | `{players:[{id,name,prefs,isFillIn}], benchSlotCount, lockedSlots:{pos:id}, cumulative, settings}` | `{onCourt:{pos:id}, bench:[ids], offPreference:{pos:true}, errors:[{position,reason}]}` | Phase 2a, one quarter. Builds a cost matrix and calls `Hungarian.solve`. |
 | `refineGameQuarters(input)` | `{quarters, squadPool, cumulativeSnapshots, lockedSlotsPerQuarter, settings, timeBudgetMs}` | `{quarters, stats:{swaps,elapsedMs}}` | Phase 2b, one game's 4 quarters together. |
 | `buildQuarterCostFns(cumulative, settings)` | cumulative snapshot + settings | `{positionCellCost(p,pos), benchCellCost(p)}` | The cost model, exposed directly — used by both 2a and 2b so they score identically. |
-| `deriveRosterOffWeights(rosterOffPriority)` | `"fairness"`/`"balanced"`/`"coverage"` | `{fairness, coverage}` | Maps the Settings-tab three-way choice onto Phase 1's two internal weights (a lookup in `ROSTER_OFF_COVERAGE_WEIGHT`, whose keys are `ROSTER_OFF_PRIORITIES`). Anything unrecognised is treated as `"coverage"`. |
+| `deriveRosterOffWeights(rosterOffPriority)` | `"fairness"`/`"balanced"`/`"coverage"` | `{fairness, coverage}` | Maps the Settings-tab three-way choice onto Phase 1's two internal weights (a lookup in `ROSTER_OFF_COVERAGE_WEIGHT`, whose keys are `ROSTER_OFF_PRIORITIES`). Anything unrecognised is treated as the default, `"fairness"`, whose coverage weight is a tie-break only (1e-6: a whole season of coverage penalties can't outweigh one step of missed-games evenness). |
+| `computeCourtTargets(players, total)` | `[{id, floor, cap}]`, on-court quarters to share | `{id: target}` | Season on-court target per regular (§4 rule 2) — see the cost model below. |
+| `baseBenchCap(squadSize, benchSlotCount)` | two counts | integer ≥ 1 | Fewest bench stints per game everyone can be held to (§4 rule 3). |
+| `planGameBench(input)` | `{squad:[{id,isFillIn}], benchSlotCount, courtTargets, onCourtSoFar, gamesLeft, missed}` | `{benchQuota:{id:n}, benchCap:{id:n}}` | One game's bench quarters due and bench limit per squad member; goes into the `cumulative` snapshot. |
 | `derivePreferenceWeights(preferenceSlider)` | 0-10 slider value | `{preference, balance}` (sum to 1) | Maps the preference slider onto the cost model's two weights: ratio geometric from `PREFERENCE_RATIO_AT_0` to `PREFERENCE_RATIO_AT_9`, balance exactly 0 at 10. |
 | `isInPreference(p, pos)` | player, position | boolean | The one definition of "in-preference": the position is in the player's list, or the list is empty (a no-preference fill-in is happy anywhere, §6). Used for cost, the `offPreference` flag, and by `app.js` for coverage warnings, the off-preference log and manual-edit labels. |
 | `computeMissedGamesWarning(missedByPlayer, threshold?)` | `[{id,name,missed}]` | `null` or `{spread,max,min,mostMissed,leastMissed,suggestion}` | Reports-tab informational warning; never fed back into generation. |
@@ -83,17 +86,28 @@ slot:
   lot this season, scaled by `settings.positionVariety` (0 = none). Capped relative to
   the player's *own* list (`prefs.length - idx`), so a favourite can lose ground to a
   lower choice but an in-preference cell always stays below `OFF_PREFERENCE_COST`.
-- **`balanceCost(p)`** — this player's season-so-far on-court *rate* (not raw count —
-  rate is what keeps a coach mid-way through an 11-game season and one three games into
-  a 20-game season judged the same way), scaled by the fixed `PLAYING_TIME_WEIGHT`.
-- **`positionCellCost`** = `preference * (preferenceCost + variety) + balance * balanceCost`,
-  with the two weights from `derivePreferenceWeights(preferenceSlider)`. At slider=10
-  this is pure preference cost; each step down multiplies the balance side's relative
-  weight by the same factor.
-- **`benchCellCost(p)`** — scaled by the *same* `balance` weight (so it's exactly
-  0 at slider=10 — bench pressure can never outcompete preference once the coach asks
-  for strict preference), plus an unscaled small back-to-back-bench penalty (a tie-break,
-  not part of the preference/fairness trade-off).
+- **`positionCellCost`** = `preference * (preferenceCost + variety)`, plus
+  `OFF_PREFERENCE_LAST_RESORT` (1e5) on an off-preference cell — far above anything the
+  bench side can total, far below `BIG_M` — so off-preference is used only when a quarter
+  can't be filled in-preference, at every slider value (§4 rule 0). There is no per-player
+  court-time term here: each player takes exactly one cell a quarter, so it would only be
+  the bench cost with the sign flipped.
+- **`benchCellCost(p)`** = `balance * COURT_TIME_WEIGHT * (benchedThisGame + 4 − quota +
+  overCap * BENCH_CAP_PENALTY + backToBack)`. `quota` (`cumulative.benchQuota[id]`) is the
+  bench quarters this player is due in this game; `overCap` is how far this stint would
+  take them past `cumulative.benchCap[id]`. Scaled by the `balance` weight, so it's exactly
+  0 at slider=10. Never negative.
+
+`computeCourtTargets(players, total)` gives each regular's season on-court target: one
+common level, clamped to `[floor, cap]` per player (quarters already played in frozen
+games; those plus every quarter of every game still to come) so the targets sum to
+`total`. `planGameBench(input)` turns the targets into one game's `benchQuota`
+(`4 − courtStillDue / gamesLeft`, which is what makes a player who misses more games sit
+out less; a fill-in gets an even share of that game's bench) and `benchCap`:
+`baseBenchCap(squadSize, benchSlots)` (`max(1, ceil(4·bench / squad))`), plus 1 for
+players who miss fewer games than the most-missing regular *in that game's squad* (§4 rule 3). `runGeneration`
+re-derives the targets and calls it at the start of each game with the live on-court
+totals, so a game that fails to schedule leaves no phantom quarters behind.
 
 `solveQuarterPositions` builds the `(squad) × (open positions + bench slots)` matrix from
 these, calls `Hungarian.solve`, and maps the result back — any cell that only got
@@ -102,9 +116,11 @@ as an `error` and the player is benched instead of committed to an illegal posit
 
 ## Phase 2b — within-game refinement (`refineGameQuarters`)
 
-Cross-quarter pairwise swaps *within one game's own 4 quarters only*, scored against
-**fixed** cumulative snapshots captured at the start of each quarter during the Phase 2a
-forward pass (not re-propagated through downstream quarters — keeps it fast and simple).
+Cross-quarter pairwise swaps *within one game's own 4 quarters only*, scored on the whole
+game's cost. Season-level signals (position counts, bench quota/cap) come from the
+**fixed** snapshots captured at the start of each quarter during the Phase 2a forward
+pass; the within-game ones (`gameBenchSoFar`, `benchedLastQuarter`) are re-derived from
+the candidate lineup, so a swap that benches someone past their cap is priced as that.
 Locked slots (`lockedSlotsPerQuarter`) are never touched. Runs until no swap improves or
 `PHASE2B_TIME_BUDGET_MS` (500ms) is hit.
 

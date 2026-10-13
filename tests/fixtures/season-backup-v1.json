@@ -1,0 +1,1178 @@
+{
+  "format": "netball-roster-backup",
+  "schemaVersion": 1,
+  "buildNumber": 39,
+  "exportedAt": "2026-10-10T04:29:59.885Z",
+  "plan": {
+    "season": {
+      "numGames": 11,
+      "desiredBenchSize": 2
+    },
+    "settings": {
+      "preferenceSlider": 1,
+      "allowOffPreference": false,
+      "topTwoOnly": false,
+      "rosterOffWeight": 1,
+      "fairnessWeights": {
+        "bench": 10,
+        "positionPurity": 7
+      }
+    },
+    "players": [
+      {
+        "id": "p_tqiop6lp2cr",
+        "name": "Maddie",
+        "prefs": [
+          "WD",
+          "WA"
+        ],
+        "unavailable": [
+          7
+        ]
+      },
+      {
+        "id": "p_n59p5yup2cr",
+        "name": "Izzy",
+        "prefs": [
+          "WA",
+          "WD"
+        ],
+        "unavailable": [
+          7
+        ]
+      },
+      {
+        "id": "p_pwf3n2op2cr",
+        "name": "Avalon",
+        "prefs": [
+          "GD",
+          "GK"
+        ],
+        "unavailable": [
+          7,
+          5
+        ]
+      },
+      {
+        "id": "p_nln8dlfp2cr",
+        "name": "Liv",
+        "prefs": [
+          "GA",
+          "GS"
+        ],
+        "unavailable": [
+          7
+        ]
+      },
+      {
+        "id": "p_7to6mbdp2cr",
+        "name": "Zara",
+        "prefs": [
+          "C",
+          "WA",
+          "WD"
+        ],
+        "unavailable": [
+          7
+        ]
+      },
+      {
+        "id": "p_536gbntp2cr",
+        "name": "Mabel",
+        "prefs": [
+          "WA",
+          "GA",
+          "GS",
+          "C",
+          "WD"
+        ],
+        "unavailable": []
+      },
+      {
+        "id": "p_paxzzcip2cr",
+        "name": "Layla",
+        "prefs": [
+          "WA",
+          "WD"
+        ],
+        "unavailable": [
+          8
+        ]
+      },
+      {
+        "id": "p_tfw3zlyp2cr",
+        "name": "Ella",
+        "prefs": [
+          "C",
+          "GA",
+          "WA"
+        ],
+        "unavailable": [
+          3
+        ]
+      },
+      {
+        "id": "p_36n06ifp2cr",
+        "name": "Abby",
+        "prefs": [
+          "GD",
+          "WD",
+          "GK"
+        ],
+        "unavailable": [
+          4
+        ]
+      },
+      {
+        "id": "p_wuqcjhxp2cr",
+        "name": "Poppy",
+        "prefs": [
+          "GS",
+          "GA",
+          "WA",
+          "C",
+          "WD"
+        ],
+        "unavailable": []
+      },
+      {
+        "id": "p_iwt6x3lp2cr",
+        "name": "Savannah",
+        "prefs": [
+          "GK",
+          "GD"
+        ],
+        "unavailable": [
+          4
+        ]
+      }
+    ],
+    "fillIns": [
+      {
+        "id": "fi_bga58q12hq1",
+        "name": "Fill in 1",
+        "prefs": [
+          "GS",
+          "GD",
+          "GA",
+          "WD",
+          "WA",
+          "C",
+          "GK"
+        ],
+        "saved": true
+      }
+    ],
+    "games": {
+      "1": {
+        "isPlayed": false,
+        "date": "2026-10-15",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "2": {
+        "isPlayed": false,
+        "date": "2026-10-22",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "3": {
+        "isPlayed": false,
+        "date": "2026-10-29",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "4": {
+        "isPlayed": false,
+        "date": "2026-11-05",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {
+          "3-GA": "p_wuqcjhxp2cr",
+          "1-GS": "p_tfw3zlyp2cr",
+          "1-GA": "p_wuqcjhxp2cr",
+          "1-C": "p_7to6mbdp2cr",
+          "1-WA": "p_tqiop6lp2cr",
+          "0-GS": "p_nln8dlfp2cr",
+          "0-GA": "p_536gbntp2cr",
+          "0-C": "p_tfw3zlyp2cr",
+          "3-GD": "p_536gbntp2cr",
+          "2-GK": "p_536gbntp2cr",
+          "1-GK": "p_pwf3n2op2cr",
+          "3-GK": "p_tfw3zlyp2cr",
+          "0-WA": "p_7to6mbdp2cr",
+          "0-WD": "p_tqiop6lp2cr",
+          "0-GD": "p_pwf3n2op2cr",
+          "1-WD": "p_n59p5yup2cr",
+          "2-GS": "p_wuqcjhxp2cr",
+          "2-GA": "p_nln8dlfp2cr",
+          "2-WA": "p_paxzzcip2cr",
+          "2-C": "p_tfw3zlyp2cr",
+          "2-WD": "p_tqiop6lp2cr",
+          "2-GD": "p_pwf3n2op2cr",
+          "3-WD": "p_n59p5yup2cr",
+          "3-C": "p_7to6mbdp2cr",
+          "3-WA": "p_paxzzcip2cr",
+          "3-GS": "p_nln8dlfp2cr",
+          "1-GD": "p_paxzzcip2cr",
+          "0-GK": "p_paxzzcip2cr"
+        },
+        "strictSpecialistPairing": false,
+        "allowOffPreference": true
+      },
+      "5": {
+        "isPlayed": false,
+        "date": "2026-11-12",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "6": {
+        "isPlayed": false,
+        "date": "2026-11-19",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "7": {
+        "isPlayed": false,
+        "date": "2026-11-26",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [
+          "fi_bga58q12hq1"
+        ],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "8": {
+        "isPlayed": false,
+        "date": "2026-12-03",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "9": {
+        "isPlayed": false,
+        "date": "2026-12-10",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": true,
+        "allowOffPreference": null
+      },
+      "10": {
+        "isPlayed": false,
+        "date": "2027-01-28",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      },
+      "11": {
+        "isPlayed": false,
+        "date": "2027-02-04",
+        "time": "18:30",
+        "location": "Home Courts",
+        "rosterOffOverride": null,
+        "rosterOffLockIds": null,
+        "fillInIds": [],
+        "lockedSlots": {},
+        "strictSpecialistPairing": false,
+        "allowOffPreference": null
+      }
+    }
+  },
+  "results": {
+    "games": {
+      "1": {
+        "rosteredOffIds": [
+          "p_tqiop6lp2cr",
+          "p_wuqcjhxp2cr"
+        ],
+        "unavailableIds": [],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_536gbntp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_n59p5yup2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_36n06ifp2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_7to6mbdp2cr",
+                "p_iwt6x3lp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_n59p5yup2cr",
+                "p_36n06ifp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_n59p5yup2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_pwf3n2op2cr",
+                "p_536gbntp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "2": {
+        "rosteredOffIds": [
+          "p_536gbntp2cr",
+          "p_n59p5yup2cr"
+        ],
+        "unavailableIds": [],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_36n06ifp2cr",
+                "GD": "p_iwt6x3lp2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_nln8dlfp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_wuqcjhxp2cr",
+                "p_iwt6x3lp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_7to6mbdp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_36n06ifp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_iwt6x3lp2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_pwf3n2op2cr",
+                "p_7to6mbdp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "3": {
+        "rosteredOffIds": [
+          "p_nln8dlfp2cr"
+        ],
+        "unavailableIds": [
+          "p_tfw3zlyp2cr"
+        ],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_n59p5yup2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_iwt6x3lp2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_36n06ifp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_36n06ifp2cr",
+                "GD": "p_iwt6x3lp2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_n59p5yup2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_536gbntp2cr",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_iwt6x3lp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_pwf3n2op2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "4": {
+        "rosteredOffIds": [],
+        "unavailableIds": [
+          "p_36n06ifp2cr",
+          "p_iwt6x3lp2cr"
+        ],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_7to6mbdp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_paxzzcip2cr"
+              },
+              "bench": [
+                "p_wuqcjhxp2cr",
+                "p_n59p5yup2cr"
+              ],
+              "offPreference": {
+                "GK": true,
+                "WA": false,
+                "WD": false
+              }
+            },
+            {
+              "onCourt": {
+                "GS": "p_tfw3zlyp2cr",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_paxzzcip2cr",
+                "GK": "p_pwf3n2op2cr"
+              },
+              "bench": [
+                "p_nln8dlfp2cr",
+                "p_536gbntp2cr"
+              ],
+              "offPreference": {
+                "GS": true,
+                "GD": true
+              }
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_536gbntp2cr"
+              },
+              "bench": [
+                "p_n59p5yup2cr",
+                "p_7to6mbdp2cr"
+              ],
+              "offPreference": {
+                "GK": true
+              }
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_536gbntp2cr",
+                "GK": "p_tfw3zlyp2cr"
+              },
+              "bench": [
+                "p_pwf3n2op2cr",
+                "p_tqiop6lp2cr"
+              ],
+              "offPreference": {
+                "GD": true,
+                "GK": true
+              }
+            }
+          ]
+        }
+      },
+      "5": {
+        "rosteredOffIds": [
+          "p_7to6mbdp2cr"
+        ],
+        "unavailableIds": [
+          "p_pwf3n2op2cr"
+        ],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_536gbntp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_536gbntp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_wuqcjhxp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_n59p5yup2cr",
+                "p_nln8dlfp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_wuqcjhxp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "6": {
+        "rosteredOffIds": [
+          "p_536gbntp2cr",
+          "p_paxzzcip2cr"
+        ],
+        "unavailableIds": [],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_36n06ifp2cr",
+                "p_wuqcjhxp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_tfw3zlyp2cr",
+                "p_iwt6x3lp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_iwt6x3lp2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_pwf3n2op2cr",
+                "p_nln8dlfp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_wuqcjhxp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_36n06ifp2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_n59p5yup2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "7": {
+        "rosteredOffIds": [],
+        "unavailableIds": [
+          "p_tqiop6lp2cr",
+          "p_n59p5yup2cr",
+          "p_pwf3n2op2cr",
+          "p_nln8dlfp2cr",
+          "p_7to6mbdp2cr"
+        ],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "fi_bga58q12hq1",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "fi_bga58q12hq1",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "fi_bga58q12hq1",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "fi_bga58q12hq1",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_wuqcjhxp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "8": {
+        "rosteredOffIds": [
+          "p_tfw3zlyp2cr"
+        ],
+        "unavailableIds": [
+          "p_paxzzcip2cr"
+        ],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_536gbntp2cr",
+                "p_36n06ifp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_536gbntp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_wuqcjhxp2cr",
+                "p_iwt6x3lp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_536gbntp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_7to6mbdp2cr",
+                "p_36n06ifp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_nln8dlfp2cr",
+                "p_iwt6x3lp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "9": {
+        "rosteredOffIds": [
+          "p_36n06ifp2cr",
+          "p_wuqcjhxp2cr"
+        ],
+        "unavailableIds": [],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_536gbntp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_n59p5yup2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_536gbntp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_tqiop6lp2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_7to6mbdp2cr",
+                "p_paxzzcip2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_536gbntp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_nln8dlfp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "10": {
+        "rosteredOffIds": [
+          "p_iwt6x3lp2cr",
+          "p_tqiop6lp2cr"
+        ],
+        "unavailableIds": [],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_536gbntp2cr",
+                "p_wuqcjhxp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_n59p5yup2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_nln8dlfp2cr",
+                "p_7to6mbdp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_n59p5yup2cr",
+                "GD": "p_pwf3n2op2cr",
+                "GK": "p_36n06ifp2cr"
+              },
+              "bench": [
+                "p_536gbntp2cr",
+                "p_wuqcjhxp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      },
+      "11": {
+        "rosteredOffIds": [
+          "p_n59p5yup2cr",
+          "p_pwf3n2op2cr"
+        ],
+        "unavailableIds": [],
+        "error": null,
+        "schedule": {
+          "quarters": [
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_wuqcjhxp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_536gbntp2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_nln8dlfp2cr",
+                "GA": "p_tfw3zlyp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_paxzzcip2cr",
+                "p_wuqcjhxp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_536gbntp2cr",
+                "WA": "p_paxzzcip2cr",
+                "C": "p_tfw3zlyp2cr",
+                "WD": "p_tqiop6lp2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_nln8dlfp2cr",
+                "p_7to6mbdp2cr"
+              ],
+              "offPreference": {}
+            },
+            {
+              "onCourt": {
+                "GS": "p_wuqcjhxp2cr",
+                "GA": "p_nln8dlfp2cr",
+                "WA": "p_536gbntp2cr",
+                "C": "p_7to6mbdp2cr",
+                "WD": "p_paxzzcip2cr",
+                "GD": "p_36n06ifp2cr",
+                "GK": "p_iwt6x3lp2cr"
+              },
+              "bench": [
+                "p_tqiop6lp2cr",
+                "p_tfw3zlyp2cr"
+              ],
+              "offPreference": {}
+            }
+          ]
+        }
+      }
+    }
+  }
+}

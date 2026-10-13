@@ -16,7 +16,7 @@ finish completely, for every game, before Phase 2 starts on any game.
 ```mermaid
 sequenceDiagram
     actor Coach
-    participant UI as renderSchedule (app.js)
+    participant UI as topbar buttons (app.js)
     participant Gen as runGeneration (app.js)
     participant P1 as computeSeasonRosterOff (app.js)
     participant Solver as RosterSolver (solver.js)
@@ -77,7 +77,7 @@ sequenceDiagram
     Gen->>State: saveState() (persists to localStorage)
     Gen-->>UI: {elapsedMs, phase1Stats, cumulative, ...}
     UI->>UI: dirtySinceGeneration = false
-    UI->>Coach: toast summary, re-render Schedule tab
+    UI->>Coach: toast summary, re-render the open tab
 ```
 
 A played game (`isPlayed`) is skipped by Phase 2 entirely and only contributes its
