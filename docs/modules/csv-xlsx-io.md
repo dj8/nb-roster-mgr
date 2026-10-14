@@ -21,7 +21,7 @@ The one format for backing up, restoring and sharing a season. Fields are keyed 
 ```jsonc
 {
   "format": "netball-roster-backup",
-  "schemaVersion": 2,            // v2: settings reduced to the four below. v1 files still import, but their retired settings are ignored (not migrated)
+  "schemaVersion": 3,            // v3: lockedSlots per quarter (v1/v2 flat "q-pos" maps are migrated). v2: settings reduced to the four below; v1 retired settings are ignored (not migrated)
   "buildNumber": 38,             // informational
   "exportedAt": "2026-10-10T…Z",
   "plan": {                      // everything the coach enters
@@ -35,7 +35,7 @@ The one format for backing up, restoring and sharing a season. Fields are keyed 
     "fillIns": [{"id", "name", "prefs": [], "saved": true}],
     "games": {"1": {"isPlayed", "date", "time", "location", "rosterOffOverride",
                     "rosterOffLockIds", "fillInIds", "lockedSlots", "strictSpecialistPairing",
-                    "allowOffPreference"}}
+                    "allowOffPreference"}},  // "lockedSlots": [{"GS": "id"}, {}, {}, {}] — one map per quarter
   },
   "results": {                   // what the engine produced (and frozen facts for played games)
     "games": {"1": {"rosteredOffIds": [], "unavailableIds": [], "error": null,
@@ -51,7 +51,7 @@ current device's theme.
 |---|---|---|
 | `buildBackup()` | — | Builds the object above from `STATE`. |
 | `exportBackup()` | out | `JSON.stringify(buildBackup(), null, 2)` → `netball-roster-season-[draft-]YYYY-MM-DD.json` via `downloadBlob`. |
-| `importBackup(text)` | in | `JSON.parse`, then rejects anything without `format: "netball-roster-backup"` or with a `schemaVersion` newer than `BACKUP_SCHEMA_VERSION` (toast, state untouched). Otherwise type-checks every field into a fresh `ns` state (wrong-typed values fall back to defaults; only `^[1-9]\d{0,2}$` game keys and well-formed `q-POS` lock keys are accepted, so `__proto__` etc. are ignored), runs `sanitizeImportedState` then `sanitizeSettingsAndSeason`, swaps it in as `STATE`, then re-runs `computeSeasonRosterOff(true)` to recompute display-only derived fields **without** overwriting each unplayed game's imported roster-off. Rolls back on throw. |
+| `importBackup(text)` | in | `JSON.parse`, then rejects anything without `format: "netball-roster-backup"` or with a `schemaVersion` newer than `BACKUP_SCHEMA_VERSION` (toast, state untouched). Otherwise type-checks every field into a fresh `ns` state (wrong-typed values fall back to defaults; only `^[1-9]\d{0,2}$` game keys and per-quarter lock maps keep only real positions with string ids (`normalizeLockedSlots`, which also migrates a pre-v3 flat `q-POS` map), so `__proto__` etc. are ignored), runs `sanitizeImportedState` then `sanitizeSettingsAndSeason`, swaps it in as `STATE`, then re-runs `computeSeasonRosterOff(true)` to recompute display-only derived fields **without** overwriting each unplayed game's imported roster-off. Rolls back on throw. |
 | `sanitizeImportedState(ns)` | — | Defensive pass over freshly-parsed data: drops player/fill-in rows with a missing/duplicate id or (for players) no recognized preference; strips locked-slot/roster-off/fill-in/schedule references to ids that don't exist; removes a player appearing twice in one quarter; clamps `numGames`/`desiredBenchSize`. Returns a list of what it corrected (logged to the console and counted in the toast). |
 
 Because the file is real JSON, an explicit-empty `rosterOffLockIds` (`[]`, "nobody off")

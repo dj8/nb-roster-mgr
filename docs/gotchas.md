@@ -213,5 +213,6 @@ date/location.
 
 ## An empty slot can't be locked
 
-`lockedSlots` only ever holds a player id. Choosing "unassigned" with "Lock this slot" ticked
+`lockedSlots` (one `{pos: id}` map per quarter, kept on the game rather than inside
+`schedule.quarters` so a regenerate that fails, and nulls the schedule, doesn't lose them) only ever holds a player id. Choosing "unassigned" with "Lock this slot" ticked
 stores no lock (the solver has no notion of a deliberately empty position), and the toast says so.

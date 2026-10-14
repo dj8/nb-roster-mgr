@@ -59,7 +59,7 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
 - On an unplayed game each quarter row is `draggable` (`.quarter-row`, `data-qrow`) and its
   "Q*n*" label is a focusable handle (`data-qhandle`). Dropping one row on another, or Alt+↑/↓
   on the handle, swaps the two quarters via `swapGameQuarters(num, a, b)` (wired by
-  `wireQuarterDrag`): line-up, bench, off-preference flags and `lockedSlots` keys all move
+  `wireQuarterDrag`): line-up, bench, off-preference flags and that quarter's `lockedSlots` entry all move
   together. Season totals are unchanged, so — like a slot edit — no regenerate is flagged;
   a played game renders plain rows and `swapGameQuarters` refuses it (§8.1). Like any hand
   edit, only locked slots survive a Rebalance — an unlocked swapped order may be re-ordered.
@@ -71,8 +71,8 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
 | `expectedRosterOffCount(num)` | (helper, not a dialog) | game number | — | Recomputes the auto-derivation formula *ignoring any existing lock*, purely so `openRosterOffDialog` can show a "Selected X of Y expected" target. |
 | `openRosterOffDialog(num)` | "Set roster-off manually" | game number | `game.rosterOffLockIds` and `game.rosteredOffIds` (synced immediately on Save); both `null` on "Clear (auto)" | Yes, for the rotation grid — but does **not** set `dirtySinceGeneration` (see gotchas). |
 | `openAssignFillInDialog(num)` | "Assign a fill-in" | game number | `game.fillInIds` | Yes, implicitly (a new fill-in only appears in the squad after the next generation) — also does not set `dirtySinceGeneration`. |
-| `openSlotEditDialog(num, qi, pos)` | clicking/activating a grid cell | game, quarter index, position | `game.schedule.quarters[qi]` and `game.lockedSlots`, via `commitSlotEdit` | No — this *is* the schedule; it's a direct hand-edit, not a setting that needs re-solving. |
-| `openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedSlotsDraft)` | automatically, from `openSlotEditDialog`, when moving an on-court player vacates a *different* slot | — | same as above, via `commitSlotEdit` | No |
+| `openSlotEditDialog(num, qi, pos)` | clicking/activating a grid cell | game, quarter index, position | `game.schedule.quarters[qi]` and `game.lockedSlots[qi]`, via `commitSlotEdit` | No — this *is* the schedule; it's a direct hand-edit, not a setting that needs re-solving. |
+| `openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, locksDraft)` | automatically, from `openSlotEditDialog`, when moving an on-court player vacates a *different* slot | — | same as above, via `commitSlotEdit` | No |
 
 See [`flows.md`](../flows.md#2-manual-slot-edit--the-swap-cascade) for exactly which
 `openSlotEditDialog` selection triggers the `openFillVacancyDialog` cascade vs. commits
@@ -83,8 +83,7 @@ directly.
 | Function | Purpose |
 |---|---|
 | `refreshOffPreferenceFlag(q, pos)` | Recomputes `q.offPreference[pos]` from whoever currently occupies it (or clears the flag if empty) — called after every manual slot change so the flag never goes stale relative to the actual occupant. |
-| `clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid)` | Drops a locked-slot entry if it was locked to a player who's no longer actually there (a lock pointing at a player who's just been moved elsewhere would otherwise force them back on the next rebalance). |
-| `finishSlotEdit(num)` / `commitSlotEdit(num, qi, qDraft, lockedSlotsDraft)` | The single write-back point for a slot edit — `commitSlotEdit` writes the draft quarter and locked-slots map onto `STATE`, then `finishSlotEdit` saves, closes the modal, and re-renders with this game's card left open. Every dialog above funnels through this, and so does a quarter swap (`finishSlotEdit` only; `closeModal` is a no-op with no modal open). |
+| `finishSlotEdit(num)` / `commitSlotEdit(num, qi, qDraft, locksDraft)` | The single write-back point for a slot edit — `commitSlotEdit` writes the draft quarter and that quarter's locks (`game.lockedSlots[qi]`) onto `STATE`, then `finishSlotEdit` saves, closes the modal, and re-renders with this game's card left open. Every dialog above funnels through this, and so does a quarter swap (`finishSlotEdit` only; `closeModal` is a no-op with no modal open). |
 
 ## Called by
 

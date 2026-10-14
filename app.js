@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 78; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 82; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -102,7 +102,7 @@ function newGameState(){
     allowOffPreference:null,    // boolean|null - per-game override of settings.allowOffPreference; null follows the season-wide setting
     strictSpecialistPairing:false, // §5.5 - this game's roster-off pick may deviate from strict fairness ordering to protect position coverage, without changing the season-wide balance for other games
     fillInIds:[],               // fill-ins assigned to this game
-    lockedSlots:{},             // "q-pos" -> playerId (manual lock, survives rebalance)
+    lockedSlots:[{},{},{},{}],  // one {pos: playerId} per quarter (manual lock, survives rebalance); see normalizeLockedSlots
     schedule:null,              // computed: {quarters:[{onCourt:{pos:playerId|fillinId},bench:[ids],offPreference:{pos:true}}]}
     squadIds:null,              // computed regular player ids in squad (post roster-off)
     rosteredOffIds:null,        // computed
@@ -199,6 +199,7 @@ function loadState(){
       g.time = sanitizeGameTime(g.time);
       g.location = sanitizeGameLocation(g.location);
       if(!Array.isArray(g.coverageWarnings)) g.coverageWarnings=[];
+      g.lockedSlots = normalizeLockedSlots(g.lockedSlots); // also migrates pre-build-80 saves
     });
     merged.players.forEach(p=>{ p.prefs = sanitizePrefs(p.prefs); });
     merged.fillIns.forEach(f=>{ f.prefs = sanitizePrefs(f.prefs); });
@@ -266,7 +267,7 @@ function purgePersonFromGames(id){
       if(!g.rosterOffLockIds.length) g.rosterOffLockIds = null; // the lock named only them — back to auto, not "nobody off"
     }
     ["squadIds","rosteredOffIds","unavailableIds"].forEach(k=>{ if(Array.isArray(g[k])) g[k] = g[k].filter(x=>x!==id); });
-    Object.keys(g.lockedSlots||{}).forEach(k=>{ if(g.lockedSlots[k]===id) delete g.lockedSlots[k]; });
+    g.lockedSlots.forEach(locks=>POSITIONS.forEach(pos=>{ if(locks[pos]===id) delete locks[pos]; }));
     if(g.schedule) g.schedule.quarters.forEach(q=>{
       POSITIONS.forEach(pos=>{
         if(q.onCourt[pos]!==id) return;
@@ -464,7 +465,7 @@ function buildOffPrefLog(gameNum, quarterIdx, pos, playerId, squadIds, benchIds)
   return {
     game:gameNum, quarter:quarterIdx+1, playerId, playerName: player?player.name:"?",
     position:pos, unavailableSpecialists, benchedSpecialists,
-    locked: !!(getGame(gameNum).lockedSlots && getGame(gameNum).lockedSlots[quarterIdx+"-"+pos])
+    locked: !!getGame(gameNum).lockedSlots[quarterIdx][pos]
   };
 }
 
@@ -604,17 +605,9 @@ function runGeneration(){
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
-    const lockedSlotsPerQuarter = [0,1,2,3].map(q=>{
-      const lockedSlots = {};
-      POSITIONS.forEach(pos=>{
-        const lockKey = q+"-"+pos;
-        if(game.lockedSlots && game.lockedSlots[lockKey]) lockedSlots[pos]=game.lockedSlots[lockKey];
-      });
-      return lockedSlots;
-    });
     // Phase 2a/2b for this game's own 4 quarters (RosterSolver.solveGame).
     const { quarters, failingQuarters } = RosterSolver.solveGame({
-      squad: plan.squad, benchSlotCount: benchCount, lockedSlotsPerQuarter, settings: gameSettings,
+      squad: plan.squad, benchSlotCount: benchCount, lockedSlotsPerQuarter: game.lockedSlots, settings: gameSettings,
       seasonCum: { posCount: cumulative.posCount, benchQuota, benchCap }
     });
 
@@ -1428,8 +1421,7 @@ function renderRotationGrid(num){
       const pid = q.onCourt[pos];
       const isFillIn = pid && isFillInId(pid);
       const isOffPref = q.offPreference && q.offPreference[pos];
-      const lockKey = qi+"-"+pos;
-      const isLocked = game.lockedSlots && game.lockedSlots[lockKey];
+      const isLocked = !!game.lockedSlots[qi][pos];
       const name = pid ? (anyPlayer(pid)||{name:"(removed)"}).name : "—";
       const classes = ["grid-cell","cell-oncourt"];
       classes.push(editable ? "cell-clickable" : "cell-readonly");
@@ -1716,13 +1708,6 @@ function refreshOffPreferenceFlag(q, pos){
   q.offPreference[pos] = !!(player && !RosterSolver.isInPreference(player,pos));
 }
 
-/* Drops a lock that no longer holds the player it was locked to — forcing
-   that id back in on rebalance would be wrong. Operates on a draft, not live state. */
-function clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid){
-  const lockKey = qi+"-"+pos;
-  if(lockedSlotsDraft[lockKey]===expectedPid) delete lockedSlotsDraft[lockKey];
-}
-
 /* Swaps two whole quarters of one game — line-up, bench, off-preference flags
    and slot locks move together. Quarter order matters for Centre rests and
    back-to-back bench stints, but season totals don't change, so no
@@ -1731,14 +1716,9 @@ function swapGameQuarters(num, a, b){
   const game = getGame(num);
   const qs = game && game.schedule && game.schedule.quarters;
   if(!qs || game.isPlayed || a===b || ![a,b].every(q=>Number.isInteger(q) && qs[q])) return false;
+  const locks = game.lockedSlots;
   [qs[a], qs[b]] = [qs[b], qs[a]];
-  const locks = {};
-  Object.keys(game.lockedSlots||{}).forEach(k=>{
-    const [q, pos] = k.split("-"), n = Number(q);
-    const nq = n===a ? b : n===b ? a : n;
-    locks[nq+"-"+pos] = game.lockedSlots[k];
-  });
-  game.lockedSlots = locks;
+  [locks[a], locks[b]] = [locks[b], locks[a]];
   return true;
 }
 
@@ -1747,14 +1727,14 @@ function finishSlotEdit(num){
 }
 
 /* The single write-back point for a slot edit. openSlotEditDialog and
-   openFillVacancyDialog both work on draft copies of the quarter and
-   lockedSlots — nothing touches live STATE until this runs, so Cancel or
+   openFillVacancyDialog both work on draft copies of the quarter and its
+   locks — nothing touches live STATE until this runs, so Cancel or
    abandoning a multi-step edit midway leaves the schedule exactly as it was,
    by construction, with no separate rollback needed. */
-function commitSlotEdit(num, qi, qDraft, lockedSlotsDraft){
+function commitSlotEdit(num, qi, qDraft, locksDraft){
   const game = getGame(num);
   game.schedule.quarters[qi] = qDraft;
-  game.lockedSlots = lockedSlotsDraft;
+  game.lockedSlots[qi] = locksDraft;
   finishSlotEdit(num);
 }
 
@@ -1764,8 +1744,7 @@ function openSlotEditDialog(num, qi, pos){
   if(!game.schedule) return;
   const squadIds = game.squadIds||[];
   const options = squadIds.map(anyPlayer).filter(Boolean);
-  const lockKey = qi+"-"+pos;
-  const isLocked = !!(game.lockedSlots && game.lockedSlots[lockKey]);
+  const isLocked = !!game.lockedSlots[qi][pos];
   const q = game.schedule.quarters[qi];
   const oldPid = q.onCourt[pos]||null;
 
@@ -1793,13 +1772,13 @@ function openSlotEditDialog(num, qi, pos){
       const pid = sel.value||null;
       const lock = modal.querySelector("#slotLock").checked;
       const qDraft = deepClone(q);
-      const lockedSlotsDraft = Object.assign({}, game.lockedSlots||{});
+      const locksDraft = Object.assign({}, game.lockedSlots[qi]);
       // Only a player can be locked in; an empty slot has nothing for Rebalance to honour.
-      if(lock && pid) lockedSlotsDraft[lockKey]=pid; else delete lockedSlotsDraft[lockKey];
+      if(lock && pid) locksDraft[pos]=pid; else delete locksDraft[pos];
 
       if(pid===oldPid){
         // No player change — only the lock toggle above applies.
-        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
+        commitSlotEdit(num, qi, qDraft, locksDraft);
         return;
       }
 
@@ -1809,7 +1788,7 @@ function openSlotEditDialog(num, qi, pos){
         qDraft.onCourt[pos] = null;
         if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
         refreshOffPreferenceFlag(qDraft, pos);
-        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
+        commitSlotEdit(num, qi, qDraft, locksDraft);
         toast(`${POS_LABEL[pos]} left unassigned this quarter${lock?" (an empty slot can't be locked — Rebalance will refill it)":""} — remember to fill it before the game is played.`);
         return;
       }
@@ -1821,7 +1800,7 @@ function openSlotEditDialog(num, qi, pos){
         if(oldPid) qDraft.bench.push(oldPid);
         qDraft.onCourt[pos] = pid;
         refreshOffPreferenceFlag(qDraft, pos);
-        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
+        commitSlotEdit(num, qi, qDraft, locksDraft);
         return;
       }
 
@@ -1834,13 +1813,13 @@ function openSlotEditDialog(num, qi, pos){
         // Defensive — shouldn't happen for a squad member: nothing to vacate.
         refreshOffPreferenceFlag(qDraft, pos);
         if(oldPid && !qDraft.bench.includes(oldPid)) qDraft.bench.push(oldPid);
-        commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
+        commitSlotEdit(num, qi, qDraft, locksDraft);
         return;
       }
       qDraft.onCourt[otherPos] = null;
       refreshOffPreferenceFlag(qDraft, pos);
-      clearStaleLock(lockedSlotsDraft, qi, otherPos, pid);
-      openFillVacancyDialog(num, qi, otherPos, oldPid, qDraft, lockedSlotsDraft);
+      if(locksDraft[otherPos]===pid) delete locksDraft[otherPos]; // a lock on the slot they just left would pull them back on rebalance
+      openFillVacancyDialog(num, qi, otherPos, oldPid, qDraft, locksDraft);
     };
   });
 }
@@ -1848,8 +1827,8 @@ function openSlotEditDialog(num, qi, pos){
 /* Follow-up to openSlotEditDialog: `vacantPos` just lost its occupant (moved
    to fill a different slot) — ask who takes it, the displaced player or a
    bench player, so the quarter never ends up with a gap or a duplicate.
-   Continues the same qDraft/lockedSlotsDraft; Cancel discards them untouched. */
-function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedSlotsDraft){
+   Continues the same qDraft/locksDraft; Cancel discards them untouched. */
+function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, locksDraft){
   const displacedPlayer = displacedPid ? anyPlayer(displacedPid) : null;
   const benchPlayers = (qDraft.bench||[]).map(anyPlayer).filter(Boolean);
 
@@ -1882,7 +1861,7 @@ function openFillVacancyDialog(num, qi, vacantPos, displacedPid, qDraft, lockedS
       if(displacedPid && displacedPid!==chosen && !qDraft.bench.includes(displacedPid)) qDraft.bench.push(displacedPid);
       refreshOffPreferenceFlag(qDraft, vacantPos);
       if(!chosen) toast(`${POS_LABEL[vacantPos]} left unassigned this quarter — remember to fill it before the game is played.`);
-      commitSlotEdit(num, qi, qDraft, lockedSlotsDraft);
+      commitSlotEdit(num, qi, qDraft, locksDraft);
     };
   });
 }
@@ -2265,7 +2244,8 @@ function downloadBlob(filename, blob){
    games. Keyed by name, not position, so adding a field never shifts anything.
    Device-only state (theme, active tab) is deliberately not exported. */
 const BACKUP_FORMAT = "netball-roster-backup";
-const BACKUP_SCHEMA_VERSION = 2; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority; loadBalance / positionLoad were added later as optional fields (no bump)
+// v3: game lockedSlots is a per-quarter array [{pos:id}×4] (was a flat {"q-pos":id} map; normalizeLockedSlots migrates it).
+const BACKUP_SCHEMA_VERSION = 3; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority; loadBalance / positionLoad were added later as optional fields (no bump)
 
 function buildBackup(){
   const planGames = {}, resultGames = {};
@@ -2276,7 +2256,7 @@ function buildBackup(){
       rosterOffOverride: Number.isFinite(g.rosterOffOverride) ? g.rosterOffOverride : null,
       rosterOffLockIds: Array.isArray(g.rosterOffLockIds) ? g.rosterOffLockIds.slice() : null,
       fillInIds: (g.fillInIds||[]).slice(),
-      lockedSlots: Object.assign({}, g.lockedSlots||{}),
+      lockedSlots: deepClone(g.lockedSlots),
       strictSpecialistPairing: !!g.strictSpecialistPairing,
       allowOffPreference: typeof g.allowOffPreference==="boolean" ? g.allowOffPreference : null
     };
@@ -2318,7 +2298,22 @@ function exportBackup(){
 function isPlainObject(v){ return v!==null && typeof v==="object" && !Array.isArray(v); } // a declaration, so loadState can use it at boot
 const toStringArray = v => (Array.isArray(v)?v:[]).filter(x=>typeof x==="string" && x);
 const GAME_KEY_RE = /^[1-9]\d{0,2}$/;
-const SLOT_KEY_RE = new RegExp("^[0-3]-("+POSITIONS.join("|")+")$");
+/* game.lockedSlots as a clean four-entry array of {pos: id}, one per quarter;
+   unknown positions and non-string ids are dropped. Also the migration: v1/v2
+   backups and pre-build-80 saves kept a flat {"q-pos": id} map, told apart by
+   shape (an array can't be mistaken for one), not by schemaVersion. */
+function normalizeLockedSlots(v){
+  const list = Array.isArray(v) ? v : [{},{},{},{}];
+  if(isPlainObject(v)) Object.keys(v).forEach(k=>{
+    const m = /^([0-3])-([A-Z]+)$/.exec(k);
+    if(m && POSITIONS.includes(m[2])) list[m[1]][m[2]] = v[k];
+  });
+  return [0,1,2,3].map(qi=>{
+    const src = isPlainObject(list[qi]) ? list[qi] : {}, locks = {};
+    POSITIONS.forEach(pos=>{ if(typeof src[pos]==="string" && src[pos]) locks[pos] = src[pos]; });
+    return locks;
+  });
+}
 
 function importBackup(text){
   try{
@@ -2374,11 +2369,7 @@ function importBackup(text){
       g.fillInIds = toStringArray(src.fillInIds);
       g.strictSpecialistPairing = src.strictSpecialistPairing===true;
       g.allowOffPreference = typeof src.allowOffPreference==="boolean" ? src.allowOffPreference : null;
-      if(isPlainObject(src.lockedSlots)){
-        Object.keys(src.lockedSlots).forEach(k=>{
-          if(SLOT_KEY_RE.test(k) && typeof src.lockedSlots[k]==="string") g.lockedSlots[k] = src.lockedSlots[k];
-        });
-      }
+      g.lockedSlots = normalizeLockedSlots(src.lockedSlots); // migrates v1/v2's flat map too
       ns.games[key] = g;
     });
 
@@ -2495,12 +2486,12 @@ function sanitizeImportedState(ns){
     const fillInBefore = (g.fillInIds||[]).length;
     g.fillInIds = (g.fillInIds||[]).filter(id=>seenFillInIds.has(id));
     if(g.fillInIds.length!==fillInBefore) warnings.push(`Game ${key}: dropped unknown fill-in id(s).`);
-    Object.keys(g.lockedSlots||{}).forEach(slotKey=>{
-      if(!validIds.has(g.lockedSlots[slotKey])){
-        delete g.lockedSlots[slotKey];
+    g.lockedSlots.forEach(locks=>Object.keys(locks).forEach(pos=>{
+      if(!validIds.has(locks[pos])){
+        delete locks[pos];
         warnings.push(`Game ${key}: dropped a locked slot referencing an unknown player.`);
       }
-    });
+    }));
     if(g.schedule){
       g.schedule.quarters.forEach((q,qi)=>{
         const usedThisQuarter = new Set();
