@@ -103,6 +103,7 @@ if(typeof module!=="undefined" && module.exports){
     ensureGamesExist: ensureGamesExist,
     deleteGame: deleteGame,
     makeBye: makeBye,
+    swapGameQuarters: swapGameQuarters,
     purgePersonFromGames: purgePersonFromGames,
     gameNums: gameNums,
     POSITIONS: POSITIONS,

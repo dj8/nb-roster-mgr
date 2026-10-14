@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 75; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 78; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -1447,7 +1447,10 @@ function renderRotationGrid(num){
       const p = anyPlayer(pid);
       return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:"(removed)")}</span>`;
     }).join("") || '<span class="hint">—</span>';
-    return `<tr><td class="mono">Q${qi+1}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
+    const qLabel = editable
+      ? `<span class="quarter-handle" data-qhandle="${qi}" tabindex="0" title="Drag to swap with another quarter (or Alt+↑/↓)" aria-label="Quarter ${qi+1}: drag, or press Alt+Up/Down, to swap with another quarter"><span aria-hidden="true">&#8942;&#8942;</span>Q${qi+1}</span>`
+      : `Q${qi+1}`;
+    return `<tr${editable?` class="quarter-row" draggable="true" data-qrow="${qi}"`:""}><td class="mono">${qLabel}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
   }).join("");
   return `<div class="table-scroll" style="--fade-bg:var(--surface-2);"><table>
     <thead><tr><th></th>${POSITIONS.map(p=>`<th><span class="pos-badge pos-${p}">${p}</span></th>`).join("")}<th>Bench</th></tr></thead>
@@ -1559,7 +1562,49 @@ function wireGameCard(el, num){
       if(e.key==="Enter" || e.key===" "){ e.preventDefault(); open(); }
     });
   });
+  wireQuarterDrag(card, num);
   wireScrollFade(card.querySelector(".table-scroll"));
+}
+
+/* Drag a quarter row onto another to swap them; Alt+Up/Down on the Q label
+   does the same with the neighbouring quarter for keyboard users. */
+function wireQuarterDrag(card, num){
+  const rows = card.querySelectorAll("tr[data-qrow]");
+  const swap = (a, b)=>{
+    if(!swapGameQuarters(num, a, b)) return;
+    finishSlotEdit(num);
+    toast(`Swapped Q${a+1} and Q${b+1}.`);
+    const h = document.querySelector(`[data-game="${num}"] [data-qhandle="${b}"]`);
+    if(h) h.focus();
+  };
+  let from = null;
+  const clearOver = ()=>rows.forEach(r=>r.classList.remove("quarter-drop-target"));
+  rows.forEach(row=>{
+    const qi = Number(row.dataset.qrow);
+    row.addEventListener("dragstart", e=>{
+      from = qi;
+      row.classList.add("quarter-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "Q"+(qi+1)); // Firefox won't start a drag without data
+    });
+    row.addEventListener("dragend", ()=>{ from = null; row.classList.remove("quarter-dragging"); clearOver(); });
+    row.addEventListener("dragover", e=>{
+      if(from===null || from===qi) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      if(!row.classList.contains("quarter-drop-target")){ clearOver(); row.classList.add("quarter-drop-target"); }
+    });
+    row.addEventListener("dragleave", e=>{ if(!row.contains(e.relatedTarget)) row.classList.remove("quarter-drop-target"); });
+    row.addEventListener("drop", e=>{
+      e.preventDefault();
+      if(from!==null && from!==qi) swap(from, qi); // dragend resets the drag state
+    });
+  });
+  card.querySelectorAll("[data-qhandle]").forEach(h=>h.addEventListener("keydown", e=>{
+    if(!e.altKey || (e.key!=="ArrowUp" && e.key!=="ArrowDown")) return;
+    e.preventDefault();
+    const qi = Number(h.dataset.qhandle), to = qi + (e.key==="ArrowUp" ? -1 : 1);
+    if(to>=0 && to<4) swap(qi, to);
+  }));
 }
 
 /* The count the auto-deriver would pick right now, ignoring any existing
@@ -1676,6 +1721,25 @@ function refreshOffPreferenceFlag(q, pos){
 function clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid){
   const lockKey = qi+"-"+pos;
   if(lockedSlotsDraft[lockKey]===expectedPid) delete lockedSlotsDraft[lockKey];
+}
+
+/* Swaps two whole quarters of one game — line-up, bench, off-preference flags
+   and slot locks move together. Quarter order matters for Centre rests and
+   back-to-back bench stints, but season totals don't change, so no
+   regenerate is needed (like a slot edit). §8.1: refused on a played game. */
+function swapGameQuarters(num, a, b){
+  const game = getGame(num);
+  const qs = game && game.schedule && game.schedule.quarters;
+  if(!qs || game.isPlayed || a===b || ![a,b].every(q=>Number.isInteger(q) && qs[q])) return false;
+  [qs[a], qs[b]] = [qs[b], qs[a]];
+  const locks = {};
+  Object.keys(game.lockedSlots||{}).forEach(k=>{
+    const [q, pos] = k.split("-"), n = Number(q);
+    const nq = n===a ? b : n===b ? a : n;
+    locks[nq+"-"+pos] = game.lockedSlots[k];
+  });
+  game.lockedSlots = locks;
+  return true;
 }
 
 function finishSlotEdit(num){
