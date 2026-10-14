@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 62; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 63; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -141,12 +141,12 @@ function sanitizeSettingsAndSeason(state){
   }
   state.settings.allowOffPreference = !!state.settings.allowOffPreference;
   fix(state.settings, "loadBalance", 0, 10, d.settings.loadBalance, "Workload balance");
-  const loads = state.settings.positionLoad, C = RosterSolver.CONSTANTS;
+  const loads = state.settings.positionLoad;
   // Rebuilt key by key: drops anything that isn't a position, and never keeps a reference to the frozen default.
   state.settings.positionLoad = {};
   POSITIONS.forEach(pos=>{
-    const before = (loads && typeof loads==="object") ? loads[pos] : undefined;
-    const after = RosterSolver.clampSetting(before, C.POSITION_LOAD_MIN, C.POSITION_LOAD_MAX, C.DEFAULT_POSITION_LOAD[pos]);
+    const before = isPlainObject(loads) ? loads[pos] : undefined;
+    const after = RosterSolver.cleanPositionLoad(before, pos);
     state.settings.positionLoad[pos] = after;
     if(before!==undefined && after!==before) corrected.push(`${pos} workload (${JSON.stringify(before)} → ${after})`);
   });
@@ -751,9 +751,8 @@ function computeSeasonHeadlines(){
   const summaries = computePlayerSummaries();
   const courtShares = summaries.filter(s=>s.onCourt+s.bench>0).map(s=>100*s.onCourt/(s.onCourt+s.bench));
   const positionsEach = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.filter(pos=>s.positions[pos]>0).length);
-  // Season workload per player at the full position weights, whatever the slider says: the number the slider exists to narrow.
-  const fullLoads = RosterSolver.derivePositionLoads({loadBalance:10, positionLoad:STATE.settings.positionLoad});
-  const workloads = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*fullLoads[pos],0));
+  // Season workload per player: quarters x the weights exactly as entered (so the coach can check it by hand), whatever the slider says — it's the number the slider exists to narrow.
+  const workloads = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*STATE.settings.positionLoad[pos],0));
   return {
     workloadMin: workloads.length ? Math.min(...workloads) : 0,
     workloadMax: workloads.length ? Math.max(...workloads) : 0,
@@ -2125,7 +2124,7 @@ function renderSettings(root){
   root.querySelectorAll("[data-load]").forEach(inp=>{
     inp.onchange=e=>{
       const pos = e.target.dataset.load;
-      s.positionLoad[pos] = RosterSolver.clampSetting(e.target.value, C.POSITION_LOAD_MIN, C.POSITION_LOAD_MAX, C.DEFAULT_POSITION_LOAD[pos]);
+      s.positionLoad[pos] = RosterSolver.cleanPositionLoad(parseFloat(e.target.value), pos); // an emptied box goes back to the default, not the minimum
       e.target.value = s.positionLoad[pos]; // show what was actually stored
       markStale();
     };
@@ -2194,7 +2193,7 @@ function downloadBlob(filename, blob){
    games. Keyed by name, not position, so adding a field never shifts anything.
    Device-only state (theme, active tab) is deliberately not exported. */
 const BACKUP_FORMAT = "netball-roster-backup";
-const BACKUP_SCHEMA_VERSION = 2; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority
+const BACKUP_SCHEMA_VERSION = 2; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority; loadBalance / positionLoad were added later as optional fields (no bump)
 
 function buildBackup(){
   const planGames = {}, resultGames = {};
@@ -2244,7 +2243,7 @@ function exportBackup(){
 }
 
 /* Untrusted-input helpers for importBackup: coerce to the expected shape, never throw. */
-const isPlainObject = v => v!==null && typeof v==="object" && !Array.isArray(v);
+function isPlainObject(v){ return v!==null && typeof v==="object" && !Array.isArray(v); } // a declaration, so loadState can use it at boot
 const toStringArray = v => (Array.isArray(v)?v:[]).filter(x=>typeof x==="string" && x);
 const GAME_KEY_RE = /^[1-9]\d{0,2}$/;
 const SLOT_KEY_RE = new RegExp("^[0-3]-("+POSITIONS.join("|")+")$");

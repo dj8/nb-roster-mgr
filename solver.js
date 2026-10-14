@@ -495,11 +495,19 @@ function computeRosterOffAchievabilityNotes(players){
    a full line-up worth seven "quarters" at any slider value — so targets,
    quotas and the tuned weights don't shift with it.
    -> {pos: weight} */
+/* One position's workload weight from an untrusted value. Only a real number
+   is clamped; anything else (including "" and null, which Number() would
+   read as 0 and clampSetting would raise to the minimum) is that position's
+   default. */
+function cleanPositionLoad(value, pos){
+  return (typeof value==="number" && Number.isFinite(value))
+    ? Math.max(POSITION_LOAD_MIN, Math.min(POSITION_LOAD_MAX, value)) : DEFAULT_POSITION_LOAD[pos];
+}
 function derivePositionLoads(settings){
   const s = settings||{};
   const blend = clampSetting(s.loadBalance, 0, 10, DEFAULT_SETTINGS.loadBalance)/10;
   const raw = {};
-  POSITIONS.forEach(pos=>{ raw[pos] = clampSetting((s.positionLoad||{})[pos], POSITION_LOAD_MIN, POSITION_LOAD_MAX, DEFAULT_POSITION_LOAD[pos]); });
+  POSITIONS.forEach(pos=>{ raw[pos] = cleanPositionLoad((s.positionLoad||{})[pos], pos); });
   const mean = POSITIONS.reduce((sum,pos)=>sum+raw[pos],0)/POSITIONS.length;
   const loads = {};
   POSITIONS.forEach(pos=>{ loads[pos] = 1 + blend*(raw[pos]/mean - 1); });
@@ -509,8 +517,10 @@ function derivePositionLoads(settings){
 /* Each player's court time so far in load units, straight from the season's
    position counts, and the rate they earn it at: what they've actually
    averaged per quarter once they've played (someone who lists three positions
-   may only ever get the heaviest), else the average of the positions they
-   list. `heaviestQuarter` bounds what one more quarter could add.
+   may only ever get the heaviest), else an estimate from their list that
+   leans on the higher choices (each rank counts half the one above), as
+   assignment does. `heaviestQuarter` bounds what one more in-preference
+   quarter could add.
    input: { players:[{id,prefs}], posCount:{"id::pos":n}, positionLoads:{pos:w} }
    -> { loadSoFar:{id:n}, quarterLoad:{id:n}, heaviestQuarter:{id:n} } */
 function playerLoadStats(input){
@@ -521,7 +531,10 @@ function playerLoadStats(input){
     POSITIONS.forEach(pos=>{ const n = posCount[p.id+"::"+pos]||0; quarters += n; load += n*loads[pos]; });
     const listed = ((p.prefs||[]).length ? p.prefs : POSITIONS).map(pos=>loads[pos]);
     loadSoFar[p.id] = load;
-    quarterLoad[p.id] = quarters>0 ? load/quarters : listed.reduce((a,b)=>a+b,0)/listed.length;
+    const ranked = (p.prefs||[]).length>0; // no list (a fill-in): any position, so a plain average
+    let weightSum = 0, estimate = 0;
+    listed.forEach((l,rank)=>{ const w = ranked ? Math.pow(0.5,rank) : 1; weightSum += w; estimate += w*l; });
+    quarterLoad[p.id] = quarters>0 ? load/quarters : estimate/weightSum;
     heaviestQuarter[p.id] = Math.max(...listed);
   });
   return { loadSoFar, quarterLoad, heaviestQuarter };
@@ -905,6 +918,7 @@ const RosterSolver = {
   deriveRosterOffWeights,
   derivePreferenceWeights,
   solveSeasonRosterOff,
+  cleanPositionLoad,
   derivePositionLoads,
   playerLoadStats,
   computeCourtTargets,

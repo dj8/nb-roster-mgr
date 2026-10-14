@@ -1497,6 +1497,8 @@ test("LOAD-1: position loads blend from equal quarters to the coach's weights, a
   assert.ok(S.POSITIONS.every(pos=>junk[pos]===1), "a non-numeric slider falls back to the default (0)");
   const clamped = S.derivePositionLoads({loadBalance:10, positionLoad:{GS:1,GA:1,WA:99,C:"abc",WD:1,GD:1,GK:-5}});
   assert.ok(clamped.WA/clamped.GS===2 && Math.abs(clamped.GK/clamped.GS-0.1)<1e-9 && clamped.C/clamped.GS===1, "weights are clamped to 0.1..2 and a non-number falls back to that position's default: "+JSON.stringify(clamped));
+  ["", null, false, [], "0.3", NaN].forEach(v=>assert.strictEqual(S.cleanPositionLoad(v,"WA"), 0.85, `${JSON.stringify(v)} is not a weight: the default, never the minimum`));
+  assert.strictEqual(S.cleanPositionLoad(0, "WA"), 0.1);
 });
 
 test("LOAD-2: toward equal workload, players in the heavy positions rest more and the season's workload spread narrows", ()=>{
@@ -1536,12 +1538,12 @@ test("LOAD-3: a centre is due more bench than a keeper for the same court time s
 test("LOAD-5: playerLoadStats reads load from the season's position counts, and the rate a player actually earns it at", ()=>{
   const S = freshEngine().RosterSolver;
   const positionLoads = S.derivePositionLoads({loadBalance:10});
-  const players = [{id:"z", prefs:["C","WA","WD"]}, {id:"new", prefs:["GK","GS"]}, {id:"guest", prefs:[]}];
+  const players = [{id:"z", prefs:["C","WA","WD"]}, {id:"new", prefs:["C","GK"]}, {id:"guest", prefs:[]}];
   const r = S.playerLoadStats({players, posCount:{"z::C":6, "z::WA":2, "other::C":9}, positionLoads});
   const near = (a,b)=>Math.abs(a-b)<1e-9;
   assert.ok(near(r.loadSoFar.z, 6*positionLoads.C+2*positionLoads.WA) && near(r.quarterLoad.z, r.loadSoFar.z/8), "mostly centre so far: earns load faster than her list's average");
   assert.ok(r.quarterLoad.z > (positionLoads.C+positionLoads.WA+positionLoads.WD)/3);
-  assert.ok(r.loadSoFar.new===0 && near(r.quarterLoad.new, positionLoads.GK) && near(r.heaviestQuarter.z, positionLoads.C), "before playing: the average of the listed positions");
+  assert.ok(r.loadSoFar.new===0 && near(r.quarterLoad.new, (2*positionLoads.C+positionLoads.GK)/3) && near(r.heaviestQuarter.z, positionLoads.C), "before playing: the listed positions, each rank counting half the one above");
   assert.ok(near(r.quarterLoad.guest, 1), "no list: any position, so the average quarter");
 });
 
