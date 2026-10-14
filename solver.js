@@ -26,13 +26,15 @@ const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers
 const COURT_TIME_WEIGHT = 24;           // bench-cell cost per bench quarter a player is ahead of their share this game (before the balance weight): at the default slider, about two preference-rank steps
 const BENCH_CAP_PENALTY = 6;            // §4 rule 3: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
 const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 5, in the same units
-/* §4 rule 3a, all on the position side (so scaled by the preference weight) and finite. Tuned with the
-   sweep (npm run test:settings): at the plan's first guess of 7/7/14 the engine honoured the target but court
-   time spread (playSd) rose up to ~1.8 pts on deep11; 3/3/6 keeps every sweep context within ~0.5 pt. */
-const CENTRE_OVER_TARGET_COST = 3;      // per Centre quarter beyond the coach's target
-const CENTRE_BACK_TO_BACK_COST = 3;     // Centre straight after Centre, at a target of 1-2
-const CENTRE_THIRD_IN_ROW_COST = 6;     // a third Centre in a row, at a target of 1-3 (on top of the two above)
-const CENTRE_FATIGUE_COST = 0.5;        // every on-court cell, per Centre quarter already played this game (target < 4): same on every position, so it moves court vs bench, never which position
+/* §4 rule 3a, in "centre units" (buildQuarterCostFns: one preference-rank step plus one quarter of court-time
+   imbalance), so the Centre target outranks both at every preference-slider value but stays under the per-game
+   bench limit; finite, so never a disqualified cell. Scaling them by the preference weight alone (the first
+   version) left them worth almost nothing at a low preference slider: a coach at slider 1 saw a Centre play all four. */
+const CENTRE_OVER_TARGET_COST = 1;      // per Centre quarter beyond the coach's target
+const CENTRE_BACK_TO_BACK_COST = 1;     // Centre straight after Centre, at a target of 1-2
+const CENTRE_THIRD_IN_ROW_COST = 2;     // a third Centre in a row, at a target of 1-3 (on top of the two above)
+const CENTRE_PLAN_CANDIDATES = 4;      // squad members tried as each quarter's Centre when planning a game's Centre sequence: at most 4^4 = 256 sequences
+const CENTRE_FATIGUE_COST = 0.25;      // every on-court cell, per Centre quarter already played this game (target < 4): same on every position, so it moves court vs bench, never which position
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
 const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
 const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) is happy anywhere: level with a #2 choice, never ahead of a #1
@@ -623,7 +625,8 @@ function planGameBench(input){
    bench cell (so bench rotation emerges from the same optimization, not a
    separate pass): every player takes exactly one cell per quarter, so a
    per-player on-court cost would only be the same number with the sign
-   flipped. `settings.positionVariety` nudges a player away from an
+   flipped. (The one on-court cost of that kind is §4 rule 3a's Centre
+   fatigue, kept on the position side so the bench cell stays non-negative.) `settings.positionVariety` nudges a player away from an
    over-played position; it is capped below OFF_PREFERENCE_COST, which is the
    same for every player, so raising it can never make an off-preference
    cell cheaper than any in-preference one.
@@ -637,13 +640,15 @@ function buildQuarterCostFns(cumulative, settings){
   const varietyWeight = clampSetting(settings.positionVariety, 0, 10, DEFAULT_SETTINGS.positionVariety);
   const capPenalty = BENCH_CAP_PENALTY*(1-loadBlendOf(settings)); // the coach trades the per-game limit for equal workload as the slider rises; gone at 10
 
-  /* §4 rule 3a. Everything here sits on the position side and is scaled by prefWeight
-     (positionCellCost), so it stays below court-time evenness at every slider value, and
-     it is finite, so it never disqualifies a cell. 0 throughout at the default (4). */
+  /* §4 rule 3a. 0 throughout at the default (4); finite, so it never disqualifies a cell. */
   const centreTarget = centreQuartersOf(settings);
+  // One preference-rank step plus one quarter of court-time imbalance: so a Centre cost of 1 outweighs either
+  // alone, at any preference-slider value, while staying under the per-game bench limit (capPenalty quarters —
+  // which the workload slider eases, to nothing at 10).
+  const centreUnit = prefWeight + balanceWeight*COURT_TIME_WEIGHT;
   const centreOn = centreTarget<4;
   const restLoad = centreOn ? rawPositionLoads(settings) : null; // the coach's weights, not the slider's blend
-  // Read per call, not hoisted: refineGameQuarters re-points cumulative.centres after these functions are built.
+  // Read per call, not hoisted: makeGameScorer re-points cumulative.centres after these functions are built.
   function centreSoFarOf(p){
     let n = 0;
     for(const id of cumulative.centres||[]) if(id===p.id) n++;
@@ -673,9 +678,11 @@ function buildQuarterCostFns(cumulative, settings){
   function prefRank(p,pos){
     return p.prefs.indexOf(pos);
   }
+  // The quarter straight after this player's Centre quarter, at a listed non-Centre position (§4 rule 3a).
+  const isRestCell = (p,pos)=>centreOn && pos!=="C" && prefRank(p,pos)>=0 && centreRunOf(p)>=1;
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
-    if(idx>=0) return (centreOn && pos!=="C" && centreRunOf(p)>=1) ? restRank(p,pos) : idx;
+    if(idx>=0) return isRestCell(p,pos) ? restRank(p,pos) : idx;
     if(!p.prefs.length) return NO_PREFERENCE_COST; // no list at all: in-preference everywhere (isInPreference)
     // §5.2: "outside the stated list". One flat cost for everyone — a cost
     // tied to the list's length made short-list players the cheapest
@@ -704,7 +711,8 @@ function buildQuarterCostFns(cumulative, settings){
     // resort at every slider value: used only when the quarter can't be filled
     // in-preference, never to even out court time.
     const lastResort = isInPreference(p,pos) ? 0 : OFF_PREFERENCE_LAST_RESORT;
-    return lastResort + prefWeight*(pc + varietyTerm(p,pos,pc) + centreCost(p,pos));
+    const variety = isRestCell(p,pos) ? 0 : varietyTerm(p,pos,pc); // a rest quarter goes by workload alone: variety could reorder it
+    return lastResort + prefWeight*(pc + variety) + centreUnit*centreCost(p,pos);
   }
   /* Bench-slot cost: how far benching this player now would put them past
      the bench quarters they're due this game (benchQuota — higher for a
@@ -800,42 +808,38 @@ function solveQuarterPositions(input){
    is re-derived from the candidate lineup, so a trade that would bench
    someone past their cap, or repeat a position, is priced as exactly that. A
    trade is scored on the whole game's cost, since moving a bench stint
-   changes later quarters' too.
-   input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
-            cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
-            settings, timeBudgetMs }
-   -> { quarters, stats:{swaps, elapsedMs} } */
-function refineGameQuarters(input){
-  const squadPool = input.squadPool||[];
-  const settings = input.settings||{};
-  const cumulativeSnapshots = input.cumulativeSnapshots||[];
-  const lockedSlotsPerQuarter = input.lockedSlotsPerQuarter||[];
-  const timeBudgetMs = input.timeBudgetMs!=null ? input.timeBudgetMs : PHASE2B_TIME_BUDGET_MS;
-  const start = Date.now();
+   changes later quarters' too. */
+/* Every ordering of `items`, the given order first. */
+function permutationsOf(items){
+  if(items.length<=1) return [items.slice()];
+  return items.flatMap((x,i)=>permutationsOf(items.filter((_,j)=>j!==i)).map(rest=>[x].concat(rest)));
+}
+/* A quarter as one slot map: position -> id, plus "B0".."Bn" -> id for the bench. */
+function quarterToAssign(q){
+  const assign = {};
+  POSITIONS.forEach(pos=>{ if(q.onCourt && q.onCourt[pos]) assign[pos]=q.onCourt[pos]; });
+  (q.bench||[]).forEach((pid,i)=>{ assign["B"+i]=pid; });
+  return assign;
+}
+const isBenchKey = k=>k.charAt(0)==="B";
+
+/* The whole-game objective Phase 2b minimises: every quarter's cells summed,
+   with what the game itself adds (bench stints so far, benched last quarter,
+   positions played in its earlier quarters, who played Centre) re-derived from
+   the lineup being scored. Only the season-level fields of the snapshots are
+   read (posCount before the game from the first; benchQuota/benchCap), so one
+   scorer prices any lineup for the same game.
+   -> (qs:[slot map per quarter]) => number */
+function makeGameScorer(squadPool, cumulativeSnapshots, settings){
   const playerById = {};
   squadPool.forEach(p=>{ playerById[p.id]=p; });
-
-  function toAssign(q){
-    const assign = {};
-    POSITIONS.forEach(pos=>{ if(q.onCourt && q.onCourt[pos]) assign[pos]=q.onCourt[pos]; });
-    (q.bench||[]).forEach((pid,i)=>{ assign["B"+i]=pid; });
-    return assign;
-  }
-  const qs = input.quarters.map(toAssign);
-  const nQ = qs.length;
-
-  const isBenchKey = k=>k.charAt(0)==="B";
-  function isLocked(qi,key){
-    if(isBenchKey(key)) return false;
-    const locks = lockedSlotsPerQuarter[qi]||{};
-    return !!locks[key];
-  }
   // One cost-function pair per quarter, built once: the within-game fields
-  // of each quarter's cumulative are re-pointed as gameCost() walks the game.
-  const liveCums = qs.map((_,qi)=>Object.assign({}, cumulativeSnapshots[qi]));
+  // of each quarter's cumulative are re-pointed as the scorer walks the game.
+  const liveCums = cumulativeSnapshots.map(cum=>Object.assign({}, cum));
   const costFns = liveCums.map(cum=>buildQuarterCostFns(cum, settings));
   const posCountBeforeGame = (cumulativeSnapshots[0]||{}).posCount||{};
-  function gameCost(){
+  return function gameCost(qs){
+    const nQ = qs.length;
     const gameBenchSoFar = {}, centres = [];
     const posCount = Object.assign({}, posCountBeforeGame);
     let benchedLastQuarter = new Set();
@@ -861,7 +865,107 @@ function refineGameQuarters(input){
       benchedLastQuarter = new Set(bench);
     }
     return total;
+  };
+}
+/* §4 rule 3a: Phase 2a solves a quarter at a time, so Q1 can't see that a Centre
+   will have to sit out later, and undoing that afterwards takes a chain of trades
+   longer than Phase 2b's pairs. So below "no limit" the caller tries whole-game
+   Centre sequences up front: every way of giving each quarter's Centre to one of
+   the squad members who list it highest (at most CENTRE_PLAN_CANDIDATES), keeping
+   coach locks. A quarter with nobody to try is left to the solver (null).
+   -> [[id|null x4]] */
+function centreSequences(squad, lockedSlotsPerQuarter){
+  const candidates = squad.filter(p=>isInPreference(p,"C"))
+    .sort((a,b)=>a.prefs.indexOf("C")-b.prefs.indexOf("C")) // stable; no list (-1) sorts first: happy anywhere
+    .slice(0, CENTRE_PLAN_CANDIDATES).map(p=>p.id);
+  const options = [0,1,2,3].map(q=>{
+    const locks = lockedSlotsPerQuarter[q]||{};
+    if(locks.C) return [locks.C];
+    const lockedElsewhere = new Set(Object.values(locks));
+    const free = candidates.filter(id=>!lockedElsewhere.has(id));
+    return free.length ? free : [null];
+  });
+  return options.reduce((seqs,opts)=>seqs.flatMap(seq=>opts.map(id=>seq.concat([id]))), [[]]);
+}
+
+/* Phase 2a for one game: the four quarters solved in order, each seeing what
+   the ones before it did (its own bench stints, positions and Centres).
+   input: { squad:[{id,prefs,isFillIn}], benchSlotCount, lockedSlotsPerQuarter:[{pos:id}],
+            seasonCum:{posCount, benchQuota, benchCap}, settings }
+   -> { quarters:[{onCourt,bench,offPreference}], failingQuarters:[{quarter, positions}] } */
+function solveGameForward(input){
+  const squad = input.squad, seasonCum = input.seasonCum;
+  const posCount = Object.assign({}, seasonCum.posCount); // the season's counts plus this game's quarters so far (regulars only)
+  const gameBenchSoFar = {}, centres = []; // game-local, so fill-ins count here too
+  const isFillIn = {}; squad.forEach(p=>{ isFillIn[p.id] = !!p.isFillIn; });
+  let benchedLastQuarter = new Set();
+  const quarters = [], failingQuarters = []; // every quarter with an unfillable position, not just the last one
+  for(let q=0;q<4;q++){
+    const result = solveQuarterPositions({
+      players: squad, benchSlotCount: input.benchSlotCount, lockedSlots: input.lockedSlotsPerQuarter[q]||{}, settings: input.settings,
+      cumulative: { posCount, gameBenchSoFar, benchedLastQuarter, centres, benchQuota: seasonCum.benchQuota, benchCap: seasonCum.benchCap }
+    });
+    // A null position is a defensive SLOT_MISMATCH (caller-contract bug), not a real unfillable position.
+    if(result.errors.length) failingQuarters.push({quarter:q+1, positions:result.errors.map(e=>e.position||"an internal slot-count mismatch")});
+    POSITIONS.forEach(pos=>{ const pid = result.onCourt[pos]; if(pid && !isFillIn[pid]) posCount[pid+"::"+pos] = (posCount[pid+"::"+pos]||0)+1; });
+    result.bench.forEach(pid=>{ gameBenchSoFar[pid] = (gameBenchSoFar[pid]||0)+1; });
+    benchedLastQuarter = new Set(result.bench);
+    centres.push(result.onCourt.C);
+    quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
   }
+  return {quarters, failingQuarters};
+}
+
+/* Phase 2 for one game: the forward pass (2a), then — below "no limit" on
+   Centre quarters (§4 rule 3a) — the forward pass again with each
+   centreSequences() order pinned, keeping the cheapest game, then 2b.
+   input: as solveGameForward -> { quarters, failingQuarters } (quarters unrefined when any fail) */
+function solveGame(input){
+  const first = solveGameForward(input);
+  if(first.failingQuarters.length) return first;
+  const locks = input.lockedSlotsPerQuarter;
+  const snapshots = [0,1,2,3].map(()=>input.seasonCum); // the scorer reads only the season-level fields
+  let quarters = first.quarters;
+  if(centreQuartersOf(input.settings)<4){
+    const score = makeGameScorer(input.squad, snapshots, input.settings);
+    const scoreOf = qs=>score(qs.map(quarterToAssign));
+    let bestScore = scoreOf(quarters);
+    centreSequences(input.squad, locks).forEach(seq=>{
+      if(seq.every((id,q)=>!id || id===first.quarters[q].onCourt.C)) return; // pins what the first pass already chose
+      const tried = solveGameForward(Object.assign({}, input, {lockedSlotsPerQuarter: locks.map((l,q)=>seq[q] ? Object.assign({}, l, {C:seq[q]}) : l)}));
+      if(tried.failingQuarters.length) return;
+      const s = scoreOf(tried.quarters);
+      if(s < bestScore-1e-9){ bestScore = s; quarters = tried.quarters; }
+    });
+  }
+  const refined = refineGameQuarters({quarters, squadPool:input.squad, cumulativeSnapshots:snapshots, lockedSlotsPerQuarter:locks, settings:input.settings});
+  return {quarters: refined.quarters, failingQuarters: []};
+}
+
+/* Below "no limit" on Centre quarters it also tries the quarters in other orders (Move 0, §4 rule 3a).
+   input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
+            cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
+            settings, timeBudgetMs }
+   -> { quarters, stats:{swaps, elapsedMs} } */
+function refineGameQuarters(input){
+  const squadPool = input.squadPool||[];
+  const settings = input.settings||{};
+  const cumulativeSnapshots = input.cumulativeSnapshots||[];
+  const lockedSlotsPerQuarter = input.lockedSlotsPerQuarter||[];
+  const timeBudgetMs = input.timeBudgetMs!=null ? input.timeBudgetMs : PHASE2B_TIME_BUDGET_MS;
+  const start = Date.now();
+  const playerById = {};
+  squadPool.forEach(p=>{ playerById[p.id]=p; });
+  const qs = input.quarters.map(quarterToAssign);
+  const nQ = qs.length;
+
+  function isLocked(qi,key){
+    if(isBenchKey(key)) return false;
+    const locks = lockedSlotsPerQuarter[qi]||{};
+    return !!locks[key];
+  }
+  const scoreGame = makeGameScorer(squadPool, qs.map((_,qi)=>cumulativeSnapshots[qi]||{}), settings);
+  const gameCost = ()=>scoreGame(qs);
   // Two players trade slots within one quarter — the only move that keeps
   // everyone in exactly one slot per quarter. (Trading slots *between*
   // quarters would put a player in two slots of the same quarter whenever the
@@ -878,12 +982,32 @@ function refineGameQuarters(input){
   let best = gameCost();
   const keep = ()=>{
     const after = gameCost();
-    if(after < best-1e-9){ best = after; improved = true; swaps++; return true; }
+    if(after < best-1e-9){ best = after; improved = true; swaps++; reorderStale = true; return true; }
     return false;
   };
+  // Quarters with no coach lock can be played in any order between themselves (Move 0).
+  const movable = qs.map((_,qi)=>qi).filter(qi=>!Object.keys(lockedSlotsPerQuarter[qi]||{}).length);
+  const reorders = centreQuartersOf(settings)<4 ? permutationsOf(movable).slice(1) : []; // [0] is the current order
+  let reorderStale = true; // false while nothing has changed since Move 0 last picked the best order
   outer:
   while(improved){
     improved = false;
+    // Move 0 (§4 rule 3a, below "no limit" only): play the quarters in a different
+    // order. Everyone keeps every slot, so only what depends on order changes —
+    // back-to-back Centre (and bench) quarters, and where a Centre rests. Pair
+    // trades can't reach this: it moves every player at once.
+    if(reorders.length && reorderStale){
+      reorderStale = false;
+      const current = qs.slice();
+      let bestOrder = null;
+      reorders.forEach(perm=>{
+        movable.forEach((qi,k)=>{ qs[qi] = current[perm[k]]; });
+        const after = gameCost();
+        if(after < best-1e-9){ best = after; bestOrder = perm; }
+      });
+      movable.forEach((qi,k)=>{ qs[qi] = current[bestOrder ? bestOrder[k] : qi]; });
+      if(bestOrder){ improved = true; swaps++; }
+    }
     // Move 1: one trade in one quarter. Each quarter was solved exactly given
     // the quarters before it, but not the ones after — hindsight can still
     // move a bench stint to a better quarter or player.
@@ -962,7 +1086,7 @@ const RosterSolver = {
     PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, FORCED_ON_COURT_PENALTY, ROSTER_OFF_TIEBREAK_WEIGHT,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
-    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, CENTRE_OVER_TARGET_COST, CENTRE_BACK_TO_BACK_COST, CENTRE_THIRD_IN_ROW_COST, CENTRE_FATIGUE_COST, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
+    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, CENTRE_OVER_TARGET_COST, CENTRE_BACK_TO_BACK_COST, CENTRE_THIRD_IN_ROW_COST, CENTRE_FATIGUE_COST, CENTRE_PLAN_CANDIDATES, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
     ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS,
     DEFAULT_POSITION_LOAD, POSITION_LOAD_MIN, POSITION_LOAD_MAX
@@ -987,6 +1111,12 @@ const RosterSolver = {
   buildQuarterCostFns,
   solveQuarterPositions,
   refineGameQuarters,
+  solveGameForward,
+  solveGame,
+  makeGameScorer,
+  quarterToAssign,
+  centreSequences,
+  permutationsOf,
   computeMissedGamesWarning,
   computeRosterOffAchievabilityNotes
 };

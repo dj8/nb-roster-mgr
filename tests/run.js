@@ -2208,10 +2208,10 @@ test("CQ-1: centreCost - zero at 4, over-target / back-to-back / third-in-row at
   }))));
   assert.deepStrictEqual([undefined,null,"x",NaN,0,1.4,2.6,9].map(v=>S.centreQuartersOf({centreQuarters:v})), [4,4,4,4,1,1,3,4]);
   assert.strictEqual(S.centreQuartersOf(undefined), 4);
-  // the cell function folds it in, scaled by the preference weight; BIG_M cells stay BIG_M
+  // the cell function folds it in, in centre units; BIG_M cells stay BIG_M
   const fns = S.buildQuarterCostFns({centres:["p"]}, {centreQuarters:2, preferenceSlider:8});
-  const w = S.derivePreferenceWeights(8).preference;
-  assert.ok(Math.abs((fns.positionCellCost(p,"C") - 0) - w*(0 + fns.centreCost(p,"C")))<1e-9);
+  const {preference, balance} = S.derivePreferenceWeights(8);
+  assert.ok(Math.abs(fns.positionCellCost(p,"C") - (preference + balance*K.COURT_TIME_WEIGHT)*fns.centreCost(p,"C"))<1e-9, "in centre units: a rank step plus a quarter of court time");
   assert.strictEqual(fns.positionCellCost(p,"GK"), K.BIG_M, "off-list with off-preference disallowed is still disqualified");
 });
 
@@ -2385,6 +2385,108 @@ test("CQ-12: a coach locking Centre for one player in Q1 and Q2 still generates,
   assert.strictEqual(r.perGame[0].error, null);
   assert.strictEqual(r.perGame[0].quarters[0].centre, "C1"); assert.strictEqual(r.perGame[0].quarters[1].centre, "C1");
   assert.strictEqual(r.perGame[1].error, null);
+});
+
+test("CQ-13: below no limit, Phase 2b also tries every order of the unlocked quarters (a reorder no pair trade can reach)", ()=>{
+  const S = freshEngine().RosterSolver;
+  const roster = CQ_SPECIALISTS.concat([["C1",["C","WA"]],["C2",["C","WD"]],["C3",["C","GA"]]]);
+  const players = roster.map(([id,prefs])=>({id,name:id,prefs}));
+  const settings = {centreQuarters:2, preferenceSlider:8, positionVariety:1};
+  const snap = {posCount:{}, benchQuota:{}, benchCap:{}};
+  // A valid game whose Centres run C1,C1,C2,C2: every quarter's lineup is fine, only the order is bad.
+  const q = (c, bench)=>{ const rest = ["C1","C2","C3"].filter(id=>id!==c && !bench.includes(id));
+    return {onCourt:{GS:"GS1",GA:"GA1",WA:"WA1",WD:"WD1",GD:"GD1",GK:"GK1",C:c}, bench:bench.concat(rest).slice(0,2)}; };
+  const quarters = [q("C1",["C2","C3"]), q("C1",["C2","C3"]), q("C2",["C1","C3"]), q("C2",["C1","C3"])];
+  const input = locks=>({quarters, squadPool:players, cumulativeSnapshots:[snap,snap,snap,snap], lockedSlotsPerQuarter:locks, settings});
+  const scorer = S.makeGameScorer(players, [snap,snap,snap,snap], settings);
+  const score = qs=>scorer(qs.map(S.quarterToAssign));
+  const refined = S.refineGameQuarters(input([{},{},{},{}])).quarters;
+  assert.deepStrictEqual(refined.map(x=>x.onCourt.C).filter((c,i,a)=>i && c===a[i-1]), [], "no back-to-back Centre left");
+  // and nothing it returns can be beaten by just reordering its own quarters
+  S.permutationsOf([0,1,2,3]).forEach(p=>assert.ok(score(refined) <= score(p.map(i=>refined[i]))+1e-9));
+  // a coach lock pins its quarter in place
+  const locked = S.refineGameQuarters(input([{C:"C1"},{},{},{}])).quarters;
+  assert.strictEqual(locked[0].onCourt.C, "C1");
+  // (at no limit the move is off: CQ-2 shows setting 4 generates exactly what it did before)
+});
+
+test("CQ-14: centreSequences - the squad members who rank Centre highest (at most 4), every order, coach locks kept", ()=>{
+  const S = freshEngine().RosterSolver;
+  const sq = [["a",["GS","C"]],["b",["C"]],["c",["WA","GA","C"]],["d",["C","WA"]],["e",["GK"]],["f",["WD","C"]],["g",[]]].map(([id,prefs])=>({id,prefs}));
+  const seqs = S.centreSequences(sq, [{},{},{},{}]);
+  assert.strictEqual(seqs.length, 256);
+  assert.deepStrictEqual([...new Set(seqs.flat())].sort(), ["a","b","d","g"], "no list (happy anywhere) and #1s first, then #2s; c (#3) and f are cut");
+  const locked = S.centreSequences(sq, [{C:"c"},{GS:"a"},{},{}]);
+  assert.ok(locked.every(seq=>seq[0]==="c"), "a locked Centre is kept");
+  assert.ok(locked.every(seq=>seq[1]!=="a"), "someone locked elsewhere that quarter isn't tried at Centre");
+  assert.strictEqual(JSON.stringify(S.centreSequences([{id:"x",prefs:["GS"]}], [{},{},{},{}])), "[[null,null,null,null]]", "nobody to try: left to the solver");
+});
+
+test("CQ-15: the real-roster backup at targets 3, 2 and 1 - no three Centre quarters in a row, and few back-to-backs", ()=>{
+  const backup = fs.readFileSync(path.join(__dirname, "fixtures", "season-backup-v1.json"), "utf8");
+  const run = target=>{
+    const engine = freshEngine(); quietly(()=>engine.importBackup(backup));
+    engine._getState().settings.centreQuarters = target;
+    engine.gameNums().forEach(n=>{ engine.getGame(n).isPlayed = false; });
+    quietly(()=>engine.runGeneration());
+    const runs = engine.gameNums().map(n=>engine.getGame(n).schedule.quarters.map(q=>q.onCourt.C)).filter(cs=>cs.some((c,i)=>i>1 && c===cs[i-1] && c===cs[i-2]));
+    return {b2b:engine.computeCentreStats(target).backToBack, runs:runs.length};
+  };
+  [3,2,1].forEach(t=>assert.strictEqual(run(t).runs, 0, "target "+t));
+  // Before whole-game Centre planning and quarter reordering this roster had 6 at target 2 and 5-6 at target 1.
+  assert.ok(run(2).b2b<=5); assert.ok(run(1).b2b<=5);
+});
+
+test("CQ-16: the coach's test-data-v2 backup (preference slider 1, Centre target 1) - no back-to-back Centre, nobody past 2, and only squads short of Centres go over", ()=>{
+  const engine = freshEngine();
+  quietly(()=>engine.importBackup(fs.readFileSync(path.join(__dirname, "fixtures", "test-data-v2.json"), "utf8")));
+  const st = engine._getState();
+  assert.strictEqual(st.settings.preferenceSlider, 1); assert.strictEqual(st.settings.centreQuarters, 1);
+  quietly(()=>engine.runGeneration());
+  const everyone = st.players.concat(st.fillIns);
+  let overWithFourCentres = 0;
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n); if(!g.schedule) return;
+    const cs = g.schedule.quarters.map(q=>q.onCourt.C);
+    cs.forEach((c,i)=>{ if(i) assert.notStrictEqual(c, cs[i-1], `game ${n}: back-to-back Centre`); });
+    const counts = {}; cs.forEach(c=>{ counts[c] = (counts[c]||0)+1; });
+    Object.values(counts).forEach(k=>assert.ok(k<=2, `game ${n}: ${JSON.stringify(cs)}`));
+    const listers = g.squadIds.filter(id=>engine.RosterSolver.isInPreference(engine.byId(everyone,id), "C")).length;
+    if(listers>=4 && Object.values(counts).some(k=>k>1)) overWithFourCentres++;
+  });
+  assert.ok(overWithFourCentres<=1, "with four Centres in the squad, target 1 is met (at most one game short)");
+});
+
+test("CQ-17: solveGame - unrefined quarters back when one can't be filled; at no limit it is just the forward pass refined; below it never worse than that", ()=>{
+  const S = freshEngine().RosterSolver;
+  const players = CQ_TWO_CENTRES.map(([id,prefs])=>({id,name:id,prefs}));
+  const seasonCum = {posCount:{}, benchQuota:{}, benchCap:{}};
+  const locks = [{},{},{},{}];
+  const input = settings=>({squad:players, benchSlotCount:players.length-7, lockedSlotsPerQuarter:locks, seasonCum, settings});
+  // a position nobody lists, off-preference off: the failing quarters come back as they are
+  const noGK = players.filter(p=>p.id!=="GK1").concat([{id:"X", name:"X", prefs:["GS"]}]);
+  const failed = S.solveGame(Object.assign(input({allowOffPreference:false}), {squad:noGK}));
+  assert.strictEqual(failed.failingQuarters.length, 4);
+  // at 4: exactly forward pass + refinement
+  const four = {centreQuarters:4, preferenceSlider:8};
+  const fwd = S.solveGameForward(input(four));
+  const ref = S.refineGameQuarters({quarters:fwd.quarters, squadPool:players, cumulativeSnapshots:[seasonCum,seasonCum,seasonCum,seasonCum], lockedSlotsPerQuarter:locks, settings:four});
+  assert.strictEqual(JSON.stringify(S.solveGame(input(four)).quarters), JSON.stringify(ref.quarters));
+  // below 4: the search can only lower the game's cost
+  [1,2,3].forEach(t=>{
+    const settings = {centreQuarters:t, preferenceSlider:1};
+    const scorer = S.makeGameScorer(players, [seasonCum,seasonCum,seasonCum,seasonCum], settings);
+    const cost = qs=>scorer(qs.map(S.quarterToAssign));
+    const plain = S.refineGameQuarters({quarters:S.solveGameForward(input(settings)).quarters, squadPool:players, cumulativeSnapshots:[seasonCum,seasonCum,seasonCum,seasonCum], lockedSlotsPerQuarter:locks, settings}).quarters;
+    assert.ok(cost(S.solveGame(input(settings)).quarters) <= cost(plain)+1e-9, "target "+t);
+  });
+});
+
+test("CQ-18: a rest quarter follows the workload order even at high position variety", ()=>{
+  const S = freshEngine().RosterSolver;
+  const p = {id:"p", prefs:["C","GA","WA","GS"]};
+  const cell = pos=>S.buildQuarterCostFns({centres:["p"], posCount:{"p::GS":20}}, {centreQuarters:2, preferenceSlider:8, positionVariety:10}).positionCellCost(p,pos);
+  assert.ok(cell("GS")<cell("WA") && cell("WA")<cell("GA"), "GS played 20 times is still the rest position");
 });
 
 /* ============================================================

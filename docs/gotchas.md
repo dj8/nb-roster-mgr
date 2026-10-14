@@ -164,15 +164,22 @@ re-running `npm run test:settings` (SET-7) and `LOAD-6`: the slider will quietly
 at the top end. Remapping the slider curve was tried and doesn't help — the flattening was this
 interaction, not the mapping.
 
-### Centre quarters: position-side only, rest order by raw load, previous quarters only
-The Centre-quarters costs (§4 rule 3a, `centreCost` and the rest-quarter ranking in `buildQuarterCostFns`) all go in
-`positionCellCost`, inside the `prefWeight` multiplier, like rank and variety. Don't make them flat costs: that would let
-them outweigh court-time evenness at low preference-slider values. They stay finite (never `BIG_M`), so a lone Centre still
-plays all four quarters. The rest quarter is ordered by the coach's raw `positionLoad` (`rawPositionLoads`), not the
+### Centre quarters: centre units, rest order by raw load, previous quarters only
+The Centre-quarters costs (§4 rule 3a, `centreCost`) are multiplied by `centreUnit` = `prefWeight +
+balanceWeight × COURT_TIME_WEIGHT`: one preference-rank step plus one quarter of court-time imbalance. Don't scale them by
+`prefWeight` alone — that was the first version, and at preference slider 1 it made them worth a fraction of a bench quarter,
+so a Centre played all four quarters with two other Centres in the squad. They stay finite (never `BIG_M`), so a lone Centre
+still plays all four quarters. The rest-quarter ranking replaces the preference rank, so it stays on `prefWeight`, and the variety term is left out of rest cells (at a high variety setting it could otherwise reorder them). The rest quarter is ordered by the coach's raw `positionLoad` (`rawPositionLoads`), not the
 slider-blended load, so the order never changes as the workload slider moves. Everything counts the game's earlier quarters
 only (`centres`: who played Centre in each earlier quarter), so Phase 2b's game total is what Phase 2a priced; it is game-local and includes fill-ins. The cost functions read `cumulative.centres` on every call, never once when built: `refineGameQuarters` re-points it after building them.
-The `CENTRE_*` constants were tuned with `npm run test:settings`: stronger values honour the target harder but spread
-court time (playSd) and the per-game bench overruns, so retune only with the sweep and CQ-9 to hand.
+Two searches exist only for this rule, both off at 4: `solveGame` re-runs a game's forward pass for every
+`centreSequences` entry (≤256), and Phase 2b's Move 0 reorders quarters. Both are needed because Phase 2a can't see ahead
+and pair trades can't move three or more players at once; they only find what the cost model already prefers. When a
+Centre still goes over the target, it is usually because the squad has too few Centres, or resting them would need someone
+benched twice in a game (the per-game limit ranks above this rule) — that's the roster, not the search.
+The `CENTRE_*` constants (1 / 1 / 2, fatigue 0.25) were tuned on the coach's `tests/fixtures/test-data-v2.json` (CQ-16)
+and the sweep: larger values gained nothing there and spread court time further. Retune only with CQ-15, CQ-16 and
+`npm run test:settings` to hand.
 
 ### `app.js` exports nothing — tests patch it at load time
 There is no `module.exports` anywhere in `app.js` itself (it's a browser-only IIFE).
