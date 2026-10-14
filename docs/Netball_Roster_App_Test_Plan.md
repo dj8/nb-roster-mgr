@@ -78,9 +78,11 @@ Unless a case says otherwise, regenerate from identical saved input when compari
 
 |ID|Case|Steps|Expected|
 |---|---|---|---|
-|P2B-1|Refinement stays inside one game|Run `refineGameQuarters` on a game, inspect swap candidates considered|Every swap is between two quarters of the _same_ game — never references another game's squad or schedule|
+|P2B-1|Refinement stays inside one game|Run `refineGameQuarters` on a game, inspect swap candidates considered|Every trade is between two players within a quarter of the _same_ game — never references another game's squad or schedule|
 |P2B-2|Refinement never worsens cost|Snapshot a game's total cost before and after refinement|Post-refinement total cost ≤ pre-refinement cost, always|
 |P2B-3|Refinement respects locks and played status|Lock a slot within a game, or mark the game played, then run generation|Locked slot / played game's schedule is byte-for-byte unchanged after refinement|
+|P2B-5|Refinement actually moves players|Hand it a game where one player sits all four quarters|At least one trade is made and the four bench stints end up with four different players (regression: the old cross-quarter swap was always rejected as a duplicate, so the pass was a no-op)|
+|P1-8|Bench flexibility breaks roster-off ties|A roster where every roster-off choice is equally even and equally covered, but one leaves fewer players forced on court|That choice is made at every roster-off priority (`FORCED-ON-COURT-1`)|
 |P2B-4|Time budget respected|Force `PHASE2B_TIME_BUDGET_MS` very low on a large squad|Refinement stops at the budget and returns the best solution found so far, does not hang|
 
 ---
