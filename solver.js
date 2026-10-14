@@ -26,14 +26,15 @@ const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers
 const COURT_TIME_WEIGHT = 24;           // bench-cell cost per bench quarter a player is ahead of their share this game (before the balance weight): at the default slider, about two preference-rank steps
 const BENCH_CAP_PENALTY = 6;            // §4 rule 3: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
 const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 5, in the same units
-/* §4 rule 3a, all on the position side (so scaled by the preference weight) and finite. Tuned with the
-   sweep (npm run test:settings): at the plan's first guess of 7/7/14 the engine honoured the target but court
-   time spread (playSd) rose up to ~1.8 pts on deep11; 3/3/6 keeps every sweep context within ~0.5 pt. */
-const CENTRE_OVER_TARGET_COST = 3;      // per Centre quarter beyond the coach's target
-const CENTRE_BACK_TO_BACK_COST = 3;     // Centre straight after Centre, at a target of 1-2
-const CENTRE_THIRD_IN_ROW_COST = 6;     // a third Centre in a row, at a target of 1-3 (on top of the two above)
+/* §4 rule 3a, in "centre units" (buildQuarterCostFns: one preference-rank step plus one quarter of court-time
+   imbalance), so the Centre target outranks both at every preference-slider value but stays under the per-game
+   bench limit; finite, so never a disqualified cell. Scaling them by the preference weight alone (the first
+   version) left them worth almost nothing at a low preference slider: a coach at slider 1 saw a Centre play all four. */
+const CENTRE_OVER_TARGET_COST = 1;      // per Centre quarter beyond the coach's target
+const CENTRE_BACK_TO_BACK_COST = 1;     // Centre straight after Centre, at a target of 1-2
+const CENTRE_THIRD_IN_ROW_COST = 2;     // a third Centre in a row, at a target of 1-3 (on top of the two above)
 const CENTRE_PLAN_CANDIDATES = 4;      // squad members tried as each quarter's Centre when planning a game's Centre sequence: at most 4^4 = 256 sequences
-const CENTRE_FATIGUE_COST = 0.5;        // every on-court cell, per Centre quarter already played this game (target < 4): same on every position, so it moves court vs bench, never which position
+const CENTRE_FATIGUE_COST = 0.25;      // every on-court cell, per Centre quarter already played this game (target < 4): same on every position, so it moves court vs bench, never which position
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
 const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
 const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) is happy anywhere: level with a #2 choice, never ahead of a #1
@@ -638,10 +639,11 @@ function buildQuarterCostFns(cumulative, settings){
   const varietyWeight = clampSetting(settings.positionVariety, 0, 10, DEFAULT_SETTINGS.positionVariety);
   const capPenalty = BENCH_CAP_PENALTY*(1-loadBlendOf(settings)); // the coach trades the per-game limit for equal workload as the slider rises; gone at 10
 
-  /* §4 rule 3a. Everything here sits on the position side and is scaled by prefWeight
-     (positionCellCost), so it stays below court-time evenness at every slider value, and
-     it is finite, so it never disqualifies a cell. 0 throughout at the default (4). */
+  /* §4 rule 3a. 0 throughout at the default (4); finite, so it never disqualifies a cell. */
   const centreTarget = centreQuartersOf(settings);
+  // One preference-rank step plus one quarter of court-time imbalance: so a Centre cost of 1 outweighs either
+  // alone, at any preference-slider value, while staying well under the per-game bench limit (capPenalty quarters).
+  const centreUnit = prefWeight + balanceWeight*COURT_TIME_WEIGHT;
   const centreOn = centreTarget<4;
   const restLoad = centreOn ? rawPositionLoads(settings) : null; // the coach's weights, not the slider's blend
   // Read per call, not hoisted: refineGameQuarters re-points cumulative.centres after these functions are built.
@@ -705,7 +707,7 @@ function buildQuarterCostFns(cumulative, settings){
     // resort at every slider value: used only when the quarter can't be filled
     // in-preference, never to even out court time.
     const lastResort = isInPreference(p,pos) ? 0 : OFF_PREFERENCE_LAST_RESORT;
-    return lastResort + prefWeight*(pc + varietyTerm(p,pos,pc) + centreCost(p,pos));
+    return lastResort + prefWeight*(pc + varietyTerm(p,pos,pc)) + centreUnit*centreCost(p,pos);
   }
   /* Bench-slot cost: how far benching this player now would put them past
      the bench quarters they're due this game (benchQuota — higher for a

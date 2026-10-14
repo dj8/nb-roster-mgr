@@ -2208,10 +2208,10 @@ test("CQ-1: centreCost - zero at 4, over-target / back-to-back / third-in-row at
   }))));
   assert.deepStrictEqual([undefined,null,"x",NaN,0,1.4,2.6,9].map(v=>S.centreQuartersOf({centreQuarters:v})), [4,4,4,4,1,1,3,4]);
   assert.strictEqual(S.centreQuartersOf(undefined), 4);
-  // the cell function folds it in, scaled by the preference weight; BIG_M cells stay BIG_M
+  // the cell function folds it in, in centre units; BIG_M cells stay BIG_M
   const fns = S.buildQuarterCostFns({centres:["p"]}, {centreQuarters:2, preferenceSlider:8});
-  const w = S.derivePreferenceWeights(8).preference;
-  assert.ok(Math.abs((fns.positionCellCost(p,"C") - 0) - w*(0 + fns.centreCost(p,"C")))<1e-9);
+  const {preference, balance} = S.derivePreferenceWeights(8);
+  assert.ok(Math.abs(fns.positionCellCost(p,"C") - (preference + balance*K.COURT_TIME_WEIGHT)*fns.centreCost(p,"C"))<1e-9, "in centre units: a rank step plus a quarter of court time");
   assert.strictEqual(fns.positionCellCost(p,"GK"), K.BIG_M, "off-list with off-preference disallowed is still disqualified");
 });
 
@@ -2435,6 +2435,27 @@ test("CQ-15: the real-roster backup at targets 3, 2 and 1 - no three Centre quar
   [3,2,1].forEach(t=>assert.strictEqual(run(t).runs, 0, "target "+t));
   // Before whole-game Centre planning and quarter reordering this roster had 6 at target 2 and 5-6 at target 1.
   assert.ok(run(2).b2b<=5); assert.ok(run(1).b2b<=5);
+});
+
+test("CQ-16: the coach's test-data-v2 backup (preference slider 1, Centre target 1) - no back-to-back Centre, nobody past 2, and only squads short of Centres go over", ()=>{
+  const engine = freshEngine();
+  quietly(()=>engine.importBackup(fs.readFileSync(path.join(__dirname, "fixtures", "test-data-v2.json"), "utf8")));
+  const st = engine._getState();
+  assert.strictEqual(st.settings.preferenceSlider, 1); assert.strictEqual(st.settings.centreQuarters, 1);
+  quietly(()=>engine.runGeneration());
+  const everyone = st.players.concat(st.fillIns);
+  let overWithFourCentres = 0;
+  engine.gameNums().forEach(n=>{
+    const g = engine.getGame(n); if(!g.schedule) return;
+    const cs = g.schedule.quarters.map(q=>q.onCourt.C);
+    cs.forEach((c,i)=>{ if(i) assert.notStrictEqual(c, cs[i-1], `game ${n}: back-to-back Centre`); });
+    const counts = {}; cs.forEach(c=>{ counts[c] = (counts[c]||0)+1; });
+    Object.values(counts).forEach(k=>assert.ok(k<=2, `game ${n}: ${JSON.stringify(cs)}`));
+    const listers = g.squadIds.filter(id=>listsCentre(everyone.find(p=>p.id===id))).length;
+    if(listers>=4 && Object.values(counts).some(k=>k>1)) overWithFourCentres++;
+  });
+  assert.ok(overWithFourCentres<=1, "with four Centres in the squad, target 1 is met (at most one game short)");
+  function listsCentre(p){ return engine.RosterSolver.isInPreference(p, "C"); }
 });
 
 /* ============================================================
