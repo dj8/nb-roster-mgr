@@ -2387,6 +2387,56 @@ test("CQ-12: a coach locking Centre for one player in Q1 and Q2 still generates,
   assert.strictEqual(r.perGame[1].error, null);
 });
 
+test("CQ-13: below no limit, Phase 2b also tries every order of the unlocked quarters (a reorder no pair trade can reach)", ()=>{
+  const S = freshEngine().RosterSolver;
+  const roster = CQ_SPECIALISTS.concat([["C1",["C","WA"]],["C2",["C","WD"]],["C3",["C","GA"]]]);
+  const players = roster.map(([id,prefs])=>({id,name:id,prefs}));
+  const settings = {centreQuarters:2, preferenceSlider:8, positionVariety:1};
+  const snap = {posCount:{}, benchQuota:{}, benchCap:{}};
+  // A valid game whose Centres run C1,C1,C2,C2: every quarter's lineup is fine, only the order is bad.
+  const q = (c, bench)=>{ const rest = ["C1","C2","C3"].filter(id=>id!==c && !bench.includes(id));
+    return {onCourt:{GS:"GS1",GA:"GA1",WA:"WA1",WD:"WD1",GD:"GD1",GK:"GK1",C:c}, bench:bench.concat(rest).slice(0,2)}; };
+  const quarters = [q("C1",["C2","C3"]), q("C1",["C2","C3"]), q("C2",["C1","C3"]), q("C2",["C1","C3"])];
+  const input = locks=>({quarters, squadPool:players, cumulativeSnapshots:[snap,snap,snap,snap], lockedSlotsPerQuarter:locks, settings});
+  const score = qs=>S.scoreGameQuarters({quarters:qs, squadPool:players, cumulativeSnapshots:[snap,snap,snap,snap], settings});
+  const refined = S.refineGameQuarters(input([{},{},{},{}])).quarters;
+  assert.deepStrictEqual(refined.map(x=>x.onCourt.C).filter((c,i,a)=>i && c===a[i-1]), [], "no back-to-back Centre left");
+  // and nothing it returns can be beaten by just reordering its own quarters
+  const perms = []; (function P(a,r){ if(!r.length) perms.push(a); r.forEach((x,i)=>P(a.concat(x), r.filter((_,j)=>j!==i))); })([], [0,1,2,3]);
+  perms.forEach(p=>assert.ok(score(refined) <= score(p.map(i=>refined[i]))+1e-9));
+  // a coach lock pins its quarter in place
+  const locked = S.refineGameQuarters(input([{C:"C1"},{},{},{}])).quarters;
+  assert.strictEqual(locked[0].onCourt.C, "C1");
+  // (at no limit the move is off: CQ-2 shows setting 4 generates exactly what it did before)
+});
+
+test("CQ-14: centreSequences - the squad members who rank Centre highest (at most 4), every order, coach locks kept", ()=>{
+  const S = freshEngine().RosterSolver;
+  const sq = [["a",["GS","C"]],["b",["C"]],["c",["WA","GA","C"]],["d",["C","WA"]],["e",["GK"]],["f",["WD","C"]],["g",[]]].map(([id,prefs])=>({id,prefs}));
+  const seqs = S.centreSequences(sq, [{},{},{},{}]);
+  assert.strictEqual(seqs.length, 256);
+  assert.deepStrictEqual([...new Set(seqs.flat())].sort(), ["a","b","d","g"], "no list (happy anywhere) and #1s first, then #2s; c (#3) and f are cut");
+  const locked = S.centreSequences(sq, [{C:"c"},{GS:"a"},{},{}]);
+  assert.ok(locked.every(seq=>seq[0]==="c"), "a locked Centre is kept");
+  assert.ok(locked.every(seq=>seq[1]!=="a"), "someone locked elsewhere that quarter isn't tried at Centre");
+  assert.strictEqual(JSON.stringify(S.centreSequences([{id:"x",prefs:["GS"]}], [{},{},{},{}])), "[[null,null,null,null]]", "nobody to try: left to the solver");
+});
+
+test("CQ-15: the real-roster backup at targets 3, 2 and 1 - no three Centre quarters in a row, and few back-to-backs", ()=>{
+  const backup = fs.readFileSync(path.join(__dirname, "fixtures", "season-backup-v1.json"), "utf8");
+  const run = target=>{
+    const engine = freshEngine(); quietly(()=>engine.importBackup(backup));
+    engine._getState().settings.centreQuarters = target;
+    engine.gameNums().forEach(n=>{ engine.getGame(n).isPlayed = false; });
+    quietly(()=>engine.runGeneration());
+    const runs = engine.gameNums().map(n=>engine.getGame(n).schedule.quarters.map(q=>q.onCourt.C)).filter(cs=>cs.some((c,i)=>i>1 && c===cs[i-1] && c===cs[i-2]));
+    return {b2b:engine.computeCentreStats(target).backToBack, runs:runs.length};
+  };
+  [3,2,1].forEach(t=>assert.strictEqual(run(t).runs, 0, "target "+t));
+  // Before whole-game Centre planning and quarter reordering this roster had 6 at target 2 and 5-6 at target 1.
+  assert.ok(run(2).b2b<=5); assert.ok(run(1).b2b<=5);
+});
+
 /* ============================================================
    Report
    ============================================================ */

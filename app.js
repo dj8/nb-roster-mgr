@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 71; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 72; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -604,54 +604,72 @@ function runGeneration(){
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
-    const gameBenchSoFar = {}, centres = []; // centres: who played Centre each quarter (§4 rule 3a; fill-ins included)
-    let benchedLastQuarter = new Set();
-    const quarters = [];
-    const cumulativeSnapshots = [];
-    const lockedSlotsPerQuarter = [];
-    const failingQuarters = []; // {quarter, positions} — every quarter with an unfillable position, not just the last one
-
-    for(let q=0;q<4;q++){
+    const lockedSlotsPerQuarter = [0,1,2,3].map(q=>{
       const lockedSlots = {};
       POSITIONS.forEach(pos=>{
         const lockKey = q+"-"+pos;
         if(game.lockedSlots && game.lockedSlots[lockKey]) lockedSlots[pos]=game.lockedSlots[lockKey];
       });
-      lockedSlotsPerQuarter.push(lockedSlots);
-      const snapshot = {
-        posCount: Object.assign({}, cumulative.posCount),
-        gameBenchSoFar: Object.assign({}, gameBenchSoFar),
-        benchedLastQuarter: new Set(benchedLastQuarter),
-        centres: centres.slice(),
-        benchQuota, benchCap
-      };
-      cumulativeSnapshots.push(snapshot);
+      return lockedSlots;
+    });
+    /* Phase 2a: the four quarters solved in order, each seeing what the ones
+       before it did. Leaves `cumulative` as it found it. */
+    const solveForward = locksPerQuarter=>{
+      const gameBenchSoFar = {}, centres = []; // centres: who played Centre each quarter (§4 rule 3a; fill-ins included)
+      let benchedLastQuarter = new Set();
+      const quarters = [];
+      const cumulativeSnapshots = [];
+      const failingQuarters = []; // {quarter, positions} — every quarter with an unfillable position, not just the last one
+      for(let q=0;q<4;q++){
+        const snapshot = {
+          posCount: Object.assign({}, cumulative.posCount),
+          gameBenchSoFar: Object.assign({}, gameBenchSoFar),
+          benchedLastQuarter: new Set(benchedLastQuarter),
+          centres: centres.slice(),
+          benchQuota, benchCap
+        };
+        cumulativeSnapshots.push(snapshot);
 
-      const result = RosterSolver.solveQuarterPositions({
-        players: plan.squad, benchSlotCount: benchCount, lockedSlots,
-        cumulative: snapshot, settings: gameSettings
-      });
+        const result = RosterSolver.solveQuarterPositions({
+          players: plan.squad, benchSlotCount: benchCount, lockedSlots: locksPerQuarter[q],
+          cumulative: snapshot, settings: gameSettings
+        });
 
-      if(result.errors.length){
-        // A null position is a defensive SLOT_MISMATCH (caller-contract bug),
-        // not a real unfillable position — render it as a phrase, not "null".
-        failingQuarters.push({quarter:q+1, positions:result.errors.map(e=>e.position||"an internal slot-count mismatch")});
+        if(result.errors.length){
+          // A null position is a defensive SLOT_MISMATCH (caller-contract bug),
+          // not a real unfillable position — render it as a phrase, not "null".
+          failingQuarters.push({quarter:q+1, positions:result.errors.map(e=>e.position||"an internal slot-count mismatch")});
+        }
+
+        // fold this quarter immediately so later quarters in same game see updated counts
+        applyQuarterToCumulative(cumulative, {onCourt:result.onCourt, bench:result.bench}, 1);
+        // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
+        result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
+        benchedLastQuarter = new Set(result.bench);
+        centres.push(result.onCourt.C);
+        quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
       }
+      quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
+      return {quarters, cumulativeSnapshots, failingQuarters};
+    };
+    let { quarters, cumulativeSnapshots, failingQuarters } = solveForward(lockedSlotsPerQuarter);
 
-      // fold this quarter immediately so later quarters in same game see updated counts
-      applyQuarterToCumulative(cumulative, {onCourt:result.onCourt, bench:result.bench}, 1);
-      // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
-      result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
-      benchedLastQuarter = new Set(result.bench);
-      centres.push(result.onCourt.C);
-      quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
+    if(!failingQuarters.length && RosterSolver.centreQuartersOf(gameSettings)<4){
+      // §4 rule 3a: try whole-game Centre sequences (RosterSolver.centreSequences) and keep the cheapest
+      // game, so a Centre who must sit out later doesn't leave another playing three in a row.
+      const score = qs=>RosterSolver.scoreGameQuarters({quarters:qs, squadPool:plan.squad, cumulativeSnapshots, settings:gameSettings});
+      let bestScore = score(quarters);
+      RosterSolver.centreSequences(plan.squad, lockedSlotsPerQuarter).forEach(seq=>{
+        const tried = solveForward(lockedSlotsPerQuarter.map((locks,q)=>seq[q] ? Object.assign({}, locks, {C:seq[q]}) : locks));
+        if(tried.failingQuarters.length) return;
+        const s = score(tried.quarters);
+        if(s < bestScore-1e-9){ bestScore = s; quarters = tried.quarters; }
+      });
     }
 
     if(failingQuarters.length){
       // §5.2/§6.1: an unfillable in-preference position must not be saved as
-      // a complete schedule — undo this game's cumulative contribution and
-      // treat it like the "not enough players" shortfall case.
-      quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
+      // a complete schedule — treat it like the "not enough players" shortfall case.
       const detail = failingQuarters.map(f=>`Q${f.quarter}: ${f.positions.join(", ")}`).join("; ");
       game.error = `Game ${num}: no eligible in-preference player for — ${detail}. Add/adjust a fill-in, or allow off-preference positions for this game.`;
       game.schedule = null; game.generated = false;
@@ -663,9 +681,7 @@ function runGeneration(){
       quarters, squadPool: plan.squad, cumulativeSnapshots, lockedSlotsPerQuarter, settings: gameSettings
     });
 
-    // Undo the pre-refinement fold and re-fold the actual refined outcome, so
-    // later games' Phase 2a solves and season reports see the same numbers.
-    quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, -1));
+    // Fold the game's final lineup in, so later games' Phase 2a solves and season reports see it.
     refined.quarters.forEach(q=>applyQuarterToCumulative(cumulative, q, 1));
 
     game.schedule = {quarters:refined.quarters};

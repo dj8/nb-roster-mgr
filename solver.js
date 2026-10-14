@@ -32,6 +32,7 @@ const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 5, in the same units
 const CENTRE_OVER_TARGET_COST = 3;      // per Centre quarter beyond the coach's target
 const CENTRE_BACK_TO_BACK_COST = 3;     // Centre straight after Centre, at a target of 1-2
 const CENTRE_THIRD_IN_ROW_COST = 6;     // a third Centre in a row, at a target of 1-3 (on top of the two above)
+const CENTRE_PLAN_CANDIDATES = 4;      // squad members tried as each quarter's Centre when planning a game's Centre sequence: at most 4^4 = 256 sequences
 const CENTRE_FATIGUE_COST = 0.5;        // every on-court cell, per Centre quarter already played this game (target < 4): same on every position, so it moves court vs bench, never which position
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
 const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
@@ -800,42 +801,39 @@ function solveQuarterPositions(input){
    is re-derived from the candidate lineup, so a trade that would bench
    someone past their cap, or repeat a position, is priced as exactly that. A
    trade is scored on the whole game's cost, since moving a bench stint
-   changes later quarters' too.
-   input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
-            cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
-            settings, timeBudgetMs }
-   -> { quarters, stats:{swaps, elapsedMs} } */
-function refineGameQuarters(input){
-  const squadPool = input.squadPool||[];
-  const settings = input.settings||{};
-  const cumulativeSnapshots = input.cumulativeSnapshots||[];
-  const lockedSlotsPerQuarter = input.lockedSlotsPerQuarter||[];
-  const timeBudgetMs = input.timeBudgetMs!=null ? input.timeBudgetMs : PHASE2B_TIME_BUDGET_MS;
-  const start = Date.now();
+   changes later quarters' too. Below "no limit" on Centre quarters it also
+   tries the quarters in other orders (Move 0, §4 rule 3a). */
+/* Every ordering of `items`, the given order first. */
+function permutationsOf(items){
+  if(items.length<=1) return [items.slice()];
+  return items.flatMap((x,i)=>permutationsOf(items.filter((_,j)=>j!==i)).map(rest=>[x].concat(rest)));
+}
+/* A quarter as one slot map: position -> id, plus "B0".."Bn" -> id for the bench. */
+function quarterToAssign(q){
+  const assign = {};
+  POSITIONS.forEach(pos=>{ if(q.onCourt && q.onCourt[pos]) assign[pos]=q.onCourt[pos]; });
+  (q.bench||[]).forEach((pid,i)=>{ assign["B"+i]=pid; });
+  return assign;
+}
+const isBenchKey = k=>k.charAt(0)==="B";
+
+/* The whole-game objective Phase 2b minimises: every quarter's cells summed,
+   with what the game itself adds (bench stints so far, benched last quarter,
+   positions played in its earlier quarters, who played Centre) re-derived from
+   the lineup being scored. Only the season-level fields of the snapshots are
+   read (posCount before the game from the first; benchQuota/benchCap), so one
+   scorer prices any lineup for the same game.
+   -> (qs:[slot map per quarter]) => number */
+function makeGameScorer(squadPool, cumulativeSnapshots, settings){
   const playerById = {};
   squadPool.forEach(p=>{ playerById[p.id]=p; });
-
-  function toAssign(q){
-    const assign = {};
-    POSITIONS.forEach(pos=>{ if(q.onCourt && q.onCourt[pos]) assign[pos]=q.onCourt[pos]; });
-    (q.bench||[]).forEach((pid,i)=>{ assign["B"+i]=pid; });
-    return assign;
-  }
-  const qs = input.quarters.map(toAssign);
-  const nQ = qs.length;
-
-  const isBenchKey = k=>k.charAt(0)==="B";
-  function isLocked(qi,key){
-    if(isBenchKey(key)) return false;
-    const locks = lockedSlotsPerQuarter[qi]||{};
-    return !!locks[key];
-  }
   // One cost-function pair per quarter, built once: the within-game fields
-  // of each quarter's cumulative are re-pointed as gameCost() walks the game.
-  const liveCums = qs.map((_,qi)=>Object.assign({}, cumulativeSnapshots[qi]));
+  // of each quarter's cumulative are re-pointed as the scorer walks the game.
+  const liveCums = cumulativeSnapshots.map(cum=>Object.assign({}, cum));
   const costFns = liveCums.map(cum=>buildQuarterCostFns(cum, settings));
   const posCountBeforeGame = (cumulativeSnapshots[0]||{}).posCount||{};
-  function gameCost(){
+  return function gameCost(qs){
+    const nQ = qs.length;
     const gameBenchSoFar = {}, centres = [];
     const posCount = Object.assign({}, posCountBeforeGame);
     let benchedLastQuarter = new Set();
@@ -861,7 +859,57 @@ function refineGameQuarters(input){
       benchedLastQuarter = new Set(bench);
     }
     return total;
+  };
+}
+/* §4 rule 3a: Phase 2a solves a quarter at a time, so Q1 can't see that a Centre
+   will have to sit out later, and undoing that afterwards takes a chain of trades
+   longer than Phase 2b's pairs. So below "no limit" the caller tries whole-game
+   Centre sequences up front: every way of giving each quarter's Centre to one of
+   the squad members who list it highest (at most CENTRE_PLAN_CANDIDATES), keeping
+   coach locks. A quarter with nobody to try is left to the solver (null).
+   -> [[id|null x4]] */
+function centreSequences(squad, lockedSlotsPerQuarter){
+  const candidates = squad.map((p,i)=>({p,i})).filter(({p})=>isInPreference(p,"C"))
+    .sort((a,b)=>(a.p.prefs.indexOf("C")-b.p.prefs.indexOf("C")) || (a.i-b.i)) // no list (-1) sorts first: happy anywhere
+    .slice(0, CENTRE_PLAN_CANDIDATES).map(({p})=>p.id);
+  const options = [0,1,2,3].map(q=>{
+    const locks = lockedSlotsPerQuarter[q]||{};
+    if(locks.C) return [locks.C];
+    const lockedElsewhere = new Set(Object.values(locks));
+    const free = candidates.filter(id=>!lockedElsewhere.has(id));
+    return free.length ? free : [null];
+  });
+  return options.reduce((seqs,opts)=>seqs.flatMap(seq=>opts.map(id=>seq.concat([id]))), [[]]);
+}
+
+/* input: { quarters:[{onCourt,bench}], squadPool, cumulativeSnapshots, settings } -> number */
+function scoreGameQuarters(input){
+  return makeGameScorer(input.squadPool||[], input.cumulativeSnapshots||[], input.settings||{})(input.quarters.map(quarterToAssign));
+}
+
+/* input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
+            cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
+            settings, timeBudgetMs }
+   -> { quarters, stats:{swaps, elapsedMs} } */
+function refineGameQuarters(input){
+  const squadPool = input.squadPool||[];
+  const settings = input.settings||{};
+  const cumulativeSnapshots = input.cumulativeSnapshots||[];
+  const lockedSlotsPerQuarter = input.lockedSlotsPerQuarter||[];
+  const timeBudgetMs = input.timeBudgetMs!=null ? input.timeBudgetMs : PHASE2B_TIME_BUDGET_MS;
+  const start = Date.now();
+  const playerById = {};
+  squadPool.forEach(p=>{ playerById[p.id]=p; });
+  const qs = input.quarters.map(quarterToAssign);
+  const nQ = qs.length;
+
+  function isLocked(qi,key){
+    if(isBenchKey(key)) return false;
+    const locks = lockedSlotsPerQuarter[qi]||{};
+    return !!locks[key];
   }
+  const scoreGame = makeGameScorer(squadPool, qs.map((_,qi)=>cumulativeSnapshots[qi]||{}), settings);
+  const gameCost = ()=>scoreGame(qs);
   // Two players trade slots within one quarter — the only move that keeps
   // everyone in exactly one slot per quarter. (Trading slots *between*
   // quarters would put a player in two slots of the same quarter whenever the
@@ -881,9 +929,27 @@ function refineGameQuarters(input){
     if(after < best-1e-9){ best = after; improved = true; swaps++; return true; }
     return false;
   };
+  // Quarters with no coach lock can be played in any order between themselves (Move 0).
+  const movable = qs.map((_,qi)=>qi).filter(qi=>!Object.keys(lockedSlotsPerQuarter[qi]||{}).length);
+  const reorders = centreQuartersOf(settings)<4 ? permutationsOf(movable).slice(1) : []; // [0] is the current order
   outer:
   while(improved){
     improved = false;
+    // Move 0 (§4 rule 3a, below "no limit" only): play the quarters in a different
+    // order. Everyone keeps every slot, so only what depends on order changes —
+    // back-to-back Centre (and bench) quarters, and where a Centre rests. Pair
+    // trades can't reach this: it moves every player at once.
+    if(reorders.length){
+      const current = qs.slice();
+      let bestOrder = null;
+      reorders.forEach(perm=>{
+        movable.forEach((qi,k)=>{ qs[qi] = current[perm[k]]; });
+        const after = gameCost();
+        if(after < best-1e-9){ best = after; bestOrder = perm; }
+      });
+      movable.forEach((qi,k)=>{ qs[qi] = current[bestOrder ? bestOrder[k] : qi]; });
+      if(bestOrder){ improved = true; swaps++; }
+    }
     // Move 1: one trade in one quarter. Each quarter was solved exactly given
     // the quarters before it, but not the ones after — hindsight can still
     // move a bench stint to a better quarter or player.
@@ -962,7 +1028,7 @@ const RosterSolver = {
     PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, FORCED_ON_COURT_PENALTY, ROSTER_OFF_TIEBREAK_WEIGHT,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
-    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, CENTRE_OVER_TARGET_COST, CENTRE_BACK_TO_BACK_COST, CENTRE_THIRD_IN_ROW_COST, CENTRE_FATIGUE_COST, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
+    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, CENTRE_OVER_TARGET_COST, CENTRE_BACK_TO_BACK_COST, CENTRE_THIRD_IN_ROW_COST, CENTRE_FATIGUE_COST, CENTRE_PLAN_CANDIDATES, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
     ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS,
     DEFAULT_POSITION_LOAD, POSITION_LOAD_MIN, POSITION_LOAD_MAX
@@ -987,6 +1053,8 @@ const RosterSolver = {
   buildQuarterCostFns,
   solveQuarterPositions,
   refineGameQuarters,
+  scoreGameQuarters,
+  centreSequences,
   computeMissedGamesWarning,
   computeRosterOffAchievabilityNotes
 };

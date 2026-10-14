@@ -171,6 +171,11 @@ them outweigh court-time evenness at low preference-slider values. They stay fin
 plays all four quarters. The rest quarter is ordered by the coach's raw `positionLoad` (`rawPositionLoads`), not the
 slider-blended load, so the order never changes as the workload slider moves. Everything counts the game's earlier quarters
 only (`centres`: who played Centre in each earlier quarter), so Phase 2b's game total is what Phase 2a priced; it is game-local and includes fill-ins. The cost functions read `cumulative.centres` on every call, never once when built: `refineGameQuarters` re-points it after building them.
+Two searches exist only for this rule, both off at 4: `runGeneration` re-runs a game's forward pass for every
+`centreSequences` entry (≤256), and Phase 2b's Move 0 reorders quarters. Both are needed because Phase 2a can't see ahead
+and pair trades can't move three or more players at once; they only find what the cost model already prefers. When a
+Centre still plays three quarters, it is usually because resting them would bench someone owed court time (a wing who
+lists only WA/WD, say) — that's the costs, not the search.
 The `CENTRE_*` constants were tuned with `npm run test:settings`: stronger values honour the target harder but spread
 court time (playSd) and the per-game bench overruns, so retune only with the sweep and CQ-9 to hand.
 
