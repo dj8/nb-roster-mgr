@@ -217,6 +217,20 @@ async function shot(page, name){
   check(JSON.stringify(q3AfterBackdrop)===JSON.stringify(q3Before),
     `Dismissing the follow-up dialog via a backdrop click leaves the quarter completely unchanged (before=${JSON.stringify(q3Before)}, after=${JSON.stringify(q3AfterBackdrop)})`);
 
+  // ---- Drag a whole quarter onto another to swap them, then swap back with Alt+Up. ----
+  const qa = await snapshotQuarter(0), qb = await snapshotQuarter(3);
+  await page.locator('#gameBody-1 tr[data-qrow="0"] [data-qhandle]').dragTo(page.locator('#gameBody-1 tr[data-qrow="3"]'));
+  const qaAfter = await snapshotQuarter(0), qbAfter = await snapshotQuarter(3);
+  check(JSON.stringify(qaAfter.map(e=>e.name))===JSON.stringify(qb.map(e=>e.name)) && JSON.stringify(qbAfter.map(e=>e.name))===JSON.stringify(qa.map(e=>e.name)),
+    `dragging Q1 onto Q4 swaps the two quarters (Q1 now ${JSON.stringify(qaAfter)}, was Q4 ${JSON.stringify(qb)})`);
+  await shot(page, "04c-after-quarter-drag.png");
+  for(const from of [3,2,1]){
+    await page.locator(`#gameBody-1 [data-qhandle="${from}"]`).focus();
+    await page.keyboard.press("Alt+ArrowUp");
+  }
+  check(JSON.stringify((await snapshotQuarter(0)).map(e=>e.name))===JSON.stringify(qa.map(e=>e.name)),
+    "Alt+Up on the quarter handle swaps with the quarter above (three steps bring the original Q1 back)");
+
   // ---- Strict specialist pairing (§5.5): toggle the per-game checkbox and
   // confirm it persists across a collapse/reopen of the game card. ----
   const strictBoxSel = '#gameBody-1 #strictPairing-1';

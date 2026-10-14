@@ -56,6 +56,12 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
   centred at its right edge. Locked cells also carry a tooltip/`aria-label` ("… — locked",
   or "… — locked into an off-preference position"), so the state isn't visual-only.
   The off-preference report marks such slots "Locked by coach" (`computeOffPrefLog().locked`).
+- On an unplayed game each quarter row is `draggable` (`.quarter-row`, `data-qrow`) and its
+  "Q*n*" label is a focusable handle (`data-qhandle`). Dropping one row on another, or Alt+↑/↓
+  on the handle, swaps the two quarters via `swapGameQuarters(num, a, b)` (wired by
+  `wireQuarterDrag`): line-up, bench, off-preference flags and `lockedSlots` keys all move
+  together. Season totals are unchanged, so — like a slot edit — no regenerate is flagged;
+  a played game renders plain rows and `swapGameQuarters` refuses it (§8.1).
 
 ## Manual override dialogs
 

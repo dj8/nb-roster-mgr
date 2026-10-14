@@ -1976,6 +1976,28 @@ test("BYE-1: a bye is emptied, skipped by generation and fairness, and can't be 
   assert.strictEqual(engine.makeBye(1), false, "played game can't become a bye");
 });
 
+test("QSWAP-1: swapping two quarters moves line-up, bench and slot locks together; played games refuse", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.season.numGames = 2; st.season.desiredBenchSize = 1;
+  ["A","B","C","D","E","F","G","H","I"].forEach((n,i)=>addPlayer(engine, n, ["GS","GA","WA","C","WD","GD","GK"].slice(i%7)));
+  engine.ensureGamesExist();
+  engine.runGeneration();
+  const g = engine.getGame(1);
+  const q0 = JSON.stringify(g.schedule.quarters[0]), q2 = JSON.stringify(g.schedule.quarters[2]);
+  g.lockedSlots = {"0-GS": g.schedule.quarters[0].onCourt.GS, "1-C": g.schedule.quarters[1].onCourt.C};
+  assert.strictEqual(engine.swapGameQuarters(1, 0, 2), true);
+  assert.strictEqual(JSON.stringify(g.schedule.quarters[0]), q2);
+  assert.strictEqual(JSON.stringify(g.schedule.quarters[2]), q0);
+  assert.deepStrictEqual(Object.keys(g.lockedSlots).sort(), ["1-C","2-GS"], "lock follows its quarter");
+  assert.strictEqual(g.lockedSlots["2-GS"], g.schedule.quarters[2].onCourt.GS);
+  assert.strictEqual(engine.swapGameQuarters(1, 1, 1), false, "same quarter is a no-op");
+  g.isPlayed = true;
+  const frozen = JSON.stringify(g.schedule);
+  assert.strictEqual(engine.swapGameQuarters(1, 0, 1), false, "§8.1 played game is frozen");
+  assert.strictEqual(JSON.stringify(g.schedule), frozen);
+});
+
 test("PURGE-1: removing a person clears them from unplayed games only (played games stay frozen)", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
