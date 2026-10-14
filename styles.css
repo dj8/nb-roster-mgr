@@ -210,9 +210,8 @@ tr:last-child td{border-bottom:none;}
 .quarter-row{cursor:grab;}
 .quarter-row.quarter-dragging{opacity:.45;}
 .quarter-row.quarter-drop-target td{background:rgba(84,214,201,.12);box-shadow:inset 0 2px 0 var(--accent),inset 0 -2px 0 var(--accent);}
-.quarter-handle{display:inline-flex;align-items:center;gap:4px;cursor:grab;user-select:none;}
+.quarter-handle{display:inline-flex;align-items:center;gap:4px;user-select:none;}
 .quarter-handle > span{color:var(--text-dim);letter-spacing:-3px;padding-right:3px;}
-.quarter-handle:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
 .bench-cell{min-width:130px;}
 .game-locked-banner{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;
   color:var(--accent);background:rgba(84,214,201,.12);padding:3px 9px;border-radius:20px;}

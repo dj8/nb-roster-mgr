@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 76; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 77; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -1448,9 +1448,9 @@ function renderRotationGrid(num){
       return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:"(removed)")}</span>`;
     }).join("") || '<span class="hint">—</span>';
     const qLabel = editable
-      ? `<td class="mono"><span class="quarter-handle" data-qhandle="${qi}" tabindex="0" role="button" title="Drag to swap with another quarter (or Alt+↑/↓)" aria-label="Quarter ${qi+1}: drag, or press Alt+Up/Down, to swap with another quarter"><span aria-hidden="true">&#8942;&#8942;</span>Q${qi+1}</span></td>`
-      : `<td class="mono">Q${qi+1}</td>`;
-    return `<tr${editable?` class="quarter-row" draggable="true" data-qrow="${qi}"`:""}>${qLabel}${cells}<td class="bench-cell">${benchNames}</td></tr>`;
+      ? `<span class="quarter-handle" data-qhandle="${qi}" tabindex="0" role="button" title="Drag to swap with another quarter (or Alt+↑/↓)" aria-label="Quarter ${qi+1}: drag, or press Alt+Up/Down, to swap with another quarter"><span aria-hidden="true">&#8942;&#8942;</span>Q${qi+1}</span>`
+      : `Q${qi+1}`;
+    return `<tr${editable?` class="quarter-row" draggable="true" data-qrow="${qi}"`:""}><td class="mono">${qLabel}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
   }).join("");
   return `<div class="table-scroll" style="--fade-bg:var(--surface-2);"><table>
     <thead><tr><th></th>${POSITIONS.map(p=>`<th><span class="pos-badge pos-${p}">${p}</span></th>`).join("")}<th>Bench</th></tr></thead>
@@ -1572,7 +1572,7 @@ function wireQuarterDrag(card, num){
   const rows = card.querySelectorAll("tr[data-qrow]");
   const swap = (a, b)=>{
     if(!swapGameQuarters(num, a, b)) return;
-    saveState(); scheduleUiState.openGame = num; renderMain();
+    finishSlotEdit(num);
     toast(`Swapped Q${a+1} and Q${b+1}.`);
     const h = document.querySelector(`[data-game="${num}"] [data-qhandle="${b}"]`);
     if(h) h.focus();
@@ -1596,8 +1596,7 @@ function wireQuarterDrag(card, num){
     row.addEventListener("dragleave", e=>{ if(!row.contains(e.relatedTarget)) row.classList.remove("quarter-drop-target"); });
     row.addEventListener("drop", e=>{
       e.preventDefault();
-      const a = from; from = null; clearOver();
-      if(a!==null && a!==qi) swap(a, qi);
+      if(from!==null && from!==qi) swap(from, qi); // dragend resets the drag state
     });
   });
   card.querySelectorAll("[data-qhandle]").forEach(h=>h.addEventListener("keydown", e=>{
@@ -1735,8 +1734,8 @@ function swapGameQuarters(num, a, b){
   [qs[a], qs[b]] = [qs[b], qs[a]];
   const locks = {};
   Object.keys(game.lockedSlots||{}).forEach(k=>{
-    const [q, pos] = k.split("-");
-    const nq = Number(q)===a ? b : Number(q)===b ? a : Number(q);
+    const [q, pos] = k.split("-"), n = Number(q);
+    const nq = n===a ? b : n===b ? a : n;
     locks[nq+"-"+pos] = game.lockedSlots[k];
   });
   game.lockedSlots = locks;
