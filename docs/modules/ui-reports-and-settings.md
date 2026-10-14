@@ -38,13 +38,14 @@ whenever `dirtySinceGeneration` is already true from a previous change.
 | `positionVariety` | slider `#varietySlider` | 0–10, repeat favourite ↔ spread across the list |
 | `rosterOffPriority` | radio group `rosterOffPriority` | `fairness` / `balanced` / `coverage` |
 | `loadBalance` | slider `#loadSlider` | 0–10, equal quarters ↔ equal workload |
+| `centreQuarters` | slider `#centreSlider` + tick labels `.slider-ticks` | 1–4 (integer), Centres play 1 quarter ↔ no limit; default 4 |
 | `positionLoad[pos]` | number inputs `[data-load="GS"]`…, plus `#loadReset` | 0.1–2 each; clamped on change, and the input shows the stored value |
 
 | Function | Purpose |
 |---|---|
 | `labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel})` | Shared markup for both sliders — a `<input type=range>` + numeric readout + end-labels describing what each direction does. `id`/`for` are wired for label association. |
-| `seasonHeadlinesHtml()` | The at-a-glance card body: `computeSeasonHeadlines()` (see [`engine.md`](engine.md#report-aggregations)) as seven stat boxes, each naming the control that moves it, or a prompt to generate if there's no schedule yet. A number that differs from `headlinesBeforeLastGeneration` also shows `was …`. |
-| `headlineStats(h)` | Formats a headlines object into the seven `{label, value, moves}` entries, in display order. |
+| `seasonHeadlinesHtml()` | The at-a-glance card body: `computeSeasonHeadlines()` (see [`engine.md`](engine.md#report-aggregations)) as nine stat boxes, each naming the control that moves it, or a prompt to generate if there's no schedule yet. A number that differs from `headlinesBeforeLastGeneration` also shows `was …`. |
+| `headlineStats(h)` | Formats a headlines object into the nine `{label, value, moves}` entries, in display order. |
 
 `headlinesBeforeLastGeneration` is a module variable set by the topbar's
 `runGenerationWithBusyState` just before each generation — session-only, never saved, so

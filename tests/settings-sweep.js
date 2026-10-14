@@ -24,24 +24,7 @@ const STRICT = ARGS.includes("--strict");
 const ONLY = (ARGS.find(a=>a.startsWith("--setting="))||"").split("=")[1] || null;
 
 /* ---------------- Fixtures ---------------- */
-// [name, prefs, unavailable game numbers]
-const FIXTURES = {
-  deep11: {note:"11 players, 11 games, bench 2 - good depth everywhere", numGames:11, bench:2, players:[
-    ["Liv",["GA","GS"]], ["Poppy",["GS","GA","WA","C","WD"]], ["Mabel",["WA","GA","C","GS","WD"]],
-    ["Izzy",["WA","WD"]], ["Layla",["WA","WD"]], ["Ella",["C","GA","WA"]], ["Zara",["C","WA","WD"]],
-    ["Maddie",["WD","WA"]], ["Abby",["GD","WD","GK"]], ["Avalon",["GD","GK"]], ["Savanah",["GK","GD"]]]},
-  unavail12: {note:"12 players, 8 games, bench 2 - uneven availability, thin GK", numGames:8, bench:2, players:[
-    ["Amy",["GS","GA"],[3,7]], ["Bea",["GA","GS","WA"]], ["Cat",["WA","C","GA"]],
-    ["Dee",["C","WA","WD"]], ["Eve",["WD","C","GD"],[2]], ["Fay",["GD","WD"]],
-    ["Gia",["GK","GD"]], ["Hal",["GS","GA","WA"]], ["Ivy",["WA","C"]],
-    ["Jaz",["C","WD","GD"],[5,6]], ["Kim",["GD","GK"]], ["Lou",["GD","WD"]]]},
-  thin10: {note:"10 players, 10 games, bench 1 - a sole GK, short preference lists", numGames:10, bench:1, players:[
-    ["Ava",["GS","GA"]], ["Bri",["GA","GS"]], ["Cleo",["WA","C"]], ["Dani",["C","WA"]], ["Emme",["WD","C"]],
-    ["Flo",["GD","WD"]], ["Gwen",["GK"]], ["Hope",["GS","WA"]], ["Isla",["C","WD","WA"]], ["Joss",["GD","GA"]]]},
-  small9: {note:"9 players, 10 games, bench 2 - nobody is ever rostered off", numGames:10, bench:2, players:[
-    ["Ana",["GS","GA","WA"]], ["Bex",["GA","GS"]], ["Cora",["WA","C","WD"]], ["Dot",["C","WA"]], ["Edie",["WD","GD","C"]],
-    ["Fern",["GD","GK","WD"]], ["Gigi",["GK","GD"]], ["Hana",["GS","GK"]], ["Indi",["C","WD","GA"]]]}
-};
+const { FIXTURES } = require("./fixtures.js");
 
 /* ---------------- Metrics ----------------
    Shares and spreads are in percentage points. `min` is the smallest change
@@ -56,7 +39,9 @@ const METRICS = {
   distinct:  {label:"distinct positions played per player", min:0.15},
   missedVar: {label:"missed-games variance", min:0.05},
   thinCover: {label:"positions left with <=1 preferrer (season total)", min:1},
-  errors:    {label:"games that failed to generate", min:1}
+  errors:    {label:"games that failed to generate", min:1},
+  centreB2B: {label:"back-to-back Centre quarters (season total)", min:1},
+  centreOver:{label:"player-games with more than 2 Centre quarters", min:1} // a fixed bar of 2, not each step's own target, so every step is measured the same way
 };
 
 /* ---------------- Settings under test ----------------
@@ -73,6 +58,9 @@ const SETTINGS = [
   { key:"loadBalance", title:"Workload slider (0 equal quarters .. 10 equal workload)", values:R0,
     intent:[["loadSd",-1]], side:["playSd","offPref","errors"],
     contexts:[{}, {preferenceSlider:5}] },
+  { key:"centreQuarters", title:"Centre quarters per game (4 no limit .. 1 each)", values:[4,3,2,1],
+    intent:[["centreB2B",-1],["centreOver",-1]], side:["top1","playSd","offPref","errors"],
+    contexts:[{}, {preferenceSlider:5}, {loadBalance:10}] },
   { key:"rosterOffPriority", title:"Roster-off priority (even missed games -> balanced -> protect thin positions)", values:ENGINE.RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES,
     intent:[["thinCover",-1],["missedVar",+1]], side:["offPref"],
     contexts:[{}] },
@@ -131,6 +119,7 @@ function run(fixtureName, configure){
   });
   const summaries = engine.computePlayerSummaries();
   const rates = summaries.filter(s=>s.onCourt+s.bench>0).map(s=>100*s.onCourt/(s.onCourt+s.bench));
+  const centre = engine.computeCentreStats(2);
   return {
     slots, rosterOff, timedOut: !!gen.phase1Stats.timedOut,
     m: {
@@ -139,7 +128,8 @@ function run(fixtureName, configure){
       loadSd: Math.sqrt(engine.RosterSolver.variance(summaries.filter(s=>s.onCourt>0).map(s=>P.reduce((sum,pos)=>sum+s.positions[pos]*FULL_LOADS[pos],0)))),
       distinct: mean(summaries.map(s=>P.filter(pos=>s.positions[pos]>0).length)),
       missedVar: engine.RosterSolver.variance(summaries.map(s=>s.missed)),
-      thinCover: thin, errors
+      thinCover: thin, errors,
+      centreB2B: centre.backToBack, centreOver: centre.overPlayerGames
     },
     offPrefCount: off
   };
@@ -186,6 +176,11 @@ function sweep(setting, fixtureName, ctx){
     // §5.1: raising the slider must never increase off-preference fills.
     results.slice(1).forEach((r,i)=>hard(r.offPrefCount<=results[i].offPrefCount, "SET-4",
       `${where}: off-preference fills rose from ${results[i].offPrefCount} to ${r.offPrefCount} between ${setting.values[i]} and ${setting.values[i+1]}`));
+  }
+  if(setting.key==="centreQuarters"){
+    // §4 rule 3a sits below rule 0: tightening the target never adds an off-preference fill or a failed game.
+    results.slice(1).forEach((r,i)=>hard(r.offPrefCount<=results[i].offPrefCount && r.m.errors<=results[i].m.errors, "SET-8",
+      `${where}: off-preference fills or failed games rose between ${setting.values[i]} and ${setting.values[i+1]}`));
   }
   if(setting.key==="loadBalance"){
     // Raising the slider must never make the season's workload noticeably less even from one step to the next.

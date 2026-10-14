@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 67; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 68; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -36,7 +36,7 @@ function defaultState(){
     fillIns:[],            // {id,name,prefs:[pos,...]}
     season:{numGames:11, desiredBenchSize:2},
     games:{},              // gameNum(string) -> gameState
-    // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority, loadBalance 0..10, positionLoad {pos: 0.1..2} (§5, §11)
+    // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority, loadBalance 0..10, positionLoad {pos: 0.1..2}, centreQuarters 1..4 (§5, §11)
     settings: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_SETTINGS, {positionLoad: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_POSITION_LOAD)}),
     activeTab:"setup"
   };
@@ -141,6 +141,9 @@ function sanitizeSettingsAndSeason(state){
   }
   state.settings.allowOffPreference = !!state.settings.allowOffPreference;
   fix(state.settings, "loadBalance", 0, 10, d.settings.loadBalance, "Workload balance");
+  const centreBefore = state.settings.centreQuarters, centreAfter = RosterSolver.centreQuartersOf(state.settings);
+  if(centreBefore!==undefined && centreAfter!==centreBefore) corrected.push(`Centre quarters (${JSON.stringify(centreBefore)} → ${centreAfter})`);
+  state.settings.centreQuarters = centreAfter;
   let loads = state.settings.positionLoad;
   const prev = RosterSolver.CONSTANTS.PREVIOUS_DEFAULT_POSITION_LOAD;
   if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===prev[pos])) loads = undefined; // still the old shipped defaults, so take the new ones; any other table is the coach's own
@@ -598,7 +601,7 @@ function runGeneration(){
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
-    const gameBenchSoFar = {};
+    const gameBenchSoFar = {}, centreSoFar = {}, centreRun = {}; // §4 rule 3a: game-local, fill-ins included
     let benchedLastQuarter = new Set();
     const quarters = [];
     const cumulativeSnapshots = [];
@@ -616,6 +619,7 @@ function runGeneration(){
         posCount: Object.assign({}, cumulative.posCount),
         gameBenchSoFar: Object.assign({}, gameBenchSoFar),
         benchedLastQuarter: new Set(benchedLastQuarter),
+        centreSoFar: Object.assign({}, centreSoFar), centreRun: Object.assign({}, centreRun),
         benchQuota, benchCap
       };
       cumulativeSnapshots.push(snapshot);
@@ -636,6 +640,9 @@ function runGeneration(){
       // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
       result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(result.bench);
+      const centre = result.onCourt.C;
+      Object.keys(centreRun).forEach(pid=>{ if(pid!==centre) delete centreRun[pid]; });
+      if(centre){ centreSoFar[centre]=(centreSoFar[centre]||0)+1; centreRun[centre]=(centreRun[centre]||0)+1; }
       quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
     }
 
@@ -730,6 +737,27 @@ function computeOffPrefRate(log){
   return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
 }
 
+/* §4 rule 3a, over every generated game and every player (fill-ins too: it's welfare, not season fairness).
+   backToBack: adjacent quarters with the same Centre. overPlayerGames / overGames: player-games / games with a
+   player past `target` Centre quarters (default: the coach's setting). */
+function computeCentreStats(target){
+  const limit = target==null ? RosterSolver.centreQuartersOf(STATE.settings) : target;
+  let backToBack = 0, overPlayerGames = 0, overGames = 0;
+  gameNums().forEach(num=>{
+    const game = getGame(num);
+    if(!game.schedule) return;
+    const counts = {};
+    game.schedule.quarters.forEach((q,i)=>{
+      const c = q.onCourt.C; if(!c) return;
+      counts[c] = (counts[c]||0)+1;
+      if(i>0 && game.schedule.quarters[i-1].onCourt.C===c) backToBack++;
+    });
+    const over = Object.keys(counts).filter(id=>counts[id]>limit).length;
+    overPlayerGames += over; if(over) overGames++;
+  });
+  return {backToBack, overPlayerGames, overGames};
+}
+
 /* The handful of numbers the Settings controls exist to move, for that tab's
    "at a glance" card. Regular players only — fill-ins are excluded from
    season fairness. null until at least one game has a schedule. */
@@ -755,7 +783,9 @@ function computeSeasonHeadlines(){
   const positionsEach = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.filter(pos=>s.positions[pos]>0).length);
   // Season workload per player: quarters x the weights exactly as entered (so the coach can check it by hand), whatever the slider says — it's the number the slider exists to narrow.
   const workloads = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*STATE.settings.positionLoad[pos],0));
+  const centre = computeCentreStats();
   return {
+    centreBackToBack: centre.backToBack, centreOverGames: centre.overGames,
     workloadMin: workloads.length ? Math.min(...workloads) : 0,
     workloadMax: workloads.length ? Math.max(...workloads) : 0,
     offPrefPct: 100*offPreference/regularSlots,
@@ -2043,6 +2073,8 @@ function headlineStats(h){
     {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"allow off-preference"},
     {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
     {label:"Season workload, lightest to heaviest", value:`${h.workloadMin.toFixed(1)}–${h.workloadMax.toFixed(1)}`, moves:"position workload"},
+    {label:"Back-to-back Centre quarters", value:String(h.centreBackToBack), moves:"centre quarters"},
+    {label:"Games with a player over the Centre target", value:String(h.centreOverGames), moves:"centre quarters"},
     {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
     {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
     {label:"Missed-games spread", value:String(h.missedSpread), moves:"who sits out"},
@@ -2113,6 +2145,16 @@ function renderSettings(root){
       </div>
     </div>
     <div class="card">
+      <div class="card-head"><div><h2>Centre quarters</h2><p>How many quarters a player should play in Centre in one game, and how they rest in between.</p></div></div>
+      <div class="field">
+        <label for="centreSlider">Centres play 1 quarter &#8596; no limit</label>
+        ${labelledSliderHtml({id:"centreSlider", min:1, max:4, step:1, value:s.centreQuarters, valueId:"centreSliderVal",
+          leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters"})}
+        <div class="slider-ticks mono" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4 (no limit)</span></div>
+        <p class="hint">At 2, a Centre plays alternate quarters (Q1 &amp; Q3 or Q2 &amp; Q4). At 3, they get a break in Q2 or Q3. A rest quarter goes to the lightest position the player listed (by the workloads above), or the bench, which is likelier the more Centre they've played. It's a goal: with too few Centres in the squad someone plays more, but never off-preference, and it never changes who sits out how often.</p>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what the season-wide roster-off search protects first.</p></div></div>
       ${priorities.map(p=>`<label class="checkbox-row">
         <input type="radio" name="rosterOffPriority" value="${p.value}" ${s.rosterOffPriority===p.value?"checked":""}>
@@ -2132,7 +2174,7 @@ function renderSettings(root){
     };
   });
   document.getElementById("loadReset").onclick=()=>{ s.positionLoad = Object.assign({}, C.DEFAULT_POSITION_LOAD); markStale(); renderSettings(root); };
-  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"],["loadSlider","loadSliderVal","loadBalance"]].forEach(([id,valueId,key])=>{
+  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"],["loadSlider","loadSliderVal","loadBalance"],["centreSlider","centreSliderVal","centreQuarters"]].forEach(([id,valueId,key])=>{
     document.getElementById(id).oninput=e=>{ document.getElementById(valueId).textContent=e.target.value; syncRangeFill(e.target); };
     document.getElementById(id).onchange=e=>{ s[key]=Number(e.target.value); markStale(); };
   });
@@ -2228,7 +2270,7 @@ function buildBackup(){
       settings: {
         preferenceSlider: s.preferenceSlider, allowOffPreference: !!s.allowOffPreference,
         positionVariety: s.positionVariety, rosterOffPriority: s.rosterOffPriority,
-        loadBalance: s.loadBalance, positionLoad: Object.assign({}, s.positionLoad)
+        loadBalance: s.loadBalance, positionLoad: Object.assign({}, s.positionLoad), centreQuarters: s.centreQuarters
       },
       players: STATE.players.map(p=>({id:p.id, name:p.name, prefs:(p.prefs||[]).slice(), unavailable:(p.unavailable||[]).slice()})),
       fillIns: STATE.fillIns.map(f=>({id:f.id, name:f.name, prefs:(f.prefs||[]).slice(), saved:f.saved!==false})),
@@ -2278,6 +2320,7 @@ function importBackup(text){
     if(isPlainObject(set.positionLoad)){
       POSITIONS.forEach(pos=>{ if(typeof set.positionLoad[pos]==="number") ns.settings.positionLoad[pos] = set.positionLoad[pos]; }); // range-checked by sanitizeSettingsAndSeason
     }
+    if(typeof set.centreQuarters==="number") ns.settings.centreQuarters = set.centreQuarters; // rounded and clamped to 1..4 by sanitizeSettingsAndSeason
     if(typeof set.allowOffPreference==="boolean") ns.settings.allowOffPreference = set.allowOffPreference;
     if(typeof set.rosterOffPriority==="string") ns.settings.rosterOffPriority = set.rosterOffPriority; // validated by sanitizeSettingsAndSeason
 

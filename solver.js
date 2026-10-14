@@ -26,6 +26,13 @@ const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers
 const COURT_TIME_WEIGHT = 24;           // bench-cell cost per bench quarter a player is ahead of their share this game (before the balance weight): at the default slider, about two preference-rank steps
 const BENCH_CAP_PENALTY = 6;            // §4 rule 3: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
 const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 5, in the same units
+/* §4 rule 3a, all on the position side (so scaled by the preference weight) and finite. Tuned with the
+   sweep (npm run test:settings): at the plan's first guess of 7/7/14 the engine honoured the target but court
+   time spread (playSd) rose up to ~1.8 pts on deep11; 3/3/6 keeps every sweep context within ~0.5 pt. */
+const CENTRE_OVER_TARGET_COST = 3;      // per Centre quarter beyond the coach's target
+const CENTRE_BACK_TO_BACK_COST = 3;     // Centre straight after Centre, at a target of 1-2
+const CENTRE_THIRD_IN_ROW_COST = 6;     // a third Centre in a row, at a target of 1-3 (on top of the two above)
+const CENTRE_FATIGUE_COST = 0.5;        // every on-court cell, per Centre quarter already played this game (target < 4): same on every position, so it moves court vs bench, never which position
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
 const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
 const NO_PREFERENCE_COST = 1;           // a player who stated no preferences (a fill-in, §6) is happy anywhere: level with a #2 choice, never ahead of a #1
@@ -37,7 +44,7 @@ const DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.85, WA:0.7, C:1, WD:
 const PREVIOUS_DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55 }); // the shipped defaults before the GA/GD vs WA/WD swap: a save still holding exactly these is upgraded (app.js), anything else is the coach's own
 const POSITION_LOAD_MIN = 0.1, POSITION_LOAD_MAX = 2;
 const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness",
-  loadBalance:0, positionLoad:DEFAULT_POSITION_LOAD }); // positionLoad is shared and frozen: copy it before handing it to anything that edits (app.js's defaultState does)
+  loadBalance:0, positionLoad:DEFAULT_POSITION_LOAD, centreQuarters:4 }); // positionLoad is shared and frozen: copy it before handing it to anything that edits (app.js's defaultState does)
 /* Phase 1 coverage weight per roster-off priority. "fairness" is a pure
    tie-break: small enough that a whole season's coverage penalties can't
    outweigh the smallest possible gain in missed-games evenness, but not 0,
@@ -502,6 +509,17 @@ function cleanPositionLoad(value, pos){
 function loadBlendOf(settings){
   return clampSetting((settings||{}).loadBalance, 0, 10, DEFAULT_SETTINGS.loadBalance)/10;
 }
+/* The coach's own weights, cleaned, before the slider blends them. -> {pos: weight} */
+function rawPositionLoads(settings){
+  const raw = {};
+  POSITIONS.forEach(pos=>{ raw[pos] = cleanPositionLoad(((settings||{}).positionLoad||{})[pos], pos); });
+  return raw;
+}
+/* The Centre-quarters target (§11): an integer 1..4, 4 (no limit) when absent or junk. */
+function centreQuartersOf(settings){
+  const v = (settings||{}).centreQuarters;
+  return (typeof v==="number" && Number.isFinite(v)) ? Math.max(1, Math.min(4, Math.round(v))) : DEFAULT_SETTINGS.centreQuarters;
+}
 /* What one quarter at each position counts for in the court-time evenness
    sums (§4 rule 2). The workload slider blends between every quarter
    counting the same (0: equal quarters) and each counting its position's
@@ -512,8 +530,7 @@ function loadBlendOf(settings){
 function derivePositionLoads(settings){
   const s = settings||{};
   const blend = loadBlendOf(s);
-  const raw = {};
-  POSITIONS.forEach(pos=>{ raw[pos] = cleanPositionLoad((s.positionLoad||{})[pos], pos); });
+  const raw = rawPositionLoads(s);
   const mean = POSITIONS.reduce((sum,pos)=>sum+raw[pos],0)/POSITIONS.length;
   const loads = {};
   POSITIONS.forEach(pos=>{ loads[pos] = 1 + blend*(raw[pos]/mean - 1); });
@@ -612,6 +629,7 @@ function planGameBench(input){
    same for every player, so raising it can never make an off-preference
    cell cheaper than any in-preference one.
    cumulative: {posCount, gameBenchSoFar:{id:n}, benchedLastQuarter:Set,
+                centreSoFar:{id:n} (Centre quarters earlier in this game), centreRun:{id:n} (consecutive Centre quarters ending last quarter; absent = 0) — §4 rule 3a,
                 benchQuota:{id:n} (bench quarters this player should sit out this game),
                 benchCap:{id:n}   (most bench quarters this game before BENCH_CAP_PENALTY applies — a penalty that the workload slider scales down, to 0 at 10) — both from planGameBench} */
 function buildQuarterCostFns(cumulative, settings){
@@ -620,12 +638,40 @@ function buildQuarterCostFns(cumulative, settings){
   const varietyWeight = clampSetting(settings.positionVariety, 0, 10, DEFAULT_SETTINGS.positionVariety);
   const capPenalty = BENCH_CAP_PENALTY*(1-loadBlendOf(settings)); // the coach trades the per-game limit for equal workload as the slider rises; gone at 10
 
+  /* §4 rule 3a. Everything here sits on the position side and is scaled by prefWeight
+     (positionCellCost), so it stays below court-time evenness at every slider value, and
+     it is finite, so it never disqualifies a cell. 0 throughout at the default (4). */
+  const centreTarget = centreQuartersOf(settings);
+  const restLoad = centreTarget<4 ? rawPositionLoads(settings) : null; // the coach's weights, not the slider's blend
+  const restOrders = new Map();
+  function centreSoFarOf(p){ return (cumulative.centreSoFar||{})[p.id]||0; }
+  function centreRunOf(p){ return (cumulative.centreRun||{})[p.id]||0; }
+  /* The rest quarter after a Centre one: among the player's listed non-Centre positions, the lightest first
+     (ties keep their own ranking). Same 0..6 scale as a rank, so variety and the off-preference costs are untouched. */
+  function restRank(p,pos){
+    let order = restOrders.get(p.id);
+    if(!order){
+      order = p.prefs.filter(x=>x!=="C").sort((a,b)=>restLoad[a]-restLoad[b]); // Array sort is stable
+      restOrders.set(p.id, order);
+    }
+    return order.indexOf(pos);
+  }
+  function centreCost(p,pos){
+    if(centreTarget===4) return 0;
+    const soFar = centreSoFarOf(p), run = centreRunOf(p);
+    let cost = CENTRE_FATIGUE_COST*soFar;
+    if(pos!=="C") return cost;
+    if(soFar>=centreTarget) cost += CENTRE_OVER_TARGET_COST*(soFar-centreTarget+1);
+    if(run>=1 && centreTarget<=2) cost += CENTRE_BACK_TO_BACK_COST;
+    if(run>=2 && centreTarget<=3) cost += CENTRE_THIRD_IN_ROW_COST;
+    return cost;
+  }
   function prefRank(p,pos){
     return p.prefs.indexOf(pos);
   }
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
-    if(idx>=0) return idx;
+    if(idx>=0) return (restLoad && pos!=="C" && centreRunOf(p)>=1) ? restRank(p,pos) : idx;
     if(!p.prefs.length) return NO_PREFERENCE_COST; // no list at all: in-preference everywhere (isInPreference)
     // §5.2: "outside the stated list". One flat cost for everyone — a cost
     // tied to the list's length made short-list players the cheapest
@@ -655,7 +701,7 @@ function buildQuarterCostFns(cumulative, settings){
     // resort at every slider value: used only when the quarter can't be filled
     // in-preference, never to even out court time.
     const lastResort = isInPreference(p,pos) ? 0 : OFF_PREFERENCE_LAST_RESORT;
-    return lastResort + prefWeight*(pc + varietyTerm(p,pos));
+    return lastResort + prefWeight*(pc + varietyTerm(p,pos) + centreCost(p,pos));
   }
   /* Bench-slot cost: how far benching this player now would put them past
      the bench quarters they're due this game (benchQuota — higher for a
@@ -673,7 +719,7 @@ function buildQuarterCostFns(cumulative, settings){
     const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has(p.id)) ? BACK_TO_BACK_BENCH_PENALTY : 0;
     return balanceWeight*COURT_TIME_WEIGHT*(thisGame + 4 - quota + overCap*capPenalty + backToBack);
   }
-  return { positionCellCost, benchCellCost };
+  return { positionCellCost, benchCellCost, centreCost };
 }
 
 /* input: { players:[{id,name,prefs,isFillIn}], benchSlotCount, lockedSlots:{pos:playerId},
@@ -787,7 +833,7 @@ function refineGameQuarters(input){
   const costFns = liveCums.map(cum=>buildQuarterCostFns(cum, settings));
   const posCountBeforeGame = (cumulativeSnapshots[0]||{}).posCount||{};
   function gameCost(){
-    const gameBenchSoFar = {};
+    const gameBenchSoFar = {}, centreSoFar = {}, centreRun = {};
     const posCount = Object.assign({}, posCountBeforeGame);
     let benchedLastQuarter = new Set();
     let total = 0;
@@ -795,6 +841,8 @@ function refineGameQuarters(input){
       liveCums[qi].gameBenchSoFar = gameBenchSoFar;
       liveCums[qi].benchedLastQuarter = benchedLastQuarter;
       liveCums[qi].posCount = posCount;
+      liveCums[qi].centreSoFar = centreSoFar;
+      liveCums[qi].centreRun = centreRun;
       const { positionCellCost, benchCellCost } = costFns[qi];
       const bench = [], played = [];
       Object.keys(qs[qi]).forEach(key=>{
@@ -805,6 +853,9 @@ function refineGameQuarters(input){
         total += isBench ? benchCellCost(p) : positionCellCost(p,key);
         if(!isBench && !p.isFillIn) played.push(pid+"::"+key); // fill-ins stay out of season counts
       });
+      const centreNow = qs[qi].C; // fill-ins included: it's player welfare, not season fairness (§4 rule 3a)
+      Object.keys(centreRun).forEach(pid=>{ if(pid!==centreNow) delete centreRun[pid]; });
+      if(centreNow){ centreSoFar[centreNow] = (centreSoFar[centreNow]||0)+1; centreRun[centreNow] = (centreRun[centreNow]||0)+1; }
       played.forEach(k=>{ posCount[k] = (posCount[k]||0)+1; }); // after the quarter is priced, as Phase 2a saw it
       bench.forEach(pid=>{ gameBenchSoFar[pid] = (gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(bench);
@@ -911,7 +962,7 @@ const RosterSolver = {
     PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
     COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, FORCED_ON_COURT_PENALTY, ROSTER_OFF_TIEBREAK_WEIGHT,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
-    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
+    COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, CENTRE_OVER_TARGET_COST, CENTRE_BACK_TO_BACK_COST, CENTRE_THIRD_IN_ROW_COST, CENTRE_FATIGUE_COST, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
     ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS,
     DEFAULT_POSITION_LOAD, PREVIOUS_DEFAULT_POSITION_LOAD, POSITION_LOAD_MIN, POSITION_LOAD_MAX
@@ -926,6 +977,8 @@ const RosterSolver = {
   derivePreferenceWeights,
   solveSeasonRosterOff,
   cleanPositionLoad,
+  rawPositionLoads,
+  centreQuartersOf,
   derivePositionLoads,
   playerLoadStats,
   computeCourtTargets,

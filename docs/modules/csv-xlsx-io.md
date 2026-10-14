@@ -29,6 +29,7 @@ The one format for backing up, restoring and sharing a season. Fields are keyed 
     "settings": {"preferenceSlider": 8, "allowOffPreference": false,
                  "positionVariety": 1, "rosterOffPriority": "fairness",
                  "loadBalance": 0,     // optional (added build 61); missing -> default
+                 "centreQuarters": 4,  // optional (added build 68): integer 1-4, missing -> 4 (no limit); rounded and clamped on import
                  "positionLoad": {"GS": 0.55, "GA": 0.85, "WA": 0.7, "C": 1, "WD": 0.7, "GD": 0.85, "GK": 0.55}},
     "players": [{"id", "name", "prefs": ["GS","GA"], "unavailable": [3]}],
     "fillIns": [{"id", "name", "prefs": [], "saved": true}],

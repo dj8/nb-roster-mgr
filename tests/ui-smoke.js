@@ -306,7 +306,11 @@ async function shot(page, name){
   const settingsText = await page.locator("body").textContent();
   check(!/strict specialist/i.test(settingsText), "no leftover 'strict specialist pairing' UI text anywhere on the page");
   check(await page.locator("#topTwoOnly, [data-weight], #rosterOffSlider").count()===0, "the retired top-2 toggle, weight sliders and roster-off slider are gone");
-  check(await page.locator("#seasonHeadlines .stat-box").count()===7, "the at-a-glance card shows seven headline numbers for the generated season");
+  check(await page.locator("#seasonHeadlines .stat-box").count()===9, "the at-a-glance card shows nine headline numbers for the generated season");
+  const cs = page.locator("#centreSlider");
+  check(await cs.getAttribute("min")==="1" && await cs.getAttribute("max")==="4" && await cs.getAttribute("step")==="1" && (await cs.inputValue())==="4", "the Centre quarters control is a 1-4 slider defaulting to 4 (no limit)");
+  check(JSON.stringify(await page.locator(".slider-ticks span").allTextContents())===JSON.stringify(["1","2","3","4 (no limit)"]), "the Centre quarters control labels its four stops");
+  check(/Centres play 1 quarter a game/.test(settingsText) && /No limit on Centre quarters/.test(settingsText), "the Centre quarters control has its end labels");
   await shot(page, "05-settings.png");
 
   // ---- SET-9/SET-10: every Settings control saves, flags the schedule stale, survives a reload and reaches the engine ----
@@ -326,7 +330,8 @@ async function shot(page, name){
   const SLIDERS = [
     {sel:"#prefSlider", read:s=>s.preferenceSlider, to:3, back:8},
     {sel:"#varietySlider", read:s=>s.positionVariety, to:6, back:1},
-    {sel:"#loadSlider", read:s=>s.loadBalance, to:7, back:0}
+    {sel:"#loadSlider", read:s=>s.loadBalance, to:7, back:0},
+    {sel:"#centreSlider", read:s=>s.centreQuarters, to:2, back:4}
   ];
   const TOGGLES = [
     {sel:"#allowOffPref", read:s=>s.allowOffPreference, back:false}

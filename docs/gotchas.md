@@ -164,6 +164,16 @@ re-running `npm run test:settings` (SET-7) and `LOAD-6`: the slider will quietly
 at the top end. Remapping the slider curve was tried and doesn't help — the flattening was this
 interaction, not the mapping.
 
+### Centre quarters: position-side only, rest order by raw load, previous quarters only
+The Centre-quarters costs (§4 rule 3a, `centreCost` and the rest-quarter ranking in `buildQuarterCostFns`) all go in
+`positionCellCost`, inside the `prefWeight` multiplier, like rank and variety. Don't make them flat costs: that would let
+them outweigh court-time evenness at low preference-slider values. They stay finite (never `BIG_M`), so a lone Centre still
+plays all four quarters. The rest quarter is ordered by the coach's raw `positionLoad` (`rawPositionLoads`), not the
+slider-blended load, so the order never changes as the workload slider moves. Everything counts the game's earlier quarters
+only (`centreSoFar`/`centreRun`), so Phase 2b's game total is what Phase 2a priced; both are game-local and include fill-ins.
+The `CENTRE_*` constants were tuned with `npm run test:settings`: stronger values honour the target harder but spread
+court time (playSd) and the per-game bench overruns, so retune only with the sweep and CQ-9 to hand.
+
 ### `app.js` exports nothing — tests patch it at load time
 There is no `module.exports` anywhere in `app.js` itself (it's a browser-only IIFE).
 `tests/harness.js` reads the file's source as text, splices a `module.exports = {...}`
