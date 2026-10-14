@@ -116,7 +116,7 @@ sequenceDiagram
         Edit->>Commit: commitSlotEdit(qDraft, locksDraft)
     else picked a player already on-court at a DIFFERENT position this quarter
         Edit->>Edit: qDraft.onCourt[pos] = chosen — find otherPos (their old slot), qDraft.onCourt[otherPos] = null
-        Edit->>Edit: clearStaleLock(otherPos) if it was locked to the now-moved player
+        Edit->>Edit: drop otherPos's lock if it was locked to the now-moved player
         Edit->>Vacancy: openFillVacancyDialog(num, qi, otherPos, displacedPlayer, qDraft, locksDraft)
         Vacancy->>Vacancy: offer the displaced player (default) or any bench player to fill otherPos
         Coach->>Vacancy: pick + Save (or Cancel)

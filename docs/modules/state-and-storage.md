@@ -13,7 +13,7 @@ object this section owns. See [`data-model.md`](../data-model.md) for the full s
 |---|---|---|---|
 | `defaultState()` | — | a fresh `STATE`-shaped object with empty roster, default season/settings | None — pure factory |
 | `newGameState()` | — | a fresh per-game object (see `data-model.md` → `GAME`) | None |
-| `loadState()` | — | a validated/migrated `STATE` object | Reads `localStorage` (a game's pre-build-80 flat `lockedSlots` map becomes the per-quarter array via `migrateLegacyLocks` + `normalizeLockedSlots`); on any parse/validation failure, logs a warning and falls back to `defaultState()` |
+| `loadState()` | — | a validated/migrated `STATE` object | Reads `localStorage` (a game's pre-build-80 flat `lockedSlots` map becomes the per-quarter array via `normalizeLockedSlots`); on any parse/validation failure, logs a warning and falls back to `defaultState()` |
 | `saveState()` | — | — | Writes `JSON.stringify(STATE)` to `localStorage`; on failure (quota, private mode), toasts and swallows the error |
 | `sanitizeSettingsAndSeason(state)` | a state object (mutated in place) | array of correction descriptions | Rebuilds `settings.positionLoad` position by position (clamped to 0.1–2, unknown keys dropped, a missing or non-object value → the defaults) and clamps `settings.loadBalance`. Clamps `season.numGames`/`desiredBenchSize` and every `settings.*` numeric via `RosterSolver.clampSetting`; drops any `settings` key `defaultState()` doesn't have; resets an unrecognised `rosterOffPriority` to its default; coerces `allowOffPreference` to a real boolean |
 | `sanitizePrefs(prefs)` | raw array (possibly from an imported file) | array of valid position codes, deduped, order-preserved | None — pure |

@@ -83,7 +83,6 @@ directly.
 | Function | Purpose |
 |---|---|
 | `refreshOffPreferenceFlag(q, pos)` | Recomputes `q.offPreference[pos]` from whoever currently occupies it (or clears the flag if empty) — called after every manual slot change so the flag never goes stale relative to the actual occupant. |
-| `clearStaleLock(locksDraft, pos, expectedPid)` | Drops a locked-slot entry if it was locked to a player who's no longer actually there (a lock pointing at a player who's just been moved elsewhere would otherwise force them back on the next rebalance). |
 | `finishSlotEdit(num)` / `commitSlotEdit(num, qi, qDraft, locksDraft)` | The single write-back point for a slot edit — `commitSlotEdit` writes the draft quarter and that quarter's locks (`game.lockedSlots[qi]`) onto `STATE`, then `finishSlotEdit` saves, closes the modal, and re-renders with this game's card left open. Every dialog above funnels through this, and so does a quarter swap (`finishSlotEdit` only; `closeModal` is a no-op with no modal open). |
 
 ## Called by

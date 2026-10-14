@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 80; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 81; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -199,7 +199,7 @@ function loadState(){
       g.time = sanitizeGameTime(g.time);
       g.location = sanitizeGameLocation(g.location);
       if(!Array.isArray(g.coverageWarnings)) g.coverageWarnings=[];
-      g.lockedSlots = normalizeLockedSlots(Array.isArray(g.lockedSlots) ? g.lockedSlots : migrateLegacyLocks(g.lockedSlots)); // pre-build-80 saves: flat "q-pos" map
+      g.lockedSlots = normalizeLockedSlots(g.lockedSlots); // also migrates pre-build-80 saves
     });
     merged.players.forEach(p=>{ p.prefs = sanitizePrefs(p.prefs); });
     merged.fillIns.forEach(f=>{ f.prefs = sanitizePrefs(f.prefs); });
@@ -605,10 +605,9 @@ function runGeneration(){
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
-    const lockedSlotsPerQuarter = game.lockedSlots.map(locks=>Object.assign({}, locks));
     // Phase 2a/2b for this game's own 4 quarters (RosterSolver.solveGame).
     const { quarters, failingQuarters } = RosterSolver.solveGame({
-      squad: plan.squad, benchSlotCount: benchCount, lockedSlotsPerQuarter, settings: gameSettings,
+      squad: plan.squad, benchSlotCount: benchCount, lockedSlotsPerQuarter: game.lockedSlots, settings: gameSettings,
       seasonCum: { posCount: cumulative.posCount, benchQuota, benchCap }
     });
 
@@ -1709,12 +1708,6 @@ function refreshOffPreferenceFlag(q, pos){
   q.offPreference[pos] = !!(player && !RosterSolver.isInPreference(player,pos));
 }
 
-/* Drops a lock that no longer holds the player it was locked to — forcing
-   that id back in on rebalance would be wrong. Operates on a draft, not live state. */
-function clearStaleLock(locksDraft, pos, expectedPid){
-  if(locksDraft[pos]===expectedPid) delete locksDraft[pos];
-}
-
 /* Swaps two whole quarters of one game — line-up, bench, off-preference flags
    and slot locks move together. Quarter order matters for Centre rests and
    back-to-back bench stints, but season totals don't change, so no
@@ -1825,7 +1818,7 @@ function openSlotEditDialog(num, qi, pos){
       }
       qDraft.onCourt[otherPos] = null;
       refreshOffPreferenceFlag(qDraft, pos);
-      clearStaleLock(locksDraft, otherPos, pid);
+      if(locksDraft[otherPos]===pid) delete locksDraft[otherPos]; // a lock on the slot they just left would pull them back on rebalance
       openFillVacancyDialog(num, qi, otherPos, oldPid, qDraft, locksDraft);
     };
   });
@@ -2251,7 +2244,8 @@ function downloadBlob(filename, blob){
    games. Keyed by name, not position, so adding a field never shifts anything.
    Device-only state (theme, active tab) is deliberately not exported. */
 const BACKUP_FORMAT = "netball-roster-backup";
-const BACKUP_SCHEMA_VERSION = 3; // v3: game lockedSlots is a per-quarter array [{pos:id}×4] (was a flat {"q-pos":id} map, migrated on import). v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority; loadBalance / positionLoad were added later as optional fields (no bump)
+// v3: game lockedSlots is a per-quarter array [{pos:id}×4] (was a flat {"q-pos":id} map; normalizeLockedSlots migrates it).
+const BACKUP_SCHEMA_VERSION = 3; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority; loadBalance / positionLoad were added later as optional fields (no bump)
 
 function buildBackup(){
   const planGames = {}, resultGames = {};
@@ -2262,7 +2256,7 @@ function buildBackup(){
       rosterOffOverride: Number.isFinite(g.rosterOffOverride) ? g.rosterOffOverride : null,
       rosterOffLockIds: Array.isArray(g.rosterOffLockIds) ? g.rosterOffLockIds.slice() : null,
       fillInIds: (g.fillInIds||[]).slice(),
-      lockedSlots: g.lockedSlots.map(locks=>Object.assign({}, locks)),
+      lockedSlots: deepClone(g.lockedSlots),
       strictSpecialistPairing: !!g.strictSpecialistPairing,
       allowOffPreference: typeof g.allowOffPreference==="boolean" ? g.allowOffPreference : null
     };
@@ -2305,24 +2299,20 @@ function isPlainObject(v){ return v!==null && typeof v==="object" && !Array.isAr
 const toStringArray = v => (Array.isArray(v)?v:[]).filter(x=>typeof x==="string" && x);
 const GAME_KEY_RE = /^[1-9]\d{0,2}$/;
 /* game.lockedSlots as a clean four-entry array of {pos: id}, one per quarter;
-   junk entries, unknown positions and non-string ids are dropped. Declarations
-   (not consts) so loadState can use them at boot. */
+   unknown positions and non-string ids are dropped. Also the migration: v1/v2
+   backups and pre-build-80 saves kept a flat {"q-pos": id} map, told apart by
+   shape (an array can't be mistaken for one), not by schemaVersion. */
 function normalizeLockedSlots(v){
-  const list = Array.isArray(v) ? v : [];
+  const list = Array.isArray(v) ? v : [{},{},{},{}];
+  if(isPlainObject(v)) Object.keys(v).forEach(k=>{
+    const m = /^([0-3])-([A-Z]+)$/.exec(k);
+    if(m && POSITIONS.includes(m[2])) list[m[1]][m[2]] = v[k];
+  });
   return [0,1,2,3].map(qi=>{
     const src = isPlainObject(list[qi]) ? list[qi] : {}, locks = {};
     POSITIONS.forEach(pos=>{ if(typeof src[pos]==="string" && src[pos]) locks[pos] = src[pos]; });
     return locks;
   });
-}
-/* Pre-v3 backups and pre-build-80 saves keyed locks as a flat {"q-pos": id} map. */
-function migrateLegacyLocks(v){
-  const out = [{},{},{},{}];
-  if(isPlainObject(v)) Object.keys(v).forEach(k=>{
-    const m = /^([0-3])-([A-Z]{1,2})$/.exec(k);
-    if(m && POSITIONS.includes(m[2])) out[Number(m[1])][m[2]] = v[k];
-  });
-  return out;
 }
 
 function importBackup(text){
@@ -2379,7 +2369,7 @@ function importBackup(text){
       g.fillInIds = toStringArray(src.fillInIds);
       g.strictSpecialistPairing = src.strictSpecialistPairing===true;
       g.allowOffPreference = typeof src.allowOffPreference==="boolean" ? src.allowOffPreference : null;
-      g.lockedSlots = normalizeLockedSlots(data.schemaVersion<3 ? migrateLegacyLocks(src.lockedSlots) : src.lockedSlots);
+      g.lockedSlots = normalizeLockedSlots(src.lockedSlots); // migrates v1/v2's flat map too
       ns.games[key] = g;
     });
 

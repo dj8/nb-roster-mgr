@@ -104,7 +104,6 @@ if(typeof module!=="undefined" && module.exports){
     deleteGame: deleteGame,
     makeBye: makeBye,
     swapGameQuarters: swapGameQuarters,
-    migrateLegacyLocks: migrateLegacyLocks,
     purgePersonFromGames: purgePersonFromGames,
     gameNums: gameNums,
     POSITIONS: POSITIONS,

@@ -85,7 +85,7 @@ matching `docs/modules/*.md` / `data-model.md`.
    *optional* field needs no schema bump (a missing value falls back to its default on import).
    Renaming, removing or changing the meaning of a field **does**: bump `BACKUP_SCHEMA_VERSION` in
    `app.js`, add a migration in `importBackup` that upgrades each older `schemaVersion` to the current
-   shape before it's read (today only v3's per-quarter `lockedSlots`, via `migrateLegacyLocks`; the v1→v2 settings change was deliberately not migrated: retired settings are ignored and `preferenceSlider` keeps its number on the new scale), and add a
+   shape before it's read (today only v3's per-quarter `lockedSlots`, which `normalizeLockedSlots` migrates by shape; the v1→v2 settings change was deliberately not migrated: retired settings are ignored and `preferenceSlider` keeps its number on the new scale), and add a
    test that imports a saved old-format file. Also update the example file in
    `docs/modules/csv-xlsx-io.md`.
 4. If the engine consumes it, thread it through `app.js` into the plain-data input of `solver.js`.

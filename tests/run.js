@@ -807,9 +807,9 @@ test("OFFPREF-LOG-BENCHED-1 (I4 regression): the off-preference log names a spec
 });
 
 /* Builds a minimal valid backup file as text, merging `plan`/`results` overrides in. */
-function makeBackup(planOverrides, results){
+function makeBackup(planOverrides, results, schemaVersion=3){
   return JSON.stringify({
-    format:"netball-roster-backup", schemaVersion:2,
+    format:"netball-roster-backup", schemaVersion,
     plan: Object.assign({season:{numGames:1, desiredBenchSize:0}, settings:{}, players:[], fillIns:[], games:{}}, planOverrides||{}),
     results: results || {games:{}}
   });
@@ -2000,7 +2000,7 @@ test("QSWAP-1: swapping two quarters moves line-up, bench and slot locks togethe
   assert.strictEqual(JSON.stringify(g.schedule), frozen);
 });
 
-test("LOCKS-1: slot locks are stored per quarter; older flat \"q-pos\" maps migrate from saves and v1/v2 backups", ()=>{
+test("LOCKS-1: slot locks are stored per quarter; older flat \"q-pos\" maps migrate from saves and v1/v2 backups, by shape", ()=>{
   const engine = freshEngine();
   const st = engine._getState();
   st.players.push({id:"p1", name:"Amy", prefs:["GS"], unavailable:[]});
@@ -2010,17 +2010,13 @@ test("LOCKS-1: slot locks are stored per quarter; older flat \"q-pos\" maps migr
   engine.saveState();
   const plain = v => JSON.parse(JSON.stringify(v));
   assert.deepStrictEqual(plain(engine.loadState().games["1"].lockedSlots), [{GS:"p1"},{},{},{C:"p1"}], "legacy save migrates; bad keys dropped");
-  // A v2 backup with the flat map
-  engine.importBackup(makeBackup({players:[{id:"p1", name:"Amy", prefs:["GS"], unavailable:[]}], games:{"1":{lockedSlots:{"2-WA":"p1"}}}}));
+  const withLocks = (locks, version)=>makeBackup({players:[{id:"p1", name:"Amy", prefs:["GS"], unavailable:[]}], games:{"1":{lockedSlots:locks}}}, null, version);
+  // A v2 backup with the flat map; a stray "__proto__" key must not reach a lock's prototype
+  engine.importBackup(withLocks(JSON.parse('{"2-WA":"p1","0-__proto__":{"GS":"p1"},"0-GS-x":"p1"}'), 2));
   assert.deepStrictEqual(plain(engine.getGame(1).lockedSlots), [{},{},{WA:"p1"},{}], "v2 backup migrates");
-  // A v3 backup: junk entries, unknown positions and non-string ids are dropped; a v3 flat map isn't read as legacy
-  const v3 = locks=>JSON.stringify({format:"netball-roster-backup", schemaVersion:3,
-    plan:{season:{numGames:1, desiredBenchSize:0}, settings:{}, fillIns:[], players:[{id:"p1", name:"Amy", prefs:["GS"], unavailable:[]}], games:{"1":{lockedSlots:locks}}},
-    results:{games:{}}});
-  engine.importBackup(v3([{GS:"p1", XX:"p1"}, null, {C:5}, {GK:"p1", __proto__:{GA:"p1"}}, {GS:"p1"}]));
+  // A v3 backup: junk entries, unknown positions and non-string ids are dropped
+  engine.importBackup(withLocks([{GS:"p1", XX:"p1"}, null, {C:5}, {GK:"p1", __proto__:{GA:"p1"}}, {GS:"p1"}]));
   assert.deepStrictEqual(plain(engine.getGame(1).lockedSlots), [{GS:"p1"},{},{},{GK:"p1"}]);
-  engine.importBackup(v3({"0-GS":"p1"}));
-  assert.deepStrictEqual(plain(engine.getGame(1).lockedSlots), [{},{},{},{}]);
 });
 
 test("PURGE-1: removing a person clears them from unplayed games only (played games stay frozen)", ()=>{
@@ -2172,7 +2168,9 @@ test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates 
     const g = engine.getGame(n), plan = src.plan.games[n], res = src.results.games[n];
     ["date","time","location","fillInIds","rosterOffLockIds","allowOffPreference"].forEach(k=>
       assert.deepStrictEqual(plain(g[k]), plan[k], `game ${n} ${k}`));
-    assert.deepStrictEqual(plain(g.lockedSlots), plain(engine.migrateLegacyLocks(plan.lockedSlots)), `game ${n} lockedSlots`);
+    const locks = Object.keys(plan.lockedSlots);
+    assert.strictEqual(g.lockedSlots.reduce((c,l)=>c+Object.keys(l).length, 0), locks.length, `game ${n} lock count`);
+    locks.forEach(k=>{ const [q, pos] = k.split("-"); assert.strictEqual(g.lockedSlots[q][pos], plan.lockedSlots[k], `game ${n} lock ${k}`); });
     // Import keeps only the `true` off-preference flags; a locked game exports explicit `false`s too.
     const expected = res.schedule.quarters.map(q=>({onCourt:q.onCourt, bench:q.bench,
       offPreference:Object.fromEntries(Object.entries(q.offPreference).filter(([,v])=>v===true))}));
