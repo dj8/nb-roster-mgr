@@ -1626,7 +1626,6 @@ test("LOAD-4: the workload settings are sanitised, persisted in backups and surv
 test("LOAD-8: a save still holding the old default workloads gets the new ones; edited tables are kept", ()=>{
   const OLD = {GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55};
   const engine = freshEngine();
-  assert.deepStrictEqual({...engine.RosterSolver.CONSTANTS.PREVIOUS_DEFAULT_POSITION_LOAD}, OLD);
   const st = engine._getState();
   st.settings.positionLoad = {...OLD};
   engine.saveState();
@@ -2150,7 +2149,9 @@ test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates 
 /* ============================================================
    Centre quarters per game (§4 rule 3a, §11) — CQ-*
    ============================================================ */
-const { FIXTURES: SWEEP_FIXTURES } = require("./fixtures.js");
+const { FIXTURES: SWEEP_FIXTURES, quietly } = require("./fixtures.js");
+/* A game's `centres` list (who played Centre each earlier quarter) giving `id` soFar Centre quarters, the last `run` of them in a row. */
+const centresFor = (soFar, run, id="p")=>[...Array(soFar-run).fill([id,"x"]).flat(), ...Array(run).fill(id)];
 
 /* A season of `players` ([name, prefs]) at the given centreQuarters. Returns the engine and, per game, the
    quarters as names ({centre, bench:[names], onCourt:{pos:name}}). */
@@ -2163,8 +2164,7 @@ function centreSeason(players, {centre=4, games=6, bench=2, settings={}, setup=n
   if(centre!==undefined) st.settings.centreQuarters = centre;
   Object.assign(st.settings, settings);
   if(setup) setup(engine, made);
-  const log = console.log; console.log = ()=>{};
-  try{ engine.runGeneration(); } finally { console.log = log; }
+  quietly(()=>engine.runGeneration());
   const nameOf = {}; st.players.forEach(p=>{ nameOf[p.id] = p.name; });
   const perGame = engine.gameNums().map(n=>{
     const g = engine.getGame(n);
@@ -2186,7 +2186,7 @@ const CQ_TWO_CENTRES = CQ_SPECIALISTS.concat([["C1",["C","WA","WD"]],["C2",["C",
 test("CQ-1: centreCost - zero at 4, over-target / back-to-back / third-in-row at the right targets, same fatigue on every position, never BIG_M", ()=>{
   const S = freshEngine().RosterSolver, K = S.CONSTANTS;
   const p = {id:"p", prefs:["C","WA","GA"]};
-  const cost = (target, pos, soFar, run)=>S.buildQuarterCostFns({centreSoFar:{p:soFar}, centreRun:{p:run}}, {centreQuarters:target, preferenceSlider:8}).centreCost(p,pos);
+  const cost = (target, pos, soFar, run)=>S.buildQuarterCostFns({centres:centresFor(soFar,run)}, {centreQuarters:target, preferenceSlider:8}).centreCost(p,pos);
   S.POSITIONS.forEach(pos=>[0,1,2,3].forEach(n=>assert.strictEqual(cost(4,pos,n,n?1:0), 0, "no limit costs nothing")));
   // target 2: Q1+Q3 is free; a back-to-back Centre pays, a third quarter pays over + back-to-back, a third in a row pays all three.
   assert.strictEqual(cost(2,"C",0,0), 0);
@@ -2209,7 +2209,7 @@ test("CQ-1: centreCost - zero at 4, over-target / back-to-back / third-in-row at
   assert.deepStrictEqual([undefined,null,"x",NaN,0,1.4,2.6,9].map(v=>S.centreQuartersOf({centreQuarters:v})), [4,4,4,4,1,1,3,4]);
   assert.strictEqual(S.centreQuartersOf(undefined), 4);
   // the cell function folds it in, scaled by the preference weight; BIG_M cells stay BIG_M
-  const fns = S.buildQuarterCostFns({centreSoFar:{p:1}, centreRun:{p:1}}, {centreQuarters:2, preferenceSlider:8});
+  const fns = S.buildQuarterCostFns({centres:["p"]}, {centreQuarters:2, preferenceSlider:8});
   const w = S.derivePreferenceWeights(8).preference;
   assert.ok(Math.abs((fns.positionCellCost(p,"C") - 0) - w*(0 + fns.centreCost(p,"C")))<1e-9);
   assert.strictEqual(fns.positionCellCost(p,"GK"), K.BIG_M, "off-list with off-preference disallowed is still disqualified");
@@ -2239,11 +2239,10 @@ test("CQ-4: a third Centre quarter always falls with the break in Q2 or Q3 (targ
   const patterns = [];
   for(let m=0;m<16;m++) patterns.push([0,1,2,3].map(q=>(m>>q)&1));
   const total = (pat, target)=>{
-    let soFar=0, run=0, sum=0;
-    pat.forEach(isC=>{
-      const f = S.buildQuarterCostFns({centreSoFar:{p:soFar}, centreRun:{p:run}}, {centreQuarters:target});
+    let sum = 0;
+    pat.forEach((isC,i)=>{
+      const f = S.buildQuarterCostFns({centres:pat.slice(0,i).map(c=>c?"p":"x")}, {centreQuarters:target});
       sum += f.centreCost({id:"p",prefs:["C","WA"]}, isC?"C":"WA");
-      if(isC){ soFar++; run++; } else run = 0;
     });
     return sum;
   };
@@ -2283,7 +2282,7 @@ test("CQ-7: the rest quarter after Centre goes to the lightest listed position, 
   const S = freshEngine().RosterSolver;
   const rankOf = (prefs, settings, pos)=>{
     const p = {id:"p", prefs};
-    return S.buildQuarterCostFns({centreSoFar:{p:1}, centreRun:{p:1}}, Object.assign({centreQuarters:2, preferenceSlider:8, positionVariety:0}, settings)).positionCellCost(p,pos);
+    return S.buildQuarterCostFns({centres:["p"]}, Object.assign({centreQuarters:2, preferenceSlider:8, positionVariety:0}, settings)).positionCellCost(p,pos);
   };
   const order = (prefs, settings)=>prefs.filter(x=>x!=="C").sort((a,b)=>rankOf(prefs,settings,a)-rankOf(prefs,settings,b));
   assert.deepStrictEqual(order(["C","GA","WA","GS"], {}), ["GS","WA","GA"], "GS lightest, then WA, then GA - not the player's own order");
@@ -2308,11 +2307,12 @@ test("CQ-7: the rest quarter after Centre goes to the lightest listed position, 
 test("CQ-8: bench as rest - with the same court time due, the player with more Centre quarters takes the bench", ()=>{
   const S = freshEngine().RosterSolver;
   const players = [["GS1",["GS"]],["GA1",["GA"]],["C1",["C"]],["WD1",["WD"]],["GD1",["GD"]],["GK1",["GK"]],["a",["WA"]],["b",["WA"]]].map(([id,prefs])=>({id,name:id,prefs}));
+  const centreHistory = (soFarA, soFarB)=>[...Array(soFarA).fill("a"), ...Array(soFarB).fill("b"), "C1"]; // ends on someone else: neither is mid-run
   const solve = (soFarA, soFarB)=>S.solveQuarterPositions({players, benchSlotCount:1, lockedSlots:{},
-    cumulative:{posCount:{}, benchQuota:{a:1,b:1}, benchCap:{a:1,b:1}, centreSoFar:{a:soFarA,b:soFarB}, centreRun:{}}, settings:{centreQuarters:2, preferenceSlider:8}});
+    cumulative:{posCount:{}, benchQuota:{a:1,b:1}, benchCap:{a:1,b:1}, centres:centreHistory(soFarA,soFarB)}, settings:{centreQuarters:2, preferenceSlider:8}});
   assert.deepStrictEqual([...solve(3,2).bench], ["a"]);
   assert.deepStrictEqual([...solve(2,3).bench], ["b"]);
-  const noLimit = S.solveQuarterPositions({players, benchSlotCount:1, lockedSlots:{}, cumulative:{posCount:{}, benchQuota:{a:1,b:1}, benchCap:{a:1,b:1}, centreSoFar:{a:3,b:2}, centreRun:{}}, settings:{centreQuarters:4, preferenceSlider:8}});
+  const noLimit = S.solveQuarterPositions({players, benchSlotCount:1, lockedSlots:{}, cumulative:{posCount:{}, benchQuota:{a:1,b:1}, benchCap:{a:1,b:1}, centres:centreHistory(3,2)}, settings:{centreQuarters:4, preferenceSlider:8}});
   assert.strictEqual(noLimit.bench.length, 1, "at no limit the fatigue term is off (the tie falls however it fell before)");
 });
 
@@ -2341,15 +2341,14 @@ test("CQ-10: Phase 2b never raises a game's back-to-back Centre count above what
     const players = roster.map(([id,prefs])=>({id,name:id,prefs}));
     const settings = {centreQuarters:target, preferenceSlider:8, positionVariety:1};
     const benchSlotCount = players.length-7;
-    const gameBenchSoFar = {}, centreSoFar = {}, centreRun = {}, quarters = [], snaps = [];
+    const gameBenchSoFar = {}, centres = [], quarters = [], snaps = [];
     let benchedLast = new Set();
     for(let q=0;q<4;q++){
-      const snap = {posCount:{}, gameBenchSoFar:Object.assign({},gameBenchSoFar), benchedLastQuarter:new Set(benchedLast), centreSoFar:Object.assign({},centreSoFar), centreRun:Object.assign({},centreRun), benchQuota:{}, benchCap:{}};
+      const snap = {posCount:{}, gameBenchSoFar:Object.assign({},gameBenchSoFar), benchedLastQuarter:new Set(benchedLast), centres:centres.slice(), benchQuota:{}, benchCap:{}};
       snaps.push(snap);
       const res = S.solveQuarterPositions({players, benchSlotCount, lockedSlots:{}, cumulative:snap, settings});
       res.bench.forEach(id=>{ gameBenchSoFar[id]=(gameBenchSoFar[id]||0)+1; }); benchedLast = new Set(res.bench);
-      Object.keys(centreRun).forEach(id=>{ if(id!==res.onCourt.C) delete centreRun[id]; });
-      centreSoFar[res.onCourt.C]=(centreSoFar[res.onCourt.C]||0)+1; centreRun[res.onCourt.C]=(centreRun[res.onCourt.C]||0)+1;
+      centres.push(res.onCourt.C);
       quarters.push({onCourt:res.onCourt, bench:res.bench, offPreference:res.offPreference});
     }
     const b2b = qs=>qs.reduce((a,q,i)=>a+(i && q.onCourt.C===qs[i-1].onCourt.C ? 1 : 0),0);

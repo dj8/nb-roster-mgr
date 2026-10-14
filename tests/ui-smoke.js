@@ -309,7 +309,7 @@ async function shot(page, name){
   check(await page.locator("#seasonHeadlines .stat-box").count()===9, "the at-a-glance card shows nine headline numbers for the generated season");
   const cs = page.locator("#centreSlider");
   check(await cs.getAttribute("min")==="1" && await cs.getAttribute("max")==="4" && await cs.getAttribute("step")==="1" && (await cs.inputValue())==="4", "the Centre quarters control is a 1-4 slider defaulting to 4 (no limit)");
-  check(JSON.stringify(await page.locator(".slider-ticks span").allTextContents())===JSON.stringify(["1","2","3","4 (no limit)"]), "the Centre quarters control labels its four stops");
+  check(JSON.stringify(await page.locator(".slider-ticks span").allTextContents())===JSON.stringify(["1","2","3","4"]), "the Centre quarters control labels its four stops");
   check(/Centres play 1 quarter a game/.test(settingsText) && /No limit on Centre quarters/.test(settingsText), "the Centre quarters control has its end labels");
   await shot(page, "05-settings.png");
 

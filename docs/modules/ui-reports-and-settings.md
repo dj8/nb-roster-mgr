@@ -23,9 +23,11 @@ render from the functions in [`engine.md`](engine.md#report-aggregations).
 
 ## Settings tab
 
-`renderSettings(root)` renders four cards bound directly to `STATE.settings`: the
+`renderSettings(root)` renders cards bound directly to `STATE.settings`: the
 at-a-glance numbers, then one card per decision (preferences vs. even court time,
-position variety, who sits out). Every control's `onchange` handler does the same thing
+position variety, position workload, Centre quarters, who sits out). Each card is a one-line
+intro, the control with its visible end labels (§11; the `<label>` itself is `.sr-only`, since
+the end labels say the same thing on screen) and at most one short hint. Every control's `onchange` handler does the same thing
 via `markStale()`: `saveState()`, set `dirtySinceGeneration = true`, and
 `toast("Regenerate to apply.")` — none of these settings take effect until the next
 Generate/Rebalance. A persistent `.alert-warn` banner appears at the top of the tab

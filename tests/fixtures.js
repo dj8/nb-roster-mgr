@@ -1,4 +1,4 @@
-/* Roster fixtures shared by the settings sweep and the unit tests: [name, prefs, unavailable game numbers]. */
+/* Shared by the settings sweep and the unit tests. FIXTURES: rosters as [name, prefs, unavailable game numbers]. */
 "use strict";
 const FIXTURES = {
   deep11: {note:"11 players, 11 games, bench 2 - good depth everywhere", numGames:11, bench:2, players:[
@@ -18,4 +18,11 @@ const FIXTURES = {
     ["Fern",["GD","GK","WD"]], ["Gigi",["GK","GD"]], ["Hana",["GS","GK"]], ["Indi",["C","WD","GA"]]]}
 };
 
-module.exports = { FIXTURES };
+// runGeneration logs its own timing line on every call.
+function quietly(fn){
+  const log = console.log;
+  console.log = ()=>{};
+  try{ return fn(); } finally { console.log = log; }
+}
+
+module.exports = { FIXTURES, quietly };

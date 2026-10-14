@@ -170,7 +170,7 @@ The Centre-quarters costs (§4 rule 3a, `centreCost` and the rest-quarter rankin
 them outweigh court-time evenness at low preference-slider values. They stay finite (never `BIG_M`), so a lone Centre still
 plays all four quarters. The rest quarter is ordered by the coach's raw `positionLoad` (`rawPositionLoads`), not the
 slider-blended load, so the order never changes as the workload slider moves. Everything counts the game's earlier quarters
-only (`centreSoFar`/`centreRun`), so Phase 2b's game total is what Phase 2a priced; both are game-local and include fill-ins.
+only (`centres`: who played Centre in each earlier quarter), so Phase 2b's game total is what Phase 2a priced; it is game-local and includes fill-ins. The cost functions read `cumulative.centres` on every call, never once when built: `refineGameQuarters` re-points it after building them.
 The `CENTRE_*` constants were tuned with `npm run test:settings`: stronger values honour the target harder but spread
 court time (playSd) and the per-game bench overruns, so retune only with the sweep and CQ-9 to hand.
 

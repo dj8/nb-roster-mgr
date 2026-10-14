@@ -6,10 +6,11 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 69; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 70; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
+const PREVIOUS_DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55 }); // shipped before build 67: a save still holding exactly these is upgraded to the new defaults (sanitizeSettingsAndSeason)
 /* Simple padlock; fills with currentColor so CSS (.lock-icon) sets its colour. */
 const LOCK_ICON_SVG = '<svg class="lock-icon" viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M17 9V7a5 5 0 0 0-10 0v2H5v12h14V9h-2zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg>';
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -145,8 +146,7 @@ function sanitizeSettingsAndSeason(state){
   if(centreBefore!==undefined && centreAfter!==centreBefore) corrected.push(`Centre quarters (${JSON.stringify(centreBefore)} → ${centreAfter})`);
   state.settings.centreQuarters = centreAfter;
   let loads = state.settings.positionLoad;
-  const prev = RosterSolver.CONSTANTS.PREVIOUS_DEFAULT_POSITION_LOAD;
-  if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===prev[pos])) loads = undefined; // still the old shipped defaults, so take the new ones; any other table is the coach's own
+  if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===PREVIOUS_DEFAULT_POSITION_LOAD[pos])) loads = undefined; // still the old shipped defaults, so take the new ones; any other table is the coach's own
   // Rebuilt key by key: drops anything that isn't a position, and never keeps a reference to the frozen default.
   state.settings.positionLoad = {};
   POSITIONS.forEach(pos=>{
@@ -601,7 +601,7 @@ function runGeneration(){
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
-    const gameBenchSoFar = {}, centreSoFar = {}, centreRun = {}; // §4 rule 3a: game-local, fill-ins included
+    const gameBenchSoFar = {}, centres = []; // centres: who played Centre each quarter (§4 rule 3a; fill-ins included)
     let benchedLastQuarter = new Set();
     const quarters = [];
     const cumulativeSnapshots = [];
@@ -619,7 +619,7 @@ function runGeneration(){
         posCount: Object.assign({}, cumulative.posCount),
         gameBenchSoFar: Object.assign({}, gameBenchSoFar),
         benchedLastQuarter: new Set(benchedLastQuarter),
-        centreSoFar: Object.assign({}, centreSoFar), centreRun: Object.assign({}, centreRun),
+        centres: centres.slice(),
         benchQuota, benchCap
       };
       cumulativeSnapshots.push(snapshot);
@@ -640,9 +640,7 @@ function runGeneration(){
       // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
       result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(result.bench);
-      const centre = result.onCourt.C;
-      Object.keys(centreRun).forEach(pid=>{ if(pid!==centre) delete centreRun[pid]; });
-      if(centre){ centreSoFar[centre]=(centreSoFar[centre]||0)+1; centreRun[centre]=(centreRun[centre]||0)+1; }
+      centres.push(result.onCourt.C);
       quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
     }
 
@@ -2097,49 +2095,48 @@ function seasonHeadlinesHtml(){
 function renderSettings(root){
   const s = STATE.settings, C = RosterSolver.CONSTANTS;
   const priorities = [
-    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible (counting games they're unavailable for); coverage only decides between equally even splits"},
-    {value:"balanced", label:"Balanced", desc:"Accepts a slightly uneven split to avoid the worst coverage gaps"},
-    {value:"coverage", label:"Protect thin positions", desc:"Avoids resting the players a position depends on; missed games may come out less even"}
+    {value:"fairness", label:"Even missed games", desc:"Everyone sits out equally, counting games they're unavailable for"},
+    {value:"balanced", label:"Balanced", desc:"A slightly uneven split, to avoid the worst coverage gaps"},
+    {value:"coverage", label:"Protect thin positions", desc:"Keeps the players a position depends on; missed games may be less even"}
   ];
   root.innerHTML = `
     ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance (buttons at the top).</div>` : ""}
     <div class="card">
-      <div class="card-head"><div><h2>This season at a glance</h2><p>What the current settings produced the last time the season was generated${dirtySinceGeneration?" — regenerate to see the effect of your changes":""}.</p></div></div>
+      <div class="card-head"><div><h2>This season at a glance</h2><p>What these settings produced at the last generation.</p></div></div>
       <div id="seasonHeadlines">${seasonHeadlinesHtml()}</div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Preferences vs. even court time</h2><p>How far the engine bends players' preferences to share court time evenly. Defaults to strongly favouring preference.</p></div></div>
+      <div class="card-head"><div><h2>Preferences vs. even court time</h2><p>How far players' own ranking of their positions gives way to sharing court time evenly.</p></div></div>
       <div class="field">
-        <label for="prefSlider">Even court time &#8596; strict preference</label>
+        <label for="prefSlider" class="sr-only">Even court time &#8596; strict preference</label>
         ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
           leftLabel:"Even court time for everyone", rightLabel:"Players in their preferred positions"})}
-        <p class="hint">Sets how firmly even court time outranks a player's order of preference among the positions they listed. Players who miss more games are given more quarters in the games they attend. At 10, court time is ignored. It never causes an off-preference fill.</p>
+        <p class="hint">Players who miss more games get more quarters in the games they attend. At 10, court time is ignored. Either way, players only play positions they listed, unless the box below is ticked.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" id="allowOffPref" ${s.allowOffPreference?"checked":""}>
         <span class="cb-label">Allow off-preference positions</span>
-        <span class="cb-desc">A last resort only: used when a quarter can't be filled in-preference, never to even out court time. When off, that quarter raises an error instead</span>
+        <span class="cb-desc">Only when a quarter can't be filled from players' lists, never to even out court time. When off, that game shows an error instead</span>
       </label>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Position variety</h2><p>Whether a player keeps returning to their favourite position or rotates through everything they listed.</p></div></div>
+      <div class="card-head"><div><h2>Position variety</h2><p>Whether players keep returning to their favourite position or rotate through everything they listed.</p></div></div>
       <div class="field">
-        <label for="varietySlider">Repeat favourite &#8596; spread across the list</label>
+        <label for="varietySlider" class="sr-only">Repeat favourite &#8596; spread across the list</label>
         ${labelledSliderHtml({id:"varietySlider", min:0, max:10, step:1, value:s.positionVariety, valueId:"varietySliderVal",
           leftLabel:"Repeat a player's favourite position", rightLabel:"Spread play across their whole preference list"})}
-        <p class="hint">A position costs a player more the more often they've already played it, so the other positions they listed get a turn. At 0 nothing discourages repeating a favourite.</p>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Position workload</h2><p>Whether court time is shared by quarters played or by how hard those quarters were. A centre covers more court than a keeper, so may need more rest.</p></div></div>
+      <div class="card-head"><div><h2>Position workload</h2><p>Share court time by quarters played, or by how hard those quarters were: a Centre covers more court than a keeper.</p></div></div>
       <div class="field">
-        <label for="loadSlider">Equal quarters &#8596; equal workload</label>
+        <label for="loadSlider" class="sr-only">Equal quarters &#8596; equal workload</label>
         ${labelledSliderHtml({id:"loadSlider", min:0, max:10, step:1, value:s.loadBalance, valueId:"loadSliderVal",
           leftLabel:"Everyone plays the same number of quarters", rightLabel:"Harder positions rest more, even if benched twice in a game"})}
-        <p class="hint">At 0 every quarter counts the same. Moving right counts a quarter by its position's workload below, so players in the heavier positions are given more bench time and the lighter ones less. It only changes who rests: positions still follow each player's preferences. The price is the one-bench-stint-per-game limit, which eases as you move right and is gone at 10 — there, players in heavy positions can sit twice in a game and quarters played become noticeably uneven.</p>
+        <p class="hint">Moving right gives players in heavier positions more bench time; it never changes their positions. The price is the one-bench-per-game limit, which eases as you go and is gone at 10.</p>
       </div>
       <div class="field">
-        <label>Workload of a quarter in each position (centre = 1 by default; only the ratios matter)</label>
+        <label>Workload of a quarter in each position (only the ratios matter; also sets where a Centre rests, below)</label>
         <div class="load-grid">
           ${POSITIONS.map(pos=>`<label class="load-cell" title="${POS_LABEL[pos]}"><span>${pos}</span>
             <input type="number" data-load="${pos}" aria-label="${POS_LABEL[pos]} workload" min="${C.POSITION_LOAD_MIN}" max="${C.POSITION_LOAD_MAX}" step="0.05" value="${s.positionLoad[pos]}"></label>`).join("")}
@@ -2148,22 +2145,22 @@ function renderSettings(root){
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Centre quarters</h2><p>How many quarters a player should play in Centre in one game, and how they rest in between.</p></div></div>
+      <div class="card-head"><div><h2>Centre quarters</h2><p>The most quarters a player should play in Centre in one game.</p></div></div>
       <div class="field">
-        <label for="centreSlider">Centres play 1 quarter &#8596; no limit</label>
+        <label for="centreSlider" class="sr-only">Centres play 1 quarter &#8596; no limit</label>
         ${labelledSliderHtml({id:"centreSlider", min:1, max:4, step:1, value:s.centreQuarters, valueId:"centreSliderVal",
-          leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters", ticks:["1","2","3","4 (no limit)"]})}
-        <p class="hint">At 2, a Centre plays alternate quarters (Q1 &amp; Q3 or Q2 &amp; Q4). At 3, they get a break in Q2 or Q3. A rest quarter goes to the lightest position the player listed (by the workloads above), or the bench, which is likelier the more Centre they've played. It's a goal: with too few Centres in the squad someone plays more, but never off-preference, and it never changes who sits out how often.</p>
+          leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters", ticks:["1","2","3","4"]})}
+        <p class="hint">At 2, Centres alternate quarters; at 3, they get a break in Q2 or Q3. After a Centre quarter a player rests on the bench or in the lightest position they listed. A goal, not a rule: with too few Centres someone plays more.</p>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what the season-wide roster-off search protects first.</p></div></div>
+      <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what deciding who's rostered off protects first.</p></div></div>
       ${priorities.map(p=>`<label class="checkbox-row">
         <input type="radio" name="rosterOffPriority" value="${p.value}" ${s.rosterOffPriority===p.value?"checked":""}>
         <span class="cb-label">${p.label}</span>
         <span class="cb-desc">${p.desc}</span>
       </label>`).join("")}
-      <p class="hint">With a roster that has good depth at every position these goals rarely conflict and the choice will have little visible effect — it mainly matters for positions only a few players prefer. The Reports tab warns if the missed-games spread gets large.</p>
+      <p class="hint">With good depth at every position these rarely differ; it matters for positions only a few players list. Reports warns if missed games get uneven.</p>
     </div>
   `;
   root.querySelectorAll('input[type=range]').forEach(syncRangeFill);

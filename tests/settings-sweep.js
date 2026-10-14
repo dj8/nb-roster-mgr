@@ -24,7 +24,7 @@ const STRICT = ARGS.includes("--strict");
 const ONLY = (ARGS.find(a=>a.startsWith("--setting="))||"").split("=")[1] || null;
 
 /* ---------------- Fixtures ---------------- */
-const { FIXTURES } = require("./fixtures.js");
+const { FIXTURES, quietly } = require("./fixtures.js");
 
 /* ---------------- Metrics ----------------
    Shares and spreads are in percentage points. `min` is the smallest change
@@ -81,12 +81,6 @@ function buildEngine(fixtureName){
   });
   ENGINE.ensureGamesExist();
   return ENGINE;
-}
-// runGeneration logs its own timing line on every call.
-function quietly(fn){
-  const log = console.log;
-  console.log = ()=>{};
-  try{ return fn(); } finally { console.log = log; }
 }
 const pct = (n,d)=> d ? 100*n/d : 0;
 const mean = a=> a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0;
