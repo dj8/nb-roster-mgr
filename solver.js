@@ -17,6 +17,8 @@ const PHASE1_TIME_BUDGET_MS = 3000;
 const PHASE1_MAX_PASSES = 50;
 const COVERAGE_GAP_ZERO_PENALTY = 100;  // zero players left covering the position
 const COVERAGE_GAP_ONE_PENALTY = 30;    // exactly one player left covering it
+const FORCED_ON_COURT_PENALTY = 0.02;   // per squad member who can't be benched without leaving a position uncovered in-preference. A tie-break below per-position coverage too: a whole season's worth (12 players x 60 games) stays under the smallest coverage step (30)
+const ROSTER_OFF_TIEBREAK_WEIGHT = 1e-6; // small enough that a whole season of penalties can't outweigh the smallest gain in missed-games evenness
 const MISSED_GAMES_WARNING_SPREAD = 2;  // Reports-tab warning threshold (max-min missed games)
 const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
@@ -39,7 +41,7 @@ const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:
    inside the narrow band (~0.002-0.02) where fairness and coverage actually
    trade off — above it coverage wins every conflict, which is why this is a
    three-way choice and not a 0-10 slider. */
-const ROSTER_OFF_COVERAGE_WEIGHT = Object.freeze({ fairness:1e-6, balanced:0.006, coverage:PHASE1_COVERAGE_WEIGHT });
+const ROSTER_OFF_COVERAGE_WEIGHT = Object.freeze({ fairness:ROSTER_OFF_TIEBREAK_WEIGHT, balanced:0.006, coverage:PHASE1_COVERAGE_WEIGHT });
 const ROSTER_OFF_PRIORITIES = Object.keys(ROSTER_OFF_COVERAGE_WEIGHT);
 const PHASE1_RESTART_SEED = 0xC0FFEE;   // fixed -> deterministic, reproducible restarts (no Math.random)
 const STRICT_SPECIALIST_COVERAGE_BOOST = 3; // §5.5: multiplies a game's own coverage weight when its strictSpecialistPairing flag is on
@@ -107,6 +109,36 @@ function gameCoveragePenalty(squadAfterOff){
   return penalty;
 }
 
+/* True if `players` can fill all seven positions in-preference, one player
+   each (Kuhn's augmenting-path matching — seven positions, a dozen players). */
+function canFieldInPreference(players){
+  const holder = {}; // position -> index of the player matched to it
+  function place(i, seen){
+    return POSITIONS.some(pos=>{
+      if(seen[pos] || !isInPreference(players[i],pos)) return false; // a squad here may include fill-ins
+      seen[pos] = true;
+      if(holder[pos]===undefined || place(holder[pos], seen)){ holder[pos]=i; return true; }
+      return false;
+    });
+  }
+  let filled = 0;
+  for(let i=0; i<players.length && filled<POSITIONS.length; i++) if(place(i, {})) filled++;
+  return filled===POSITIONS.length;
+}
+
+/* How many of a squad can't sit out a quarter without leaving a position
+   uncovered in-preference. The per-position penalty above can't see this:
+   two defenders left for GK and GD is "two coverers each", yet both must
+   play every quarter, so the bench stints fall on everyone else. A squad
+   that can't field in-preference at all counts as everyone forced (the worst
+   score — three positions shared by the same two players passes every
+   per-position check); one of seven or fewer has no bench to rotate, so 0. */
+function forcedOnCourtCount(squad){
+  if(!canFieldInPreference(squad)) return squad.length;
+  if(squad.length<=POSITIONS.length) return 0;
+  return squad.filter(p=>!canFieldInPreference(squad.filter(x=>x!==p))).length;
+}
+
 /* True if removing `offPlayers` from `pool` leaves any position with zero
    in-preference coverage. The hard version of the penalty above — when
    "allow off-preference" is off, Phase 1 must never produce this, since
@@ -139,7 +171,8 @@ function derivePreferenceWeights(preferenceSlider){
    PHASE 1 — season-wide roster-off allocation
    ============================================================
    input.players: [{id, prefs, unavailableCount}]  (season-total known unavailability)
-   input.games:   [{num, availableIds:[id...], rosterOffCount, fixedOffIds:[id...]|null, allowOffPreference?:boolean}]
+   input.games:   [{num, availableIds:[id...], rosterOffCount, fixedOffIds:[id...]|null, allowOffPreference?:boolean,
+                    fillIns?:[{prefs}] (assigned guests — only the bench-flexibility tie-break looks at them)}]
                   fixedOffIds !== null means this game's roster-off is not decided here
                   (played / shortfall / manually locked) — it still counts toward fairness.
    input.weights: {fairness, coverage} (optional overrides)
@@ -186,31 +219,37 @@ function solveSeasonRosterOff(input){
     if(!g.strictSpecialistPairing) return coverageWeight;
     return Math.max(coverageWeight*STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT);
   }
-  // Each game's available players (invariant for the whole solve) and its
-  // memoised coverage term per roster-off choice.
+  /* One roster-off outcome's coverage cost. Bench flexibility is a tie-break
+     at every priority: it never costs missed-games evenness or per-position
+     coverage, it only picks between splits that are level on both. */
   const COVERAGE_CACHE_MAX_PER_GAME = 5000; // bounds memory on a long solve; a cleared entry is just recomputed
-  const poolByNum = {}, coverageTermCache = {};
-  games.forEach(g=>{
-    poolByNum[g.num] = g.availableIds.map(id=>playerById[id]).filter(Boolean);
-    coverageTermCache[g.num] = new Map();
-  });
+  const coverageTermCache = {};
+  function coverageTermOf(g, offIds){
+    // Restarts and moves re-score the same choices constantly; the squad is only built on a miss.
+    const cache = coverageTermCache[g.num] || (coverageTermCache[g.num] = new Map());
+    const key = offIds.slice().sort().join(",");
+    let term = cache.get(key);
+    if(term===undefined){
+      const offSet = new Set(offIds);
+      const squadAfter = poolByNum[g.num].filter(p=>!offSet.has(p.id));
+      term = effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
+      // Only where there's a choice to break a tie in; the game's fill-ins (§6) rotate through the bench too.
+      if(g.fixedOffIds==null) term += ROSTER_OFF_TIEBREAK_WEIGHT*FORCED_ON_COURT_PENALTY*forcedOnCourtCount(squadAfter.concat(g.fillIns||[]));
+      if(cache.size>=COVERAGE_CACHE_MAX_PER_GAME) cache.clear();
+      cache.set(key, term);
+    }
+    return term;
+  }
+  // Each game's available players (invariant for the whole solve).
+  const poolByNum = {};
+  games.forEach(g=>{ poolByNum[g.num] = g.availableIds.map(id=>playerById[id]).filter(Boolean); });
   function totalObjectiveOf(current){
     const missed = totalMissedMapOf(current);
     const fairnessTerm = fairnessWeight*variance(Object.values(missed));
     let coverageTerm = 0;
     games.forEach(g=>{
       const offIds = g.fixedOffIds!=null ? g.fixedOffIds : (current[g.num]||[]);
-      // A move touches one or two games; the rest hit the cache. Summed in
-      // the same game order, so the float total is unchanged.
-      const key = JSON.stringify(offIds);
-      let term = coverageTermCache[g.num].get(key);
-      if(term===undefined){
-        const offSet = new Set(offIds);
-        term = effectiveCoverageWeight(g)*gameCoveragePenalty(poolByNum[g.num].filter(p=>!offSet.has(p.id)));
-        if(coverageTermCache[g.num].size>=COVERAGE_CACHE_MAX_PER_GAME) coverageTermCache[g.num].clear();
-        coverageTermCache[g.num].set(key, term);
-      }
-      coverageTerm += term;
+      coverageTerm += coverageTermOf(g, offIds); // a move touches one or two games; the rest hit the cache
     });
     return fairnessTerm + coverageTerm;
   }
@@ -230,7 +269,7 @@ function solveSeasonRosterOff(input){
         remaining.forEach(cand=>{
           const missed = runningMissed[cand.id]||0;
           const squadAfter = pool.filter(pp=>pp.id!==cand.id && !picked.some(x=>x.id===pp.id));
-          const score = missed*1000 + effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter);
+          const score = missed*1000 + coverageTermOf(g, picked.map(x=>x.id).concat(cand.id));
           if(score<bestSafeScore){ bestSafeScore=score; bestSafe=cand; }
           const disqualified = !allowOffFor(g) && hasZeroCoverage(squadAfter);
           if(!disqualified && score<bestScore){ bestScore=score; best=cand; }
@@ -637,13 +676,16 @@ function solveQuarterPositions(input){
 /* ============================================================
    PHASE 2b — within-game local-search refinement
    ============================================================
-   Confined to one game's own quarters. Each quarter's season-level signals
-   (position counts, bench quota/cap) come from the *fixed* cumulative
-   snapshot taken at the start of that quarter in the Phase 2a forward pass;
-   the within-game ones (bench stints so far this game, benched last quarter)
-   are re-derived from the candidate lineup itself, so a swap that would bench
-   someone past their cap is priced as exactly that. A swap is scored on the
-   whole game's cost, since moving a bench stint changes later quarters' too.
+   Confined to one game's own quarters: players trade slots within a quarter
+   (one quarter at a time, or the same pair in two quarters at once). Each
+   quarter's season-level signals (position counts, bench quota/cap) come from
+   the *fixed* cumulative snapshot taken at the start of that quarter in the
+   Phase 2a forward pass — except what this game itself adds (bench stints so
+   far, benched last quarter, positions played in its earlier quarters), which
+   is re-derived from the candidate lineup, so a trade that would bench
+   someone past their cap, or repeat a position, is priced as exactly that. A
+   trade is scored on the whole game's cost, since moving a bench stint
+   changes later quarters' too.
    input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
             cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
             settings, timeBudgetMs }
@@ -667,65 +709,94 @@ function refineGameQuarters(input){
   const qs = input.quarters.map(toAssign);
   const nQ = qs.length;
 
+  const isBenchKey = k=>k.charAt(0)==="B";
   function isLocked(qi,key){
-    if(key.charAt(0)==="B") return false;
+    if(isBenchKey(key)) return false;
     const locks = lockedSlotsPerQuarter[qi]||{};
     return !!locks[key];
   }
+  // One cost-function pair per quarter, built once: the within-game fields
+  // of each quarter's cumulative are re-pointed as gameCost() walks the game.
+  const liveCums = qs.map((_,qi)=>Object.assign({}, cumulativeSnapshots[qi]));
+  const costFns = liveCums.map(cum=>buildQuarterCostFns(cum, settings));
+  const posCountBeforeGame = (cumulativeSnapshots[0]||{}).posCount||{};
   function gameCost(){
     const gameBenchSoFar = {};
+    const posCount = Object.assign({}, posCountBeforeGame);
     let benchedLastQuarter = new Set();
     let total = 0;
     for(let qi=0; qi<nQ; qi++){
-      const cumulative = Object.assign({}, cumulativeSnapshots[qi], {gameBenchSoFar, benchedLastQuarter});
-      const { positionCellCost, benchCellCost } = buildQuarterCostFns(cumulative, settings);
-      const bench = [];
+      liveCums[qi].gameBenchSoFar = gameBenchSoFar;
+      liveCums[qi].benchedLastQuarter = benchedLastQuarter;
+      liveCums[qi].posCount = posCount;
+      const { positionCellCost, benchCellCost } = costFns[qi];
+      const bench = [], played = [];
       Object.keys(qs[qi]).forEach(key=>{
         const pid = qs[qi][key]; if(!pid) return;
-        const isBench = key.charAt(0)==="B";
+        const isBench = isBenchKey(key);
         if(isBench) bench.push(pid);
         const p = playerById[pid]; if(!p) return;
         total += isBench ? benchCellCost(p) : positionCellCost(p,key);
+        if(!isBench && !p.isFillIn) played.push(pid+"::"+key); // fill-ins stay out of season counts
       });
+      played.forEach(k=>{ posCount[k] = (posCount[k]||0)+1; }); // after the quarter is priced, as Phase 2a saw it
       bench.forEach(pid=>{ gameBenchSoFar[pid] = (gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(bench);
     }
     return total;
   }
-  function swap(qi,keyA,qj,keyB){
-    const tmp = qs[qi][keyA];
-    qs[qi][keyA] = qs[qj][keyB];
-    qs[qj][keyB] = tmp;
+  // Two players trade slots within one quarter — the only move that keeps
+  // everyone in exactly one slot per quarter. (Trading slots *between*
+  // quarters would put a player in two slots of the same quarter whenever the
+  // whole squad appears in each, i.e. always.)
+  function trade(qi,keyA,keyB){
+    const tmp = qs[qi][keyA]; qs[qi][keyA] = qs[qi][keyB]; qs[qi][keyB] = tmp;
   }
-  // A cross-quarter swap is only valid if it doesn't leave the same player
-  // occupying two slots within one quarter (e.g. swapping a player into qi
-  // who already appears elsewhere in qi under a different key).
-  function wouldDuplicate(qi,excludeKey,incomingPlayerId){
-    if(!incomingPlayerId) return false;
-    return Object.keys(qs[qi]).some(k=>k!==excludeKey && qs[qi][k]===incomingPlayerId);
-  }
+  const bothBench = (a,b)=>isBenchKey(a) && isBenchKey(b); // trading two bench seats changes nothing
+  const freeKeys = qi=>Object.keys(qs[qi]).filter(k=>!isLocked(qi,k));
+  const keyOf = (qi,pid)=>Object.keys(qs[qi]).find(k=>qs[qi][k]===pid);
 
   let swaps = 0;
   let improved = true;
   let best = gameCost();
+  const keep = ()=>{
+    const after = gameCost();
+    if(after < best-1e-9){ best = after; improved = true; swaps++; return true; }
+    return false;
+  };
   outer:
   while(improved){
     improved = false;
+    // Move 1: one trade in one quarter. Each quarter was solved exactly given
+    // the quarters before it, but not the ones after — hindsight can still
+    // move a bench stint to a better quarter or player.
+    for(let qi=0; qi<nQ; qi++){
+      if(Date.now()-start>timeBudgetMs) break outer;
+      const keys = freeKeys(qi);
+      for(let a=0; a<keys.length; a++){
+        if(Date.now()-start>timeBudgetMs) break outer;
+        for(let b=a+1; b<keys.length; b++){
+          if(bothBench(keys[a],keys[b])) continue;
+          trade(qi,keys[a],keys[b]);
+          if(!keep()) trade(qi,keys[a],keys[b]);
+        }
+      }
+    }
+    // Move 2: the same two players trade slots in two quarters at once, so
+    // each keeps their bench count — reaches lineups where either trade alone
+    // would look like a bench-fairness loss.
     for(let qi=0; qi<nQ; qi++){
       for(let qj=qi+1; qj<nQ; qj++){
         if(Date.now()-start>timeBudgetMs) break outer;
-        const keysA = Object.keys(qs[qi]).filter(k=>!isLocked(qi,k));
-        const keysB = Object.keys(qs[qj]).filter(k=>!isLocked(qj,k));
-        for(const keyA of keysA){
-          for(const keyB of keysB){
-            const playerA = qs[qi][keyA], playerB = qs[qj][keyB];
-            if(playerA===playerB) continue;
-            if(wouldDuplicate(qi,keyA,playerB)) continue;
-            if(wouldDuplicate(qj,keyB,playerA)) continue;
-            swap(qi,keyA,qj,keyB);
-            const after = gameCost();
-            if(after < best-1e-9){ best = after; improved = true; swaps++; }
-            else { swap(qi,keyA,qj,keyB); } // revert (map-swap is its own inverse)
+        const keysI = freeKeys(qi);
+        for(let a=0; a<keysI.length; a++){
+          if(Date.now()-start>timeBudgetMs) break outer;
+          for(let b=a+1; b<keysI.length; b++){
+            const keyAj = keyOf(qj, qs[qi][keysI[a]]), keyBj = keyOf(qj, qs[qi][keysI[b]]);
+            if(!keyAj || !keyBj || isLocked(qj,keyAj) || isLocked(qj,keyBj)) continue;
+            if(bothBench(keysI[a],keysI[b]) || bothBench(keyAj,keyBj)) continue; // one half is a no-op: that's just Move 1
+            trade(qi,keysI[a],keysI[b]); trade(qj,keyAj,keyBj);
+            if(!keep()){ trade(qi,keysI[a],keysI[b]); trade(qj,keyAj,keyBj); }
           }
         }
       }
@@ -736,7 +807,7 @@ function refineGameQuarters(input){
     const onCourt = {}; const bench = []; const offPreference = {};
     Object.keys(assign).forEach(key=>{
       const pid = assign[key];
-      if(key.charAt(0)==="B") bench.push(pid);
+      if(isBenchKey(key)) bench.push(pid);
       else {
         onCourt[key]=pid;
         const p = playerById[pid];
@@ -772,7 +843,7 @@ const RosterSolver = {
   CONSTANTS: {
     PHASE1_FAIRNESS_WEIGHT, PHASE1_COVERAGE_WEIGHT, PHASE1_TIME_BUDGET_MS, PHASE1_MAX_PASSES,
     PHASE1_RESTART_SEED, PHASE1_STAGNANT_ATTEMPTS_LIMIT,
-    COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY,
+    COVERAGE_GAP_ZERO_PENALTY, COVERAGE_GAP_ONE_PENALTY, FORCED_ON_COURT_PENALTY, ROSTER_OFF_TIEBREAK_WEIGHT,
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
     COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
@@ -782,6 +853,7 @@ const RosterSolver = {
   clampSetting,
   isInPreference,
   gameCoveragePenalty,
+  forcedOnCourtCount,
   hasZeroCoverage,
   deriveRosterOffWeights,
   derivePreferenceWeights,

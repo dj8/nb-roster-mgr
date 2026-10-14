@@ -239,7 +239,8 @@ test("P2B-4: a forced very low Phase 2b time budget stops promptly and returns a
   const emptyCum = ()=>({posCount:{},onCourt:{},bench:{},gameBenchSoFar:{},benchedLastQuarter:new Set()});
   const quarters = [0,1,2,3].map(qi=>{
     const onCourt = {}; engine.POSITIONS.forEach((pos,i)=>{ onCourt[pos] = players[(i+qi)%players.length].id; });
-    const bench = players.slice(7).map(p=>p.id);
+    const onIds = new Set(Object.values(onCourt));
+    const bench = players.filter(p=>!onIds.has(p.id)).map(p=>p.id); // everyone in exactly one slot, as runGeneration always hands over
     return { onCourt, bench, offPreference:{} };
   });
   const start = Date.now();
@@ -253,6 +254,62 @@ test("P2B-4: a forced very low Phase 2b time budget stops promptly and returns a
   result.quarters.forEach(q=>{
     const ids = engine.POSITIONS.map(pos=>q.onCourt[pos]).filter(Boolean);
     assert.strictEqual(new Set(ids).size, ids.length, "no quarter should contain a duplicate player, even when refinement is cut short");
+  });
+});
+
+test("P2B-5: refinement actually moves players — a second bench stint it can see in hindsight is traded away", ()=>{
+  // Regression: every candidate move used to be a cross-quarter slot swap,
+  // which always put one player in two slots of a quarter and was rejected —
+  // so Phase 2b never changed anything.
+  const engine = freshEngine();
+  const S = engine.RosterSolver;
+  const players = Array.from({length:8},(_,i)=>({id:"p"+i, prefs: engine.POSITIONS.slice()}));
+  const settings = {preferenceSlider:5, allowOffPreference:false, positionVariety:0};
+  const cum = ()=>({posCount:{}, benchQuota:{}, benchCap:{}});
+  // p7 sits all four quarters; everyone else plays the same position throughout.
+  const quarters = [0,1,2,3].map(()=>{
+    const onCourt = {}; engine.POSITIONS.forEach((pos,i)=>{ onCourt[pos] = "p"+i; });
+    return { onCourt, bench:["p7"], offPreference:{} };
+  });
+  const result = S.refineGameQuarters({ quarters, squadPool: players, cumulativeSnapshots:[0,1,2,3].map(cum), lockedSlotsPerQuarter:[{},{},{},{}], settings });
+  assert.ok(result.stats.swaps>0, "refinement should have made at least one trade");
+  const stints = {};
+  result.quarters.forEach(q=>{
+    q.bench.forEach(id=>{ stints[id]=(stints[id]||0)+1; });
+    const ids = Object.values(q.onCourt).concat(q.bench);
+    assert.strictEqual(new Set(ids).size, 8, "everyone still in exactly one slot each quarter");
+  });
+  assert.ok(Object.values(stints).every(n=>n===1), "four bench stints should end up with four different players: "+JSON.stringify(stints));
+
+  // Position variety is priced from the lineup being scored, not the Phase 2a snapshots:
+  // with variety on and court-time pressure off, one player parked at their #1 all game rotates.
+  const two = [{id:"x", prefs:["GS","GA"]}, {id:"y", prefs:["GA","GS"]}].concat(["WA","C","WD","GD","GK"].map(pos=>({id:pos, prefs:[pos]})));
+  const fixed = [0,1,2,3].map(()=>({ onCourt:{GS:"x",GA:"y",WA:"WA",C:"C",WD:"WD",GD:"GD",GK:"GK"}, bench:[], offPreference:{} }));
+  const varied = S.refineGameQuarters({ quarters:fixed, squadPool:two, cumulativeSnapshots:[0,1,2,3].map(cum), lockedSlotsPerQuarter:[{},{},{},{}],
+    settings:{preferenceSlider:10, allowOffPreference:false, positionVariety:10} });
+  assert.ok(varied.quarters.some(q=>q.onCourt.GS==="y"), "with variety at 10, the two shooters should trade ends at least once");
+});
+
+test("P1-9 (FORCED-ON-COURT-1): Phase 1 prefers the roster-off that leaves the bench free to rotate, without giving up evenness", ()=>{
+  const engine = freshEngine();
+  const S = engine.RosterSolver;
+  const mk = (id,prefs)=>({id, prefs, unavailableCount:0});
+  // Three defenders share GK/GD (one to spare); the other six have none to spare between them.
+  const players = [mk("a",["GS","GA"]), mk("b",["GA","GS"]), mk("c",["WA","C","WD"]), mk("d",["C","WA","WD"]), mk("e",["WD","WA","C"]), mk("f",["GS","GA","WA"]),
+    mk("d1",["GK","GD"]), mk("d2",["GD","GK"]), mk("d3",["GK","GD"])];
+  const squad = ids=>players.filter(p=>ids.includes(p.id));
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","a","b","c","d","e","f"])), 2, "two defenders left for GK and GD: neither can sit");
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","d3","a","b","c","d","e"])), 5, "without the swing player, both shooters and all three mid-courters must stay on");
+  assert.strictEqual(S.forcedOnCourtCount(players), 0);
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","a","b","c","d","e"])), 0, "a squad of seven has no bench to rotate");
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","d3","a","b","c","d"]).concat([mk("s3",["GS","GA"])])), 8, "a squad that can't field in-preference at all (two mid-courters, three mid-court positions) is the worst score, not the best");
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","a","b","c","d","e","f"]).concat([{id:"guest", prefs:[]}])), 0, "a no-preference fill-in can relieve anyone");
+  // Every choice leaves each position with 2+ coverers, so only bench flexibility separates them;
+  // "a", listed first, is the seed's pick when nothing does.
+  const games = [{num:1, availableIds:players.map(p=>p.id), rosterOffCount:1, fixedOffIds:null}];
+  ["fairness","balanced","coverage"].forEach(priority=>{
+    const r = S.solveSeasonRosterOff({players, games, weights:S.deriveRosterOffWeights(priority)});
+    assert.ok(["d1","d2","d3"].includes(r.rosterOffByGame[1][0]), `${priority}: should rest a defender (fewest players forced on), got ${r.rosterOffByGame[1][0]}`);
   });
 });
 
