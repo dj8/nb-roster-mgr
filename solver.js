@@ -625,7 +625,8 @@ function planGameBench(input){
    bench cell (so bench rotation emerges from the same optimization, not a
    separate pass): every player takes exactly one cell per quarter, so a
    per-player on-court cost would only be the same number with the sign
-   flipped. `settings.positionVariety` nudges a player away from an
+   flipped. (The one on-court cost of that kind is §4 rule 3a's Centre
+   fatigue, kept on the position side so the bench cell stays non-negative.) `settings.positionVariety` nudges a player away from an
    over-played position; it is capped below OFF_PREFERENCE_COST, which is the
    same for every player, so raising it can never make an off-preference
    cell cheaper than any in-preference one.
@@ -642,11 +643,12 @@ function buildQuarterCostFns(cumulative, settings){
   /* §4 rule 3a. 0 throughout at the default (4); finite, so it never disqualifies a cell. */
   const centreTarget = centreQuartersOf(settings);
   // One preference-rank step plus one quarter of court-time imbalance: so a Centre cost of 1 outweighs either
-  // alone, at any preference-slider value, while staying well under the per-game bench limit (capPenalty quarters).
+  // alone, at any preference-slider value, while staying under the per-game bench limit (capPenalty quarters —
+  // which the workload slider eases, to nothing at 10).
   const centreUnit = prefWeight + balanceWeight*COURT_TIME_WEIGHT;
   const centreOn = centreTarget<4;
   const restLoad = centreOn ? rawPositionLoads(settings) : null; // the coach's weights, not the slider's blend
-  // Read per call, not hoisted: refineGameQuarters re-points cumulative.centres after these functions are built.
+  // Read per call, not hoisted: makeGameScorer re-points cumulative.centres after these functions are built.
   function centreSoFarOf(p){
     let n = 0;
     for(const id of cumulative.centres||[]) if(id===p.id) n++;
@@ -803,8 +805,7 @@ function solveQuarterPositions(input){
    is re-derived from the candidate lineup, so a trade that would bench
    someone past their cap, or repeat a position, is priced as exactly that. A
    trade is scored on the whole game's cost, since moving a bench stint
-   changes later quarters' too. Below "no limit" on Centre quarters it also
-   tries the quarters in other orders (Move 0, §4 rule 3a). */
+   changes later quarters' too. */
 /* Every ordering of `items`, the given order first. */
 function permutationsOf(items){
   if(items.length<=1) return [items.slice()];
@@ -871,9 +872,9 @@ function makeGameScorer(squadPool, cumulativeSnapshots, settings){
    coach locks. A quarter with nobody to try is left to the solver (null).
    -> [[id|null x4]] */
 function centreSequences(squad, lockedSlotsPerQuarter){
-  const candidates = squad.map((p,i)=>({p,i})).filter(({p})=>isInPreference(p,"C"))
-    .sort((a,b)=>(a.p.prefs.indexOf("C")-b.p.prefs.indexOf("C")) || (a.i-b.i)) // no list (-1) sorts first: happy anywhere
-    .slice(0, CENTRE_PLAN_CANDIDATES).map(({p})=>p.id);
+  const candidates = squad.filter(p=>isInPreference(p,"C"))
+    .sort((a,b)=>a.prefs.indexOf("C")-b.prefs.indexOf("C")) // stable; no list (-1) sorts first: happy anywhere
+    .slice(0, CENTRE_PLAN_CANDIDATES).map(p=>p.id);
   const options = [0,1,2,3].map(q=>{
     const locks = lockedSlotsPerQuarter[q]||{};
     if(locks.C) return [locks.C];
@@ -884,12 +885,62 @@ function centreSequences(squad, lockedSlotsPerQuarter){
   return options.reduce((seqs,opts)=>seqs.flatMap(seq=>opts.map(id=>seq.concat([id]))), [[]]);
 }
 
-/* input: { quarters:[{onCourt,bench}], squadPool, cumulativeSnapshots, settings } -> number */
-function scoreGameQuarters(input){
-  return makeGameScorer(input.squadPool||[], input.cumulativeSnapshots||[], input.settings||{})(input.quarters.map(quarterToAssign));
+/* Phase 2a for one game: the four quarters solved in order, each seeing what
+   the ones before it did (its own bench stints, positions and Centres).
+   input: { squad:[{id,prefs,isFillIn}], benchSlotCount, lockedSlotsPerQuarter:[{pos:id}],
+            seasonCum:{posCount, benchQuota, benchCap}, settings }
+   -> { quarters:[{onCourt,bench,offPreference}], failingQuarters:[{quarter, positions}] } */
+function solveGameForward(input){
+  const squad = input.squad, seasonCum = input.seasonCum;
+  const posCount = Object.assign({}, seasonCum.posCount); // the season's counts plus this game's quarters so far (regulars only)
+  const gameBenchSoFar = {}, centres = []; // game-local, so fill-ins count here too
+  const isFillIn = {}; squad.forEach(p=>{ isFillIn[p.id] = !!p.isFillIn; });
+  let benchedLastQuarter = new Set();
+  const quarters = [], failingQuarters = []; // every quarter with an unfillable position, not just the last one
+  for(let q=0;q<4;q++){
+    const result = solveQuarterPositions({
+      players: squad, benchSlotCount: input.benchSlotCount, lockedSlots: input.lockedSlotsPerQuarter[q]||{}, settings: input.settings,
+      cumulative: { posCount, gameBenchSoFar, benchedLastQuarter, centres, benchQuota: seasonCum.benchQuota, benchCap: seasonCum.benchCap }
+    });
+    // A null position is a defensive SLOT_MISMATCH (caller-contract bug), not a real unfillable position.
+    if(result.errors.length) failingQuarters.push({quarter:q+1, positions:result.errors.map(e=>e.position||"an internal slot-count mismatch")});
+    POSITIONS.forEach(pos=>{ const pid = result.onCourt[pos]; if(pid && !isFillIn[pid]) posCount[pid+"::"+pos] = (posCount[pid+"::"+pos]||0)+1; });
+    result.bench.forEach(pid=>{ gameBenchSoFar[pid] = (gameBenchSoFar[pid]||0)+1; });
+    benchedLastQuarter = new Set(result.bench);
+    centres.push(result.onCourt.C);
+    quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
+  }
+  return {quarters, failingQuarters};
 }
 
-/* input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
+/* Phase 2 for one game: the forward pass (2a), then — below "no limit" on
+   Centre quarters (§4 rule 3a) — the forward pass again with each
+   centreSequences() order pinned, keeping the cheapest game, then 2b.
+   input: as solveGameForward -> { quarters, failingQuarters } (quarters unrefined when any fail) */
+function solveGame(input){
+  const first = solveGameForward(input);
+  if(first.failingQuarters.length) return first;
+  const locks = input.lockedSlotsPerQuarter;
+  const snapshots = [0,1,2,3].map(()=>input.seasonCum); // the scorer reads only the season-level fields
+  let quarters = first.quarters;
+  if(centreQuartersOf(input.settings)<4){
+    const score = makeGameScorer(input.squad, snapshots, input.settings);
+    const scoreOf = qs=>score(qs.map(quarterToAssign));
+    let bestScore = scoreOf(quarters);
+    centreSequences(input.squad, locks).forEach(seq=>{
+      if(seq.every((id,q)=>!id || id===first.quarters[q].onCourt.C)) return; // pins what the first pass already chose
+      const tried = solveGameForward(Object.assign({}, input, {lockedSlotsPerQuarter: locks.map((l,q)=>seq[q] ? Object.assign({}, l, {C:seq[q]}) : l)}));
+      if(tried.failingQuarters.length) return;
+      const s = scoreOf(tried.quarters);
+      if(s < bestScore-1e-9){ bestScore = s; quarters = tried.quarters; }
+    });
+  }
+  const refined = refineGameQuarters({quarters, squadPool:input.squad, cumulativeSnapshots:snapshots, lockedSlotsPerQuarter:locks, settings:input.settings});
+  return {quarters: refined.quarters, failingQuarters: []};
+}
+
+/* Below "no limit" on Centre quarters it also tries the quarters in other orders (Move 0, §4 rule 3a).
+   input: { quarters:[{onCourt,bench,offPreference}], squadPool:[{id,prefs}],
             cumulativeSnapshots:[cum0,cum1,cum2,cum3], lockedSlotsPerQuarter:[{pos:id}],
             settings, timeBudgetMs }
    -> { quarters, stats:{swaps, elapsedMs} } */
@@ -928,12 +979,13 @@ function refineGameQuarters(input){
   let best = gameCost();
   const keep = ()=>{
     const after = gameCost();
-    if(after < best-1e-9){ best = after; improved = true; swaps++; return true; }
+    if(after < best-1e-9){ best = after; improved = true; swaps++; reorderStale = true; return true; }
     return false;
   };
   // Quarters with no coach lock can be played in any order between themselves (Move 0).
   const movable = qs.map((_,qi)=>qi).filter(qi=>!Object.keys(lockedSlotsPerQuarter[qi]||{}).length);
   const reorders = centreQuartersOf(settings)<4 ? permutationsOf(movable).slice(1) : []; // [0] is the current order
+  let reorderStale = true; // false while nothing has changed since Move 0 last picked the best order
   outer:
   while(improved){
     improved = false;
@@ -941,7 +993,8 @@ function refineGameQuarters(input){
     // order. Everyone keeps every slot, so only what depends on order changes —
     // back-to-back Centre (and bench) quarters, and where a Centre rests. Pair
     // trades can't reach this: it moves every player at once.
-    if(reorders.length){
+    if(reorders.length && reorderStale){
+      reorderStale = false;
       const current = qs.slice();
       let bestOrder = null;
       reorders.forEach(perm=>{
@@ -1055,8 +1108,12 @@ const RosterSolver = {
   buildQuarterCostFns,
   solveQuarterPositions,
   refineGameQuarters,
-  scoreGameQuarters,
+  solveGameForward,
+  solveGame,
+  makeGameScorer,
+  quarterToAssign,
   centreSequences,
+  permutationsOf,
   computeMissedGamesWarning,
   computeRosterOffAchievabilityNotes
 };

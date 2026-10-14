@@ -20,7 +20,9 @@ the results back onto `STATE.games[...]`.
 | `solveSeasonRosterOff(input)` | `{players:[{id,prefs,unavailableCount}], games:[{num,availableIds,rosterOffCount,fixedOffIds,strictSpecialistPairing,allowOffPreference?}], weights:{fairness,coverage}, allowOffPreference, timeBudgetMs}` | `{rosterOffByGame:{num:[ids]}, stats:{passes,elapsedMs,finalCost,timedOut,attempts}}` | Phase 1. See below for the search itself. |
 | `solveQuarterPositions(input)` | `{players:[{id,name,prefs,isFillIn}], benchSlotCount, lockedSlots:{pos:id}, cumulative, settings}` | `{onCourt:{pos:id}, bench:[ids], offPreference:{pos:true}, errors:[{position,reason}]}` | Phase 2a, one quarter. Builds a cost matrix and calls `Hungarian.solve`. |
 | `refineGameQuarters(input)` | `{quarters, squadPool, cumulativeSnapshots, lockedSlotsPerQuarter, settings, timeBudgetMs}` | `{quarters, stats:{swaps,elapsedMs}}` | Phase 2b, one game's 4 quarters together. |
-| `scoreGameQuarters(input)` | `{quarters, squadPool, cumulativeSnapshots, settings}` | number | The whole-game cost Phase 2b minimises (`makeGameScorer`), for comparing candidate games. |
+| `solveGameForward(input)` | `{squad, benchSlotCount, lockedSlotsPerQuarter, seasonCum:{posCount,benchQuota,benchCap}, settings}` | `{quarters, failingQuarters}` | Phase 2a for one game: `solveQuarterPositions` four times in order, carrying the game's own bench stints, positions (regulars only, into a copy of `posCount`) and Centres. |
+| `solveGame(input)` | as `solveGameForward` | `{quarters, failingQuarters}` | One game end to end: the forward pass; below `centreQuarters` 4, the forward pass again for each `centreSequences` order (skipping ones that pin what the first pass chose), keeping the lowest `makeGameScorer` cost; then `refineGameQuarters`. Quarters come back unrefined when any fail. |
+| `makeGameScorer(squad, snapshots, settings)` | — | `(slot maps per quarter) => number` | The whole-game cost Phase 2b minimises; reads only the snapshots' season-level fields, so one scorer prices any lineup for the game (`quarterToAssign` turns a quarter into a slot map). |
 | `centreSequences(squad, lockedSlotsPerQuarter)` | squad + per-quarter coach locks | `[[id\|null ×4]]` | §4 rule 3a: every Centre order to try for a game — each quarter's Centre from the (at most `CENTRE_PLAN_CANDIDATES` = 4) squad members who rank Centre highest, coach locks kept, `null` where nobody can be tried. |
 | `buildQuarterCostFns(cumulative, settings)` | cumulative snapshot + settings | `{positionCellCost(p,pos), benchCellCost(p), centreCost(p,pos)}` | The cost model, exposed directly — used by both 2a and 2b so they score identically. `cumulative` also carries `centres:[id]`, who played Centre in each earlier quarter of this game (the count and the current run are derived from it). `centreCost` is the §4 rule 3a term (0 at `centreQuarters` 4), folded into `positionCellCost` after the `BIG_M` check; below 4, a player who was Centre last quarter also has their listed non-Centre positions ranked by raw workload (`rawPositionLoads`) instead of by their own order. |
 | `centreQuartersOf(settings)` | settings | integer 1–4 | The Centre-quarters target: rounded, clamped, 4 when absent or not a number. |
@@ -156,8 +158,6 @@ Locked slots (`lockedSlotsPerQuarter`) are never touched, and a quarter holding 
 Everything here is called from `app.js`'s engine layer — see [`engine.md`](engine.md):
 
 - `computeSeasonRosterOff()` → `solveSeasonRosterOff()`
-- `runGeneration()` → `solveQuarterPositions()` (once per quarter) then
-  `refineGameQuarters()` (once per game); below `centreQuarters` 4 it first re-runs the forward pass once per
-  `centreSequences()` entry and keeps the lowest `scoreGameQuarters()`
+- `runGeneration()` → `solveGame()` (once per game: `solveGameForward()` → `solveQuarterPositions()` per quarter, the Centre-order search, then `refineGameQuarters()`)
 - `computeMissedGamesWarningForReports()` → `computeMissedGamesWarning()`
 - `computeRosterOffAchievabilityNotesForReports()` → `computeRosterOffAchievabilityNotes()`

@@ -2398,12 +2398,12 @@ test("CQ-13: below no limit, Phase 2b also tries every order of the unlocked qua
     return {onCourt:{GS:"GS1",GA:"GA1",WA:"WA1",WD:"WD1",GD:"GD1",GK:"GK1",C:c}, bench:bench.concat(rest).slice(0,2)}; };
   const quarters = [q("C1",["C2","C3"]), q("C1",["C2","C3"]), q("C2",["C1","C3"]), q("C2",["C1","C3"])];
   const input = locks=>({quarters, squadPool:players, cumulativeSnapshots:[snap,snap,snap,snap], lockedSlotsPerQuarter:locks, settings});
-  const score = qs=>S.scoreGameQuarters({quarters:qs, squadPool:players, cumulativeSnapshots:[snap,snap,snap,snap], settings});
+  const scorer = S.makeGameScorer(players, [snap,snap,snap,snap], settings);
+  const score = qs=>scorer(qs.map(S.quarterToAssign));
   const refined = S.refineGameQuarters(input([{},{},{},{}])).quarters;
   assert.deepStrictEqual(refined.map(x=>x.onCourt.C).filter((c,i,a)=>i && c===a[i-1]), [], "no back-to-back Centre left");
   // and nothing it returns can be beaten by just reordering its own quarters
-  const perms = []; (function P(a,r){ if(!r.length) perms.push(a); r.forEach((x,i)=>P(a.concat(x), r.filter((_,j)=>j!==i))); })([], [0,1,2,3]);
-  perms.forEach(p=>assert.ok(score(refined) <= score(p.map(i=>refined[i]))+1e-9));
+  S.permutationsOf([0,1,2,3]).forEach(p=>assert.ok(score(refined) <= score(p.map(i=>refined[i]))+1e-9));
   // a coach lock pins its quarter in place
   const locked = S.refineGameQuarters(input([{C:"C1"},{},{},{}])).quarters;
   assert.strictEqual(locked[0].onCourt.C, "C1");
@@ -2451,11 +2451,10 @@ test("CQ-16: the coach's test-data-v2 backup (preference slider 1, Centre target
     cs.forEach((c,i)=>{ if(i) assert.notStrictEqual(c, cs[i-1], `game ${n}: back-to-back Centre`); });
     const counts = {}; cs.forEach(c=>{ counts[c] = (counts[c]||0)+1; });
     Object.values(counts).forEach(k=>assert.ok(k<=2, `game ${n}: ${JSON.stringify(cs)}`));
-    const listers = g.squadIds.filter(id=>listsCentre(everyone.find(p=>p.id===id))).length;
+    const listers = g.squadIds.filter(id=>engine.RosterSolver.isInPreference(engine.byId(everyone,id), "C")).length;
     if(listers>=4 && Object.values(counts).some(k=>k>1)) overWithFourCentres++;
   });
   assert.ok(overWithFourCentres<=1, "with four Centres in the squad, target 1 is met (at most one game short)");
-  function listsCentre(p){ return engine.RosterSolver.isInPreference(p, "C"); }
 });
 
 /* ============================================================

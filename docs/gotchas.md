@@ -172,7 +172,7 @@ so a Centre played all four quarters with two other Centres in the squad. They s
 still plays all four quarters. The rest-quarter ranking replaces the preference rank, so it stays on `prefWeight`. The rest quarter is ordered by the coach's raw `positionLoad` (`rawPositionLoads`), not the
 slider-blended load, so the order never changes as the workload slider moves. Everything counts the game's earlier quarters
 only (`centres`: who played Centre in each earlier quarter), so Phase 2b's game total is what Phase 2a priced; it is game-local and includes fill-ins. The cost functions read `cumulative.centres` on every call, never once when built: `refineGameQuarters` re-points it after building them.
-Two searches exist only for this rule, both off at 4: `runGeneration` re-runs a game's forward pass for every
+Two searches exist only for this rule, both off at 4: `solveGame` re-runs a game's forward pass for every
 `centreSequences` entry (≤256), and Phase 2b's Move 0 reorders quarters. Both are needed because Phase 2a can't see ahead
 and pair trades can't move three or more players at once; they only find what the cost model already prefers. When a
 Centre still goes over the target, it is usually because the squad has too few Centres, or resting them would need someone
