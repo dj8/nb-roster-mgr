@@ -1550,9 +1550,9 @@ test("LOAD-5: playerLoadStats reads load from the season's position counts, and 
 test("LOAD-6: with missed games equal (nobody is ever rostered off) every workload step helps or at least doesn't hurt, through the top of the slider", ()=>{
   // Nine players, bench of two, every game: the per-game bench limit leaves almost no room to rest anyone
   // more than anyone else, so the slider only works up there because it relaxes that limit.
+  // (The same nine as `small9` in tests/settings-sweep.js, whose SET-7 check covers the slider across more rosters.)
   const NINE = [["Ana",["GS","GA","WA"]], ["Bex",["GA","GS"]], ["Cora",["WA","C","WD"]], ["Dot",["C","WA"]], ["Edie",["WD","GD","C"]],
     ["Fern",["GD","GK","WD"]], ["Gigi",["GK","GD"]], ["Hana",["GS","GK"]], ["Indi",["C","WD","GA"]]];
-  const sd = a=>{ const m=a.reduce((x,y)=>x+y,0)/a.length; return Math.sqrt(a.reduce((x,y)=>x+(y-m)*(y-m),0)/a.length); };
   const spreads = [], doubles = [];
   for(let loadBalance=0; loadBalance<=10; loadBalance++){
     const engine = freshEngine();
@@ -1562,8 +1562,10 @@ test("LOAD-6: with missed games equal (nobody is ever rostered off) every worklo
     engine.ensureGamesExist();
     st.settings.loadBalance = loadBalance;
     engine.runGeneration();
-    spreads.push(sd(engine.computePlayerSummaries().filter(s=>s.onCourt>0).map(s=>engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*DEFAULT_LOADS[pos],0))));
-    let twice = 0;
+    const loads = engine.computePlayerSummaries().filter(s=>s.onCourt>0)
+      .map(s=>engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*DEFAULT_LOADS[pos],0));
+    spreads.push(Math.sqrt(engine.RosterSolver.variance(loads)));
+    let twice = 0; // players benched twice or more in a game, summed over the season
     engine.gameNums().forEach(n=>{ const c={}; engine.getGame(n).schedule.quarters.forEach(q=>q.bench.forEach(id=>{ c[id]=(c[id]||0)+1; })); twice += Object.values(c).filter(v=>v>=2).length; });
     doubles.push(twice);
   }
