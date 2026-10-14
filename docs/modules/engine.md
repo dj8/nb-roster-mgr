@@ -74,7 +74,7 @@ what's actually in `STATE.games[...].schedule`.
 | `computeOffPrefLog()` | every off-preference fill across the whole season, via `buildOffPrefLog` |
 | `describeOffPrefReason(o)` | one readable sentence from a log entry — shared by the Reports table and the XLSX export so wording never drifts between them |
 | `computeOffPrefRate(log?)` | `{count, totalSlots, rate}` |
-| `computeCentreStats(target?)` | target 1–4 (default: the coach's setting) | `{backToBack, overPlayerGames, overGames}` | §4 rule 3a report numbers over every generated game and every player (fill-ins too): adjacent same-Centre quarter pairs, player-games and games with more than `target` Centre quarters. The sweep calls it with a fixed 2. |
+| `computeCentreStats(target?)` | target 1–4 (default: the coach's setting) | `{backToBack, overPlayerGames, overGames}` | §4 rule 3a report numbers over every generated game, regular players only (like the other headlines): adjacent same-Centre quarter pairs, player-games and games with more than `target` Centre quarters. The sweep calls it with a fixed 2. |
 | `computeSeasonHeadlines()` | `null` until something is generated, else `{workloadMin, workloadMax (season workload per player: quarters × the position weights as entered), offPrefPct, courtTimeMinPct, courtTimeMaxPct, firstChoicePct, positionsPerPlayer, missedSpread, thinPositions, centreBackToBack, centreOverGames}` — the numbers the Settings controls move, regular players only (Settings tab's at-a-glance card) |
 | `computeMissedGamesWarningForReports(summaries?)` | delegates to `RosterSolver.computeMissedGamesWarning` |
 | `computeRosterOffAchievabilityNotesForReports()` | delegates to `RosterSolver.computeRosterOffAchievabilityNotes` |

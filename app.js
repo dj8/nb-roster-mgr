@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 68; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 69; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -737,8 +737,8 @@ function computeOffPrefRate(log){
   return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
 }
 
-/* §4 rule 3a, over every generated game and every player (fill-ins too: it's welfare, not season fairness).
-   backToBack: adjacent quarters with the same Centre. overPlayerGames / overGames: player-games / games with a
+/* §4 rule 3a, over every generated game. Regular players only, like the other
+   Settings-tab headlines (the engine still rests fill-ins). backToBack: adjacent quarters with the same Centre. overPlayerGames / overGames: player-games / games with a
    player past `target` Centre quarters (default: the coach's setting). */
 function computeCentreStats(target){
   const limit = target==null ? RosterSolver.centreQuartersOf(STATE.settings) : target;
@@ -748,7 +748,7 @@ function computeCentreStats(target){
     if(!game.schedule) return;
     const counts = {};
     game.schedule.quarters.forEach((q,i)=>{
-      const c = q.onCourt.C; if(!c) return;
+      const c = q.onCourt.C; if(!c || isFillInId(c)) return;
       counts[c] = (counts[c]||0)+1;
       if(i>0 && game.schedule.quarters[i-1].onCourt.C===c) backToBack++;
     });
@@ -2056,12 +2056,15 @@ function syncRangeFill(input){
   input.style.setProperty("--range-pct", pct+"%");
 }
 
-function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel}){
+function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel, ticks}){
+  // ticks: optional labels, one per stop, each centred under its thumb position
+  const tickHtml = ticks ? `<div class="slider-ticks mono" aria-hidden="true">${ticks.map((t,i)=>
+    `<span style="--at:${i/(ticks.length-1)}">${esc(t)}</span>`).join("")}</div>` : "";
   return `
     <div class="slider-wrap">
       <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
       <span class="slider-val mono" id="${valueId}">${value}</span>
-    </div>
+    </div>${tickHtml}
     <div class="slider-endlabels"><span>${esc(leftLabel)}</span><span>${esc(rightLabel)}</span></div>
   `;
 }
@@ -2149,8 +2152,7 @@ function renderSettings(root){
       <div class="field">
         <label for="centreSlider">Centres play 1 quarter &#8596; no limit</label>
         ${labelledSliderHtml({id:"centreSlider", min:1, max:4, step:1, value:s.centreQuarters, valueId:"centreSliderVal",
-          leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters"})}
-        <div class="slider-ticks mono" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4 (no limit)</span></div>
+          leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters", ticks:["1","2","3","4 (no limit)"]})}
         <p class="hint">At 2, a Centre plays alternate quarters (Q1 &amp; Q3 or Q2 &amp; Q4). At 3, they get a break in Q2 or Q3. A rest quarter goes to the lightest position the player listed (by the workloads above), or the bench, which is likelier the more Centre they've played. It's a goal: with too few Centres in the squad someone plays more, but never off-preference, and it never changes who sits out how often.</p>
       </div>
     </div>
