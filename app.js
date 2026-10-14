@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 66; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 67; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -141,7 +141,9 @@ function sanitizeSettingsAndSeason(state){
   }
   state.settings.allowOffPreference = !!state.settings.allowOffPreference;
   fix(state.settings, "loadBalance", 0, 10, d.settings.loadBalance, "Workload balance");
-  const loads = state.settings.positionLoad;
+  let loads = state.settings.positionLoad;
+  const prev = RosterSolver.CONSTANTS.PREVIOUS_DEFAULT_POSITION_LOAD;
+  if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===prev[pos])) loads = undefined; // still the old shipped defaults, so take the new ones; any other table is the coach's own
   // Rebuilt key by key: drops anything that isn't a position, and never keeps a reference to the frozen default.
   state.settings.positionLoad = {};
   POSITIONS.forEach(pos=>{

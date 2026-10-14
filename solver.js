@@ -33,7 +33,8 @@ const PREFERENCE_RATIO_AT_0 = 0.5;     // preference:balance weight ratio at sli
 const PREFERENCE_RATIO_AT_9 = 16;       // ...and at slider 9; geometric in between, so each step multiplies the ratio by the same factor
 /* The season-wide settings' defaults — app.js's defaultState() and the
    fallbacks below both read this, so a retune can't leave them disagreeing. */
-const DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55 }); // how hard a quarter there is, relative to centre
+const DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.85, WA:0.7, C:1, WD:0.7, GD:0.85, GK:0.55 }); // how hard a quarter there is, relative to centre
+const PREVIOUS_DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55 }); // the shipped defaults before the GA/GD vs WA/WD swap: a save still holding exactly these is upgraded (app.js), anything else is the coach's own
 const POSITION_LOAD_MIN = 0.1, POSITION_LOAD_MAX = 2;
 const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness",
   loadBalance:0, positionLoad:DEFAULT_POSITION_LOAD }); // positionLoad is shared and frozen: copy it before handing it to anything that edits (app.js's defaultState does)
@@ -913,7 +914,7 @@ const RosterSolver = {
     COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
     ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS,
-    DEFAULT_POSITION_LOAD, POSITION_LOAD_MIN, POSITION_LOAD_MAX
+    DEFAULT_POSITION_LOAD, PREVIOUS_DEFAULT_POSITION_LOAD, POSITION_LOAD_MIN, POSITION_LOAD_MAX
   },
   variance,
   clampSetting,

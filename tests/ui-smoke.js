@@ -348,7 +348,7 @@ async function shot(page, name){
   const loads = (await savedState()).settings.positionLoad;
   check(loads.C===1.5 && loads.GK===2 && (await page.inputValue('[data-load="GK"]'))==="2", `position workloads save as numbers and clamp to the allowed range (C=${loads.C}, GK=${loads.GK})`);
   await page.fill('[data-load="WA"]', ""); await page.dispatchEvent('[data-load="WA"]', "change");
-  check((await savedState()).settings.positionLoad.WA===0.85, "an emptied workload box goes back to its default, not the minimum");
+  check((await savedState()).settings.positionLoad.WA===0.7, "an emptied workload box goes back to its default, not the minimum");
   await page.click("#loadReset");
   check((await savedState()).settings.positionLoad.C===1 && (await page.inputValue('[data-load="GK"]'))==="0.55", "Reset to defaults restores the position workloads");
   check(await page.isChecked(priorityRadio("fairness")), "roster-off priority defaults to even missed games");

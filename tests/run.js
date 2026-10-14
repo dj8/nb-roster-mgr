@@ -1488,16 +1488,16 @@ test("LOAD-1: position loads blend from equal quarters to the coach's weights, a
   S.POSITIONS.forEach(pos=>assert.strictEqual(off[pos], 1, "at 0 every quarter counts the same, whatever the weights"));
   const full = S.derivePositionLoads({loadBalance:10});
   assert.ok(Math.abs(sum(full)-7)<1e-9, "a full line-up is always worth seven quarters");
-  assert.ok(full.C>full.WA && full.WA===full.WD && full.WA>full.GA && full.GA===full.GD && full.GA>full.GS && full.GS===full.GK, JSON.stringify(full));
+  assert.ok(full.C>full.GA && full.GA===full.GD && full.GA>full.WA && full.WA===full.WD && full.WA>full.GS && full.GS===full.GK, JSON.stringify(full));
   assert.ok(Math.abs(full.C/full.GK - 1/0.55)<1e-9, "at 10 the ratios are exactly the weights'");
-  assert.deepStrictEqual(DEFAULT_LOADS, {GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55}, "the shipped defaults");
+  assert.deepStrictEqual(DEFAULT_LOADS, {GS:0.55, GA:0.85, WA:0.7, C:1, WD:0.7, GD:0.85, GK:0.55}, "the shipped defaults");
   const half = S.derivePositionLoads({loadBalance:5});
   assert.ok(Math.abs(half.C-(1+full.C)/2)<1e-9 && Math.abs(sum(half)-7)<1e-9, "linear in between");
   const junk = S.derivePositionLoads({loadBalance:"x", positionLoad:{C:"abc", GK:-5, WA:99}});
   assert.ok(S.POSITIONS.every(pos=>junk[pos]===1), "a non-numeric slider falls back to the default (0)");
   const clamped = S.derivePositionLoads({loadBalance:10, positionLoad:{GS:1,GA:1,WA:99,C:"abc",WD:1,GD:1,GK:-5}});
   assert.ok(clamped.WA/clamped.GS===2 && Math.abs(clamped.GK/clamped.GS-0.1)<1e-9 && clamped.C/clamped.GS===1, "weights are clamped to 0.1..2 and a non-number falls back to that position's default: "+JSON.stringify(clamped));
-  ["", null, false, [], "0.3", NaN].forEach(v=>assert.strictEqual(S.cleanPositionLoad(v,"WA"), 0.85, `${JSON.stringify(v)} is not a weight: the default, never the minimum`));
+  ["", null, false, [], "0.3", NaN].forEach(v=>assert.strictEqual(S.cleanPositionLoad(v,"WA"), 0.7, `${JSON.stringify(v)} is not a weight: the default, never the minimum`));
   assert.strictEqual(S.cleanPositionLoad(0, "WA"), 0.1);
 });
 
@@ -1621,6 +1621,25 @@ test("LOAD-4: the workload settings are sanitised, persisted in backups and surv
   // A default state must own its weights: editing one season's must not leak into the next.
   const a = freshEngine(); a._getState().settings.positionLoad.C = 0.2;
   assert.strictEqual(freshEngine()._getState().settings.positionLoad.C, 1);
+});
+
+test("LOAD-8: a save still holding the old default workloads gets the new ones; edited tables are kept", ()=>{
+  const OLD = {GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55};
+  const engine = freshEngine();
+  assert.deepStrictEqual({...engine.RosterSolver.CONSTANTS.PREVIOUS_DEFAULT_POSITION_LOAD}, OLD);
+  const st = engine._getState();
+  st.settings.positionLoad = {...OLD};
+  engine.saveState();
+  assert.deepStrictEqual({...engine.loadState().settings.positionLoad}, DEFAULT_LOADS, "old defaults migrate on load");
+  st.settings.positionLoad = {...OLD, C:1.2};
+  engine.saveState();
+  assert.deepStrictEqual({...engine.loadState().settings.positionLoad}, {...OLD, C:1.2}, "an edited table is the coach's own");
+  const text = (()=>{ st.settings.positionLoad = {...OLD}; engine.exportBackup(); return engine.CapturingBlob.last; })();
+  const fresh = freshEngine(); fresh.importBackup(text);
+  assert.deepStrictEqual({...fresh._getState().settings.positionLoad}, DEFAULT_LOADS, "old defaults migrate on import");
+  const edited = JSON.parse(text); edited.plan.settings.positionLoad.GK = 0.6;
+  fresh.importBackup(JSON.stringify(edited));
+  assert.strictEqual(fresh._getState().settings.positionLoad.GA, 0.7, "an edited table is kept on import");
 });
 
 test("COURT-EVEN-1: when missed games are even, nobody is benched more than once in a game", ()=>{
