@@ -25,6 +25,8 @@ function freshEngine(){
 }
 
 const ROSTER_OFF_PRIORITIES = freshEngine().RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES;
+const DEFAULT_LOADS = {...freshEngine().RosterSolver.CONSTANTS.DEFAULT_POSITION_LOAD};
+const WORKLOAD_DEFAULTS = {loadBalance:0, positionLoad:DEFAULT_LOADS};
 
 function addPlayer(engine, name, prefs, unavailable){
   const st = engine._getState();
@@ -697,7 +699,7 @@ test("FR-7: a player is benched in consecutive quarters only when squad size lea
 test("SETTINGS-DEFAULT-1: the four settings and their defaults (preference 8 - strongly favours preference)", ()=>{
   const engine = freshEngine();
   assert.deepStrictEqual(JSON.parse(JSON.stringify(engine._getState().settings)),
-    {preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+    {preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness", ...WORKLOAD_DEFAULTS});
 });
 
 /* ============================================================
@@ -992,7 +994,7 @@ test("BACKUP-ROUNDTRIP-1: the file is versioned, split into plan/results, and om
   assert.ok(!("schedule" in b.plan.games["1"]), "results must not leak into plan");
   assert.ok(!text.includes("weight_missed") && !text.includes("onCourt\":1"), "retired settings must not be exported");
   assert.ok(!("theme" in b) && !("theme" in b.plan), "device-only theme must not be exported");
-  assert.deepStrictEqual(Object.keys(b.plan.settings).sort(), ["allowOffPreference","positionVariety","preferenceSlider","rosterOffPriority"]);
+  assert.deepStrictEqual(Object.keys(b.plan.settings).sort(), ["allowOffPreference","loadBalance","positionLoad","positionVariety","preferenceSlider","rosterOffPriority"]);
 });
 
 test("BACKUP-ROUNDTRIP-2: a played game's rosteredOffIds and unavailableIds survive export/import as frozen facts", ()=>{
@@ -1472,11 +1474,153 @@ test("COURT-TARGET-1: season court targets are level, except for players who can
   // planGameBench: a regular behind on court time is due less bench; only those missing fewer games get the relaxed cap.
   const plan = S.planGameBench({
     squad:[{id:"a"},{id:"b"},{id:"g",isFillIn:true}].concat(["c","d","e","f","h","i"].map(id=>({id}))), benchSlotCount:2,
-    courtTargets:{a:28,b:28}, onCourtSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3,c:3,d:3,e:3,f:3,h:3,i:3,away:9}
+    courtTargets:{a:28,b:28},  loadSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3,c:3,d:3,e:3,f:3,h:3,i:3,away:9}
   });
   assert.ok(near(plan.benchQuota.a,0.5) && near(plan.benchQuota.b,0), JSON.stringify(plan.benchQuota));
   assert.ok(near(plan.benchQuota.g,8/9), "a fill-in is due an even share of this game's bench");
   assert.deepStrictEqual([plan.benchCap.a, plan.benchCap.b, plan.benchCap.g], [2,1,1]);
+});
+
+test("LOAD-1: position loads blend from equal quarters to the coach's weights, always averaging 1", ()=>{
+  const S = freshEngine().RosterSolver;
+  const sum = l=>S.POSITIONS.reduce((a,pos)=>a+l[pos],0);
+  const off = S.derivePositionLoads({loadBalance:0, positionLoad:{C:2}});
+  S.POSITIONS.forEach(pos=>assert.strictEqual(off[pos], 1, "at 0 every quarter counts the same, whatever the weights"));
+  const full = S.derivePositionLoads({loadBalance:10});
+  assert.ok(Math.abs(sum(full)-7)<1e-9, "a full line-up is always worth seven quarters");
+  assert.ok(full.C>full.WA && full.WA===full.WD && full.WA>full.GA && full.GA===full.GD && full.GA>full.GS && full.GS===full.GK, JSON.stringify(full));
+  assert.ok(Math.abs(full.C/full.GK - 1/0.55)<1e-9, "at 10 the ratios are exactly the weights'");
+  assert.deepStrictEqual(DEFAULT_LOADS, {GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55}, "the shipped defaults");
+  const half = S.derivePositionLoads({loadBalance:5});
+  assert.ok(Math.abs(half.C-(1+full.C)/2)<1e-9 && Math.abs(sum(half)-7)<1e-9, "linear in between");
+  const junk = S.derivePositionLoads({loadBalance:"x", positionLoad:{C:"abc", GK:-5, WA:99}});
+  assert.ok(S.POSITIONS.every(pos=>junk[pos]===1), "a non-numeric slider falls back to the default (0)");
+  const clamped = S.derivePositionLoads({loadBalance:10, positionLoad:{GS:1,GA:1,WA:99,C:"abc",WD:1,GD:1,GK:-5}});
+  assert.ok(clamped.WA/clamped.GS===2 && Math.abs(clamped.GK/clamped.GS-0.1)<1e-9 && clamped.C/clamped.GS===1, "weights are clamped to 0.1..2 and a non-number falls back to that position's default: "+JSON.stringify(clamped));
+  ["", null, false, [], "0.3", NaN].forEach(v=>assert.strictEqual(S.cleanPositionLoad(v,"WA"), 0.85, `${JSON.stringify(v)} is not a weight: the default, never the minimum`));
+  assert.strictEqual(S.cleanPositionLoad(0, "WA"), 0.1);
+});
+
+test("LOAD-2: toward equal workload, players in the heavy positions rest more and the season's workload spread narrows", ()=>{
+  function season(loadBalance){
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 10; st.season.desiredBenchSize = 2;
+    // Specialists: whoever plays centre can only get there by sitting out, not by moving.
+    [["C1",["C"]],["C2",["C"]],["WA1",["WA"]],["WA2",["WA"]],["WD1",["WD"]],["GA1",["GA"]],["GD1",["GD"]],["GS1",["GS"]],["GK1",["GK"]]].forEach(([n,p])=>addPlayer(engine,n,p));
+    engine.ensureGamesExist();
+    st.settings.loadBalance = loadBalance;
+    engine.runGeneration();
+    const full = engine.RosterSolver.derivePositionLoads({loadBalance:10});
+    const out = {};
+    engine.computePlayerSummaries().forEach(s=>{ out[s.name] = {onCourt:s.onCourt, load:engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*full[pos],0)}; });
+    assert.ok(engine.gameNums().every(n=>!engine.getGame(n).error), "sanity: every game schedules");
+    return out;
+  }
+  const quarters = season(0), load = season(10);
+  // Only the two centres and two wing attacks can ever sit (everyone else is the sole cover for their position).
+  assert.strictEqual(quarters.C1.onCourt+quarters.C2.onCourt, 40);
+  assert.ok(Math.abs((quarters.C1.onCourt+quarters.C2.onCourt)-(quarters.WA1.onCourt+quarters.WA2.onCourt))===0, "sanity: C and WA are each played 40 quarters");
+  const gap = s=>Math.abs(s.C1.onCourt-s.C2.onCourt)+Math.abs(s.WA1.onCourt-s.WA2.onCourt);
+  assert.ok(gap(load)<=gap(quarters)+2, "the two players sharing a position still split it evenly");
+  const spreadOf = s=>{ const v=Object.values(s).map(x=>x.load); return Math.max(...v)-Math.min(...v); };
+  assert.ok(spreadOf(load)<=spreadOf(quarters)+1e-9, `workload spread should not widen: ${spreadOf(quarters).toFixed(2)} -> ${spreadOf(load).toFixed(2)}`);
+});
+
+test("LOAD-3: a centre is due more bench than a keeper for the same court time so far (planGameBench quarterLoad)", ()=>{
+  const S = freshEngine().RosterSolver;
+  const squad = ["c","k","a","b","d","e","f","g","h"].map(id=>({id}));
+  const plan = S.planGameBench({ squad, benchSlotCount:2, courtTargets:{c:28,k:28},  loadSoFar:{c:14,k:14}, gamesLeft:{c:4,k:4}, missed:{},
+    quarterLoad:{c:1.4, k:0.7} });
+  assert.ok(Math.abs(plan.benchQuota.c-(4-3.5/1.4))<1e-9 && plan.benchQuota.k===0, JSON.stringify(plan.benchQuota));
+});
+
+test("LOAD-5: playerLoadStats reads load from the season's position counts, and the rate a player actually earns it at", ()=>{
+  const S = freshEngine().RosterSolver;
+  const positionLoads = S.derivePositionLoads({loadBalance:10});
+  const players = [{id:"z", prefs:["C","WA","WD"]}, {id:"new", prefs:["C","GK"]}, {id:"guest", prefs:[]}];
+  const r = S.playerLoadStats({players, posCount:{"z::C":6, "z::WA":2, "other::C":9}, positionLoads});
+  const near = (a,b)=>Math.abs(a-b)<1e-9;
+  assert.ok(near(r.loadSoFar.z, 6*positionLoads.C+2*positionLoads.WA) && near(r.quarterLoad.z, r.loadSoFar.z/8), "mostly centre so far: earns load faster than her list's average");
+  assert.ok(r.quarterLoad.z > (positionLoads.C+positionLoads.WA+positionLoads.WD)/3);
+  assert.ok(r.loadSoFar.new===0 && near(r.quarterLoad.new, (2*positionLoads.C+positionLoads.GK)/3) && near(r.heaviestQuarter.z, positionLoads.C), "before playing: the listed positions, each rank counting half the one above");
+  assert.ok(near(r.quarterLoad.guest, 1), "no list: any position, so the average quarter");
+});
+
+test("LOAD-6: with missed games equal (nobody is ever rostered off) every workload step helps or at least doesn't hurt, through the top of the slider", ()=>{
+  // Nine players, bench of two, every game: the per-game bench limit leaves almost no room to rest anyone
+  // more than anyone else, so the slider only works up there because it relaxes that limit.
+  // (The same nine as `small9` in tests/settings-sweep.js, whose SET-7 check covers the slider across more rosters.)
+  const NINE = [["Ana",["GS","GA","WA"]], ["Bex",["GA","GS"]], ["Cora",["WA","C","WD"]], ["Dot",["C","WA"]], ["Edie",["WD","GD","C"]],
+    ["Fern",["GD","GK","WD"]], ["Gigi",["GK","GD"]], ["Hana",["GS","GK"]], ["Indi",["C","WD","GA"]]];
+  const spreads = [], doubles = [];
+  let mostBenched = 0; // most bench quarters anyone has in one game, at any slider value
+  for(let loadBalance=0; loadBalance<=10; loadBalance++){
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 10; st.season.desiredBenchSize = 2;
+    NINE.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+    engine.ensureGamesExist();
+    st.settings.loadBalance = loadBalance;
+    engine.runGeneration();
+    const loads = engine.computePlayerSummaries().filter(s=>s.onCourt>0)
+      .map(s=>engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*DEFAULT_LOADS[pos],0));
+    spreads.push(Math.sqrt(engine.RosterSolver.variance(loads)));
+    let twice = 0; // players benched twice or more in a game, summed over the season
+    engine.gameNums().forEach(n=>{ const c={}; engine.getGame(n).schedule.quarters.forEach(q=>q.bench.forEach(id=>{ c[id]=(c[id]||0)+1; })); twice += Object.values(c).filter(v=>v>=2).length; mostBenched = Math.max(mostBenched, ...Object.values(c)); });
+    doubles.push(twice);
+  }
+  const shown = spreads.map(v=>v.toFixed(2)).join(" ");
+  spreads.slice(1).forEach((v,i)=>assert.ok(v<=spreads[i]+0.15, `step ${i}->${i+1} made the season's workload spread noticeably worse: ${shown}`));
+  assert.ok(spreads[10] < spreads[0]*0.6, `equal workload should cut the spread well down: ${shown}`);
+  assert.ok(spreads[10] < spreads[5]-0.5, `the top half of the slider has to do real work too, not only the bottom: ${shown}`);
+  assert.ok(mostBenched<=2, `even with the limit gone nobody should sit three quarters of a game (the per-stint cost still applies): ${mostBenched}`);
+  assert.ok(doubles[10] > doubles[0], `the price is the per-game bench limit, given up as the slider rises: ${doubles.join(" ")}`);
+});
+
+test("LOAD-7: the per-game bench limit's penalty is full at 'equal quarters' and gone at 'equal workload'", ()=>{
+  const S = freshEngine().RosterSolver;
+  const costs = loadBalance=>{
+    const settings = {preferenceSlider:5, allowOffPreference:false, positionVariety:1, loadBalance};
+    const cum = gameBenchSoFar=>({posCount:{}, gameBenchSoFar, benchedLastQuarter:new Set(), benchQuota:{a:1}, benchCap:{a:1}});
+    const p = {id:"a", prefs:["GS"]};
+    const under = S.buildQuarterCostFns(cum({}), settings).benchCellCost(p);            // first stint: within the limit
+    const over  = S.buildQuarterCostFns(cum({a:1}), settings).benchCellCost(p);         // second stint: one past it
+    return {under, over, weight: S.derivePreferenceWeights(5).balance*S.CONSTANTS.COURT_TIME_WEIGHT};
+  };
+  const near = (a,b)=>Math.abs(a-b)<1e-9;
+  const at0 = costs(0), at5 = costs(5), at10 = costs(10);
+  assert.ok(near(at0.over-at0.under, at0.weight*(1+S.CONSTANTS.BENCH_CAP_PENALTY)), "full penalty plus the ordinary cost of a stint");
+  assert.ok(near(at5.over-at5.under, at5.weight*(1+S.CONSTANTS.BENCH_CAP_PENALTY/2)), "half the penalty at 5");
+  assert.ok(near(at10.over-at10.under, at10.weight*1), "no penalty at 10, only the ordinary cost of a stint");
+});
+
+test("LOAD-4: the workload settings are sanitised, persisted in backups and survive a round trip", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  addPlayer(engine, "Liv", ["GS"]);
+  st.settings.loadBalance = 7; st.settings.positionLoad.C = 1.5;
+  engine.exportBackup();
+  const text = engine.CapturingBlob.last;
+  assert.deepStrictEqual(JSON.parse(text).plan.settings.positionLoad, {...DEFAULT_LOADS, C:1.5});
+  const fresh = freshEngine();
+  fresh.importBackup(text);
+  assert.strictEqual(fresh._getState().settings.loadBalance, 7);
+  assert.strictEqual(fresh._getState().settings.positionLoad.C, 1.5);
+  // Untrusted values: wrong types fall back per position, out-of-range clamps, unknown keys go.
+  const bad = JSON.parse(text);
+  bad.plan.settings.loadBalance = "lots";
+  bad.plan.settings.positionLoad = {C:50, GK:"heavy", XX:3};
+  fresh.importBackup(JSON.stringify(bad));
+  const s = fresh._getState().settings;
+  assert.strictEqual(s.loadBalance, 0);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.positionLoad)), {...DEFAULT_LOADS, C:2});
+  bad.plan.settings.positionLoad = [1,2,3];
+  fresh.importBackup(JSON.stringify(bad));
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(fresh._getState().settings.positionLoad)), {...WORKLOAD_DEFAULTS.positionLoad});
+  // A default state must own its weights: editing one season's must not leak into the next.
+  const a = freshEngine(); a._getState().settings.positionLoad.C = 0.2;
+  assert.strictEqual(freshEngine()._getState().settings.positionLoad.C, 1);
 });
 
 test("COURT-EVEN-1: when missed games are even, nobody is benched more than once in a game", ()=>{
@@ -1939,7 +2083,7 @@ test("BACKUP-V1-1: a version-1 file still imports; its retired settings are igno
   const st = engine._getState();
   assert.strictEqual(st.players.length, 1, "the rest of a v1 file imports normally");
   assert.deepStrictEqual(JSON.parse(JSON.stringify(st.settings)),
-    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness", ...WORKLOAD_DEFAULTS});
 });
 
 /* tests/fixtures/season-backup-v1.json is a real coach's export from build 39 (the venue name is
@@ -1957,7 +2101,7 @@ test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates 
   assert.deepStrictEqual(plain(st.players), src.plan.players);
   assert.deepStrictEqual(plain(st.fillIns), src.plan.fillIns);
   assert.deepStrictEqual(plain(st.settings),
-    {preferenceSlider:1, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+    {preferenceSlider:1, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness", ...WORKLOAD_DEFAULTS});
   assert.deepStrictEqual([...engine.gameNums()], [1,2,3,4,5,6,7,8,9,10,11]);
   engine.gameNums().forEach(n=>{
     const g = engine.getGame(n), plan = src.plan.games[n], res = src.results.games[n];

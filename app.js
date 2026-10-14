@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 60; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 66; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -36,7 +36,8 @@ function defaultState(){
     fillIns:[],            // {id,name,prefs:[pos,...]}
     season:{numGames:11, desiredBenchSize:2},
     games:{},              // gameNum(string) -> gameState
-    settings: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_SETTINGS), // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority (§5, §11)
+    // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority, loadBalance 0..10, positionLoad {pos: 0.1..2} (§5, §11)
+    settings: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_SETTINGS, {positionLoad: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_POSITION_LOAD)}),
     activeTab:"setup"
   };
 }
@@ -139,6 +140,16 @@ function sanitizeSettingsAndSeason(state){
     state.settings.rosterOffPriority = d.settings.rosterOffPriority;
   }
   state.settings.allowOffPreference = !!state.settings.allowOffPreference;
+  fix(state.settings, "loadBalance", 0, 10, d.settings.loadBalance, "Workload balance");
+  const loads = state.settings.positionLoad;
+  // Rebuilt key by key: drops anything that isn't a position, and never keeps a reference to the frozen default.
+  state.settings.positionLoad = {};
+  POSITIONS.forEach(pos=>{
+    const before = isPlainObject(loads) ? loads[pos] : undefined;
+    const after = RosterSolver.cleanPositionLoad(before, pos);
+    state.settings.positionLoad[pos] = after;
+    if(before!==undefined && after!==before) corrected.push(`${pos} workload (${JSON.stringify(before)} → ${after})`);
+  });
   return corrected;
 }
 
@@ -518,8 +529,10 @@ function runGeneration(){
   const startTime = Date.now();
   const phase1Stats = computeSeasonRosterOff();
 
+  const positionLoads = RosterSolver.derivePositionLoads(STATE.settings);
   const cumulative = emptyCumulative();
   const nums = scheduledGameNums();
+  const loadPlayers = STATE.players.map(p=>({id:p.id, prefs:p.prefs}));
 
   // §8.1: a played game is locked — every stored field stays untouched; only
   // fold its already-frozen result into cumulative fairness. Done up front,
@@ -544,7 +557,7 @@ function runGeneration(){
     if(plan.squad.length<7) return;
     const regulars = plan.squad.filter(p=>!p.isFillIn);
     regulars.forEach(p=>{ gamesLeft[p.id] = (gamesLeft[p.id]||0)+1; });
-    courtShareOf[num] = 28*regulars.length/plan.squad.length; // fill-ins take an equal share of the court
+    courtShareOf[num] = 28*regulars.length/plan.squad.length; // fill-ins take an equal share of the court (position loads average 1, so 28 in load units too)
     courtQuartersLeft += courtShareOf[num];
   });
   const missedById = {};
@@ -573,13 +586,12 @@ function runGeneration(){
     const benchCount = plan.squad.length-7;
     // Targets are re-derived from what has actually been scheduled so far, so
     // a game that couldn't be scheduled doesn't leave phantom quarters in them.
-    const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>{
-      const sofar = cumulative.onCourt[p.id]||0;
-      return {id:p.id, floor:sofar, cap:sofar+4*(gamesLeft[p.id]||0)};
-    }), STATE.players.reduce((sum,p)=>sum+(cumulative.onCourt[p.id]||0), 0) + courtQuartersLeft);
+    const { loadSoFar, quarterLoad, heaviestQuarter } = RosterSolver.playerLoadStats({players: loadPlayers, posCount: cumulative.posCount, positionLoads});
+    const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>(
+      {id:p.id, floor:loadSoFar[p.id], cap:loadSoFar[p.id]+4*(gamesLeft[p.id]||0)*heaviestQuarter[p.id]}
+    )), STATE.players.reduce((sum,p)=>sum+loadSoFar[p.id], 0) + courtQuartersLeft);
     const { benchQuota, benchCap } = RosterSolver.planGameBench({
-      squad: plan.squad, benchSlotCount: benchCount, courtTargets,
-      onCourtSoFar: cumulative.onCourt, gamesLeft, missed: missedById
+      squad: plan.squad, benchSlotCount: benchCount, courtTargets, loadSoFar, gamesLeft, missed: missedById, quarterLoad
     });
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
@@ -739,7 +751,11 @@ function computeSeasonHeadlines(){
   const summaries = computePlayerSummaries();
   const courtShares = summaries.filter(s=>s.onCourt+s.bench>0).map(s=>100*s.onCourt/(s.onCourt+s.bench));
   const positionsEach = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.filter(pos=>s.positions[pos]>0).length);
+  // Season workload per player: quarters x the weights exactly as entered (so the coach can check it by hand), whatever the slider says — it's the number the slider exists to narrow.
+  const workloads = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*STATE.settings.positionLoad[pos],0));
   return {
+    workloadMin: workloads.length ? Math.min(...workloads) : 0,
+    workloadMax: workloads.length ? Math.max(...workloads) : 0,
     offPrefPct: 100*offPreference/regularSlots,
     courtTimeMinPct: courtShares.length ? Math.min(...courtShares) : 0,
     courtTimeMaxPct: courtShares.length ? Math.max(...courtShares) : 0,
@@ -2024,6 +2040,7 @@ function headlineStats(h){
   return [
     {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"allow off-preference"},
     {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
+    {label:"Season workload, lightest to heaviest", value:`${h.workloadMin.toFixed(1)}–${h.workloadMax.toFixed(1)}`, moves:"position workload"},
     {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
     {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
     {label:"Missed-games spread", value:String(h.missedSpread), moves:"who sits out"},
@@ -2041,7 +2058,7 @@ function seasonHeadlinesHtml(){
 }
 
 function renderSettings(root){
-  const s = STATE.settings;
+  const s = STATE.settings, C = RosterSolver.CONSTANTS;
   const priorities = [
     {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible (counting games they're unavailable for); coverage only decides between equally even splits"},
     {value:"balanced", label:"Balanced", desc:"Accepts a slightly uneven split to avoid the worst coverage gaps"},
@@ -2077,6 +2094,23 @@ function renderSettings(root){
       </div>
     </div>
     <div class="card">
+      <div class="card-head"><div><h2>Position workload</h2><p>Whether court time is shared by quarters played or by how hard those quarters were. A centre covers more court than a keeper, so may need more rest.</p></div></div>
+      <div class="field">
+        <label for="loadSlider">Equal quarters &#8596; equal workload</label>
+        ${labelledSliderHtml({id:"loadSlider", min:0, max:10, step:1, value:s.loadBalance, valueId:"loadSliderVal",
+          leftLabel:"Everyone plays the same number of quarters", rightLabel:"Harder positions rest more, even if benched twice in a game"})}
+        <p class="hint">At 0 every quarter counts the same. Moving right counts a quarter by its position's workload below, so players in the heavier positions are given more bench time and the lighter ones less. It only changes who rests: positions still follow each player's preferences. The price is the one-bench-stint-per-game limit, which eases as you move right and is gone at 10 — there, players in heavy positions can sit twice in a game and quarters played become noticeably uneven.</p>
+      </div>
+      <div class="field">
+        <label>Workload of a quarter in each position (centre = 1 by default; only the ratios matter)</label>
+        <div class="load-grid">
+          ${POSITIONS.map(pos=>`<label class="load-cell" title="${POS_LABEL[pos]}"><span>${pos}</span>
+            <input type="number" data-load="${pos}" aria-label="${POS_LABEL[pos]} workload" min="${C.POSITION_LOAD_MIN}" max="${C.POSITION_LOAD_MAX}" step="0.05" value="${s.positionLoad[pos]}"></label>`).join("")}
+        </div>
+        <button class="btn btn-sm" id="loadReset" style="margin-top:8px;">Reset to defaults</button>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what the season-wide roster-off search protects first.</p></div></div>
       ${priorities.map(p=>`<label class="checkbox-row">
         <input type="radio" name="rosterOffPriority" value="${p.value}" ${s.rosterOffPriority===p.value?"checked":""}>
@@ -2087,7 +2121,16 @@ function renderSettings(root){
     </div>
   `;
   root.querySelectorAll('input[type=range]').forEach(syncRangeFill);
-  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"]].forEach(([id,valueId,key])=>{
+  root.querySelectorAll("[data-load]").forEach(inp=>{
+    inp.onchange=e=>{
+      const pos = e.target.dataset.load;
+      s.positionLoad[pos] = RosterSolver.cleanPositionLoad(parseFloat(e.target.value), pos); // an emptied box goes back to the default, not the minimum
+      e.target.value = s.positionLoad[pos]; // show what was actually stored
+      markStale(`${pos} workload is kept between ${C.POSITION_LOAD_MIN} and ${C.POSITION_LOAD_MAX}. Regenerate to apply.`);
+    };
+  });
+  document.getElementById("loadReset").onclick=()=>{ s.positionLoad = Object.assign({}, C.DEFAULT_POSITION_LOAD); markStale(); renderSettings(root); };
+  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"],["loadSlider","loadSliderVal","loadBalance"]].forEach(([id,valueId,key])=>{
     document.getElementById(id).oninput=e=>{ document.getElementById(valueId).textContent=e.target.value; syncRangeFill(e.target); };
     document.getElementById(id).onchange=e=>{ s[key]=Number(e.target.value); markStale(); };
   });
@@ -2150,7 +2193,7 @@ function downloadBlob(filename, blob){
    games. Keyed by name, not position, so adding a field never shifts anything.
    Device-only state (theme, active tab) is deliberately not exported. */
 const BACKUP_FORMAT = "netball-roster-backup";
-const BACKUP_SCHEMA_VERSION = 2; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority
+const BACKUP_SCHEMA_VERSION = 2; // v2: settings reduced to preferenceSlider / allowOffPreference / positionVariety / rosterOffPriority; loadBalance / positionLoad were added later as optional fields (no bump)
 
 function buildBackup(){
   const planGames = {}, resultGames = {};
@@ -2182,7 +2225,8 @@ function buildBackup(){
       season: {numGames: STATE.season.numGames, desiredBenchSize: STATE.season.desiredBenchSize},
       settings: {
         preferenceSlider: s.preferenceSlider, allowOffPreference: !!s.allowOffPreference,
-        positionVariety: s.positionVariety, rosterOffPriority: s.rosterOffPriority
+        positionVariety: s.positionVariety, rosterOffPriority: s.rosterOffPriority,
+        loadBalance: s.loadBalance, positionLoad: Object.assign({}, s.positionLoad)
       },
       players: STATE.players.map(p=>({id:p.id, name:p.name, prefs:(p.prefs||[]).slice(), unavailable:(p.unavailable||[]).slice()})),
       fillIns: STATE.fillIns.map(f=>({id:f.id, name:f.name, prefs:(f.prefs||[]).slice(), saved:f.saved!==false})),
@@ -2199,7 +2243,7 @@ function exportBackup(){
 }
 
 /* Untrusted-input helpers for importBackup: coerce to the expected shape, never throw. */
-const isPlainObject = v => v!==null && typeof v==="object" && !Array.isArray(v);
+function isPlainObject(v){ return v!==null && typeof v==="object" && !Array.isArray(v); } // a declaration, so loadState can use it at boot
 const toStringArray = v => (Array.isArray(v)?v:[]).filter(x=>typeof x==="string" && x);
 const GAME_KEY_RE = /^[1-9]\d{0,2}$/;
 const SLOT_KEY_RE = new RegExp("^[0-3]-("+POSITIONS.join("|")+")$");
@@ -2228,7 +2272,10 @@ function importBackup(text){
     // Not migrated from v1: settings that no longer exist are ignored, and
     // preferenceSlider is carried over as the same number on the new scale.
     const set = isPlainObject(plan.settings) ? plan.settings : {};
-    ["preferenceSlider","positionVariety"].forEach(k=>{ if(typeof set[k]==="number") ns.settings[k] = set[k]; });
+    ["preferenceSlider","positionVariety","loadBalance"].forEach(k=>{ if(typeof set[k]==="number") ns.settings[k] = set[k]; });
+    if(isPlainObject(set.positionLoad)){
+      POSITIONS.forEach(pos=>{ if(typeof set.positionLoad[pos]==="number") ns.settings.positionLoad[pos] = set.positionLoad[pos]; }); // range-checked by sanitizeSettingsAndSeason
+    }
     if(typeof set.allowOffPreference==="boolean") ns.settings.allowOffPreference = set.allowOffPreference;
     if(typeof set.rosterOffPriority==="string") ns.settings.rosterOffPriority = set.rosterOffPriority; // validated by sanitizeSettingsAndSeason
 

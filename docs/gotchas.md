@@ -154,6 +154,16 @@ even, which is exactly what leaves them short of court time. The per-game bench 
 or a bench of 3+, somebody has to sit twice. `COURT_TIME_WEIGHT`, `BENCH_CAP_PENALTY` and
 the default slider were tuned together; re-run `npm run test:settings` after touching them.
 
+### The workload slider only works because it eases the bench limit
+With missed games equal (a roster nobody is rostered off from), the per-game bench limit leaves
+almost no spare bench seat — nine players, two on the bench, is eight stints a game for nine
+people — so weighting quarters by position changed almost nothing past the first few steps. The
+slider therefore also scales `BENCH_CAP_PENALTY` by `1 − blend` (`loadBlendOf`), and the penalty
+is gone at 10. Don't "restore" the limit at full strength to cut double-benchings without
+re-running `npm run test:settings` (SET-7) and `LOAD-6`: the slider will quietly stop working
+at the top end. Remapping the slider curve was tried and doesn't help — the flattening was this
+interaction, not the mapping.
+
 ### `app.js` exports nothing — tests patch it at load time
 There is no `module.exports` anywhere in `app.js` itself (it's a browser-only IIFE).
 `tests/harness.js` reads the file's source as text, splices a `module.exports = {...}`
