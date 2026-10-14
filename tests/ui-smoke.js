@@ -306,7 +306,7 @@ async function shot(page, name){
   const settingsText = await page.locator("body").textContent();
   check(!/strict specialist/i.test(settingsText), "no leftover 'strict specialist pairing' UI text anywhere on the page");
   check(await page.locator("#topTwoOnly, [data-weight], #rosterOffSlider").count()===0, "the retired top-2 toggle, weight sliders and roster-off slider are gone");
-  check(await page.locator("#seasonHeadlines .stat-box").count()===6, "the at-a-glance card shows six headline numbers for the generated season");
+  check(await page.locator("#seasonHeadlines .stat-box").count()===7, "the at-a-glance card shows seven headline numbers for the generated season");
   await shot(page, "05-settings.png");
 
   // ---- SET-9/SET-10: every Settings control saves, flags the schedule stale, survives a reload and reaches the engine ----
@@ -325,7 +325,8 @@ async function shot(page, name){
   }
   const SLIDERS = [
     {sel:"#prefSlider", read:s=>s.preferenceSlider, to:3, back:8},
-    {sel:"#varietySlider", read:s=>s.positionVariety, to:6, back:1}
+    {sel:"#varietySlider", read:s=>s.positionVariety, to:6, back:1},
+    {sel:"#loadSlider", read:s=>s.loadBalance, to:7, back:0}
   ];
   const TOGGLES = [
     {sel:"#allowOffPref", read:s=>s.allowOffPreference, back:false}
@@ -342,6 +343,12 @@ async function shot(page, name){
     const saved = c.read((await savedState()).settings);
     check(saved===!c.back, `${c.sel} toggled: saved as ${!c.back} (got ${JSON.stringify(saved)})`);
   }
+  await page.fill('[data-load="C"]', "1.5"); await page.dispatchEvent('[data-load="C"]', "change");
+  await page.fill('[data-load="GK"]', "99"); await page.dispatchEvent('[data-load="GK"]', "change");
+  const loads = (await savedState()).settings.positionLoad;
+  check(loads.C===1.5 && loads.GK===2 && (await page.inputValue('[data-load="GK"]'))==="2", `position workloads save as numbers and clamp to the allowed range (C=${loads.C}, GK=${loads.GK})`);
+  await page.click("#loadReset");
+  check((await savedState()).settings.positionLoad.C===1 && (await page.inputValue('[data-load="GK"]'))==="0.55", "Reset to defaults restores the position workloads");
   check(await page.isChecked(priorityRadio("fairness")), "roster-off priority defaults to even missed games");
   await page.click(priorityRadio("balanced"));
   check((await savedState()).settings.rosterOffPriority==="balanced", "choosing a roster-off priority saves it");

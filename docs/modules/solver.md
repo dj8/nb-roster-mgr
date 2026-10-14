@@ -22,6 +22,7 @@ the results back onto `STATE.games[...]`.
 | `refineGameQuarters(input)` | `{quarters, squadPool, cumulativeSnapshots, lockedSlotsPerQuarter, settings, timeBudgetMs}` | `{quarters, stats:{swaps,elapsedMs}}` | Phase 2b, one game's 4 quarters together. |
 | `buildQuarterCostFns(cumulative, settings)` | cumulative snapshot + settings | `{positionCellCost(p,pos), benchCellCost(p)}` | The cost model, exposed directly — used by both 2a and 2b so they score identically. |
 | `deriveRosterOffWeights(rosterOffPriority)` | `"fairness"`/`"balanced"`/`"coverage"` | `{fairness, coverage}` | Maps the Settings-tab three-way choice onto Phase 1's two internal weights (a lookup in `ROSTER_OFF_COVERAGE_WEIGHT`, whose keys are `ROSTER_OFF_PRIORITIES`). Anything unrecognised is treated as the default, `"fairness"`, whose coverage weight is a tie-break only (1e-6: a whole season of coverage penalties can't outweigh one step of missed-games evenness). |
+| `derivePositionLoads(settings)` | `{loadBalance, positionLoad}` | `{pos: weight}` | What a quarter at each position counts for in the court-time sums: all 1 at `loadBalance` 0, the coach's weights (scaled to average 1) at 10, linear in between. Weights are clamped to `POSITION_LOAD_MIN..MAX`; a non-number falls back to `DEFAULT_POSITION_LOAD`. |
 | `computeCourtTargets(players, total)` | `[{id, floor, cap}]`, on-court quarters to share | `{id: target}` | Season on-court target per regular (§4 rule 2) — see the cost model below. |
 | `baseBenchCap(squadSize, benchSlotCount)` | two counts | integer ≥ 1 | Fewest bench stints per game everyone can be held to (§4 rule 3). |
 | `planGameBench(input)` | `{squad:[{id,isFillIn}], benchSlotCount, courtTargets, onCourtSoFar, gamesLeft, missed}` | `{benchQuota:{id:n}, benchCap:{id:n}}` | One game's bench quarters due and bench limit per squad member; goes into the `cumulative` snapshot. |
@@ -103,6 +104,13 @@ slot:
   bench quarters this player is due in this game; `overCap` is how far this stint would
   take them past `cumulative.benchCap[id]`. Scaled by the `balance` weight, so it's exactly
   0 at slider=10. Never negative.
+
+Court time is counted in *load* units: a quarter is worth `derivePositionLoads(settings)[pos]`
+(1 everywhere unless the workload slider is raised; the seven always average 1, so a full
+line-up is worth seven "quarters" and none of the tuned weights shift). `runGeneration`
+keeps the tally in `cumulative.load` and passes `planGameBench` each player's `quarterLoad`
+— the load they earn per quarter on court (their actual rate so far, or the average of
+the positions they list before they've played) — to turn load still due back into quarters.
 
 `computeCourtTargets(players, total)` gives each regular's season on-court target: one
 common level, clamped to `[floor, cap]` per player (quarters already played in frozen

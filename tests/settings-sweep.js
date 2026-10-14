@@ -47,10 +47,12 @@ const FIXTURES = {
    Shares and spreads are in percentage points. `min` is the smallest change
    between two neighbouring slider values that counts as noticeable - roughly
    "a coach comparing the two Reports tabs would see it". */
+const FULL_LOADS = ENGINE.RosterSolver.derivePositionLoads({loadBalance:10}); // default position weights, fully applied
 const METRICS = {
   offPref:   {label:"off-preference fills (% of slots)", min:0.5},
   top1:      {label:"quarters at a player's #1 choice (%)", min:1},
   playSd:    {label:"spread of on-court time (SD of on-court rate, pts)", min:0.5},
+  loadSd:    {label:"spread of season workload (SD, in centre-weighted quarters)", min:0.15},
   distinct:  {label:"distinct positions played per player", min:0.15},
   missedVar: {label:"missed-games variance", min:0.05},
   thinCover: {label:"positions left with <=1 preferrer (season total)", min:1},
@@ -67,6 +69,9 @@ const SETTINGS = [
     contexts:[{}] },
   { key:"positionVariety", title:"Position variety slider (0 repeat favourite .. 10 spread across list)", values:R0,
     intent:[["top1",-1],["distinct",+1]], side:["offPref","playSd"],
+    contexts:[{}, {preferenceSlider:5}] },
+  { key:"loadBalance", title:"Workload slider (0 equal quarters .. 10 equal workload)", values:R0,
+    intent:[["loadSd",-1]], side:["playSd","offPref","errors"],
     contexts:[{}, {preferenceSlider:5}] },
   { key:"rosterOffPriority", title:"Roster-off priority (even missed games -> balanced -> protect thin positions)", values:ENGINE.RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES,
     intent:[["thinCover",-1],["missedVar",+1]], side:["offPref"],
@@ -131,6 +136,7 @@ function run(fixtureName, configure){
     m: {
       offPref: pct(off,total), top1: pct(top1,total),
       playSd: Math.sqrt(engine.RosterSolver.variance(rates)),
+      loadSd: Math.sqrt(engine.RosterSolver.variance(summaries.filter(s=>s.onCourt>0).map(s=>P.reduce((sum,pos)=>sum+s.positions[pos]*FULL_LOADS[pos],0)))),
       distinct: mean(summaries.map(s=>P.filter(pos=>s.positions[pos]>0).length)),
       missedVar: engine.RosterSolver.variance(summaries.map(s=>s.missed)),
       thinCover: thin, errors

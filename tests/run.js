@@ -25,6 +25,7 @@ function freshEngine(){
 }
 
 const ROSTER_OFF_PRIORITIES = freshEngine().RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES;
+const WORKLOAD_DEFAULTS = {loadBalance:0, positionLoad:{GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55}};
 
 function addPlayer(engine, name, prefs, unavailable){
   const st = engine._getState();
@@ -697,7 +698,7 @@ test("FR-7: a player is benched in consecutive quarters only when squad size lea
 test("SETTINGS-DEFAULT-1: the four settings and their defaults (preference 8 - strongly favours preference)", ()=>{
   const engine = freshEngine();
   assert.deepStrictEqual(JSON.parse(JSON.stringify(engine._getState().settings)),
-    {preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+    {preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness", ...WORKLOAD_DEFAULTS});
 });
 
 /* ============================================================
@@ -992,7 +993,7 @@ test("BACKUP-ROUNDTRIP-1: the file is versioned, split into plan/results, and om
   assert.ok(!("schedule" in b.plan.games["1"]), "results must not leak into plan");
   assert.ok(!text.includes("weight_missed") && !text.includes("onCourt\":1"), "retired settings must not be exported");
   assert.ok(!("theme" in b) && !("theme" in b.plan), "device-only theme must not be exported");
-  assert.deepStrictEqual(Object.keys(b.plan.settings).sort(), ["allowOffPreference","positionVariety","preferenceSlider","rosterOffPriority"]);
+  assert.deepStrictEqual(Object.keys(b.plan.settings).sort(), ["allowOffPreference","loadBalance","positionLoad","positionVariety","preferenceSlider","rosterOffPriority"]);
 });
 
 test("BACKUP-ROUNDTRIP-2: a played game's rosteredOffIds and unavailableIds survive export/import as frozen facts", ()=>{
@@ -1479,6 +1480,85 @@ test("COURT-TARGET-1: season court targets are level, except for players who can
   assert.deepStrictEqual([plan.benchCap.a, plan.benchCap.b, plan.benchCap.g], [2,1,1]);
 });
 
+test("LOAD-1: position loads blend from equal quarters to the coach's weights, always averaging 1", ()=>{
+  const S = freshEngine().RosterSolver;
+  const sum = l=>S.POSITIONS.reduce((a,pos)=>a+l[pos],0);
+  const off = S.derivePositionLoads({loadBalance:0, positionLoad:{C:2}});
+  S.POSITIONS.forEach(pos=>assert.strictEqual(off[pos], 1, "at 0 every quarter counts the same, whatever the weights"));
+  const full = S.derivePositionLoads({loadBalance:10});
+  assert.ok(Math.abs(sum(full)-7)<1e-9, "a full line-up is always worth seven quarters");
+  assert.ok(full.C>full.WA && full.WA===full.WD && full.WA>full.GA && full.GA===full.GD && full.GA>full.GS && full.GS===full.GK, JSON.stringify(full));
+  assert.ok(Math.abs(full.C/full.GK - 1/0.55)<1e-9, "at 10 the ratios are exactly the weights'");
+  const half = S.derivePositionLoads({loadBalance:5});
+  assert.ok(Math.abs(half.C-(1+full.C)/2)<1e-9 && Math.abs(sum(half)-7)<1e-9, "linear in between");
+  const junk = S.derivePositionLoads({loadBalance:"x", positionLoad:{C:"abc", GK:-5, WA:99}});
+  assert.ok(S.POSITIONS.every(pos=>junk[pos]===1), "a non-numeric slider falls back to the default (0)");
+  const clamped = S.derivePositionLoads({loadBalance:10, positionLoad:{GS:1,GA:1,WA:99,C:"abc",WD:1,GD:1,GK:-5}});
+  assert.ok(clamped.WA/clamped.GS===2 && Math.abs(clamped.GK/clamped.GS-0.1)<1e-9 && clamped.C/clamped.GS===1, "weights are clamped to 0.1..2 and a non-number falls back to that position's default: "+JSON.stringify(clamped));
+});
+
+test("LOAD-2: toward equal workload, players in the heavy positions rest more and the season's workload spread narrows", ()=>{
+  function season(loadBalance){
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 10; st.season.desiredBenchSize = 2;
+    // Specialists: whoever plays centre can only get there by sitting out, not by moving.
+    [["C1",["C"]],["C2",["C"]],["WA1",["WA"]],["WA2",["WA"]],["WD1",["WD"]],["GA1",["GA"]],["GD1",["GD"]],["GS1",["GS"]],["GK1",["GK"]]].forEach(([n,p])=>addPlayer(engine,n,p));
+    engine.ensureGamesExist();
+    st.settings.loadBalance = loadBalance;
+    engine.runGeneration();
+    const full = engine.RosterSolver.derivePositionLoads({loadBalance:10});
+    const out = {};
+    engine.computePlayerSummaries().forEach(s=>{ out[s.name] = {onCourt:s.onCourt, load:engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*full[pos],0)}; });
+    assert.ok(engine.gameNums().every(n=>!engine.getGame(n).error), "sanity: every game schedules");
+    return out;
+  }
+  const quarters = season(0), load = season(10);
+  // Only the two centres and two wing attacks can ever sit (everyone else is the sole cover for their position).
+  assert.strictEqual(quarters.C1.onCourt+quarters.C2.onCourt, 40);
+  assert.ok(Math.abs((quarters.C1.onCourt+quarters.C2.onCourt)-(quarters.WA1.onCourt+quarters.WA2.onCourt))===0, "sanity: C and WA are each played 40 quarters");
+  const gap = s=>Math.abs(s.C1.onCourt-s.C2.onCourt)+Math.abs(s.WA1.onCourt-s.WA2.onCourt);
+  assert.ok(gap(load)<=gap(quarters)+2, "the two players sharing a position still split it evenly");
+  const spreadOf = s=>{ const v=Object.values(s).map(x=>x.load); return Math.max(...v)-Math.min(...v); };
+  assert.ok(spreadOf(load)<=spreadOf(quarters)+1e-9, `workload spread should not widen: ${spreadOf(quarters).toFixed(2)} -> ${spreadOf(load).toFixed(2)}`);
+});
+
+test("LOAD-3: a centre is due more bench than a keeper for the same court time so far (planGameBench quarterLoad)", ()=>{
+  const S = freshEngine().RosterSolver;
+  const squad = ["c","k","a","b","d","e","f","g","h"].map(id=>({id}));
+  const plan = S.planGameBench({ squad, benchSlotCount:2, courtTargets:{c:28,k:28}, onCourtSoFar:{c:14,k:14}, gamesLeft:{c:4,k:4}, missed:{},
+    quarterLoad:{c:1.4, k:0.7} });
+  assert.ok(Math.abs(plan.benchQuota.c-(4-3.5/1.4))<1e-9 && plan.benchQuota.k===0, JSON.stringify(plan.benchQuota));
+});
+
+test("LOAD-4: the workload settings are sanitised, persisted in backups and survive a round trip", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  addPlayer(engine, "Liv", ["GS"]);
+  st.settings.loadBalance = 7; st.settings.positionLoad.C = 1.5;
+  engine.exportBackup();
+  const text = engine.CapturingBlob.last;
+  assert.deepStrictEqual(JSON.parse(text).plan.settings.positionLoad, {GS:0.55, GA:0.7, WA:0.85, C:1.5, WD:0.85, GD:0.7, GK:0.55});
+  const fresh = freshEngine();
+  fresh.importBackup(text);
+  assert.strictEqual(fresh._getState().settings.loadBalance, 7);
+  assert.strictEqual(fresh._getState().settings.positionLoad.C, 1.5);
+  // Untrusted values: wrong types fall back per position, out-of-range clamps, unknown keys go.
+  const bad = JSON.parse(text);
+  bad.plan.settings.loadBalance = "lots";
+  bad.plan.settings.positionLoad = {C:50, GK:"heavy", XX:3};
+  fresh.importBackup(JSON.stringify(bad));
+  const s = fresh._getState().settings;
+  assert.strictEqual(s.loadBalance, 0);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.positionLoad)), {GS:0.55, GA:0.7, WA:0.85, C:2, WD:0.85, GD:0.7, GK:0.55});
+  bad.plan.settings.positionLoad = [1,2,3];
+  fresh.importBackup(JSON.stringify(bad));
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(fresh._getState().settings.positionLoad)), {...WORKLOAD_DEFAULTS.positionLoad});
+  // A default state must own its weights: editing one season's must not leak into the next.
+  const a = freshEngine(); a._getState().settings.positionLoad.C = 0.2;
+  assert.strictEqual(freshEngine()._getState().settings.positionLoad.C, 1);
+});
+
 test("COURT-EVEN-1: when missed games are even, nobody is benched more than once in a game", ()=>{
   // Everyone can play anywhere, so preference never forces a second stint
   // (two specialists sharing a position can't both sit, however the bench falls).
@@ -1939,7 +2019,7 @@ test("BACKUP-V1-1: a version-1 file still imports; its retired settings are igno
   const st = engine._getState();
   assert.strictEqual(st.players.length, 1, "the rest of a v1 file imports normally");
   assert.deepStrictEqual(JSON.parse(JSON.stringify(st.settings)),
-    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+    {preferenceSlider:4, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness", ...WORKLOAD_DEFAULTS});
 });
 
 /* tests/fixtures/season-backup-v1.json is a real coach's export from build 39 (the venue name is
@@ -1957,7 +2037,7 @@ test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates 
   assert.deepStrictEqual(plain(st.players), src.plan.players);
   assert.deepStrictEqual(plain(st.fillIns), src.plan.fillIns);
   assert.deepStrictEqual(plain(st.settings),
-    {preferenceSlider:1, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness"});
+    {preferenceSlider:1, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness", ...WORKLOAD_DEFAULTS});
   assert.deepStrictEqual([...engine.gameNums()], [1,2,3,4,5,6,7,8,9,10,11]);
   engine.gameNums().forEach(n=>{
     const g = engine.getGame(n), plan = src.plan.games[n], res = src.results.games[n];

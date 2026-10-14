@@ -26,8 +26,10 @@ The one format for backing up, restoring and sharing a season. Fields are keyed 
   "exportedAt": "2026-10-10T…Z",
   "plan": {                      // everything the coach enters
     "season": {"numGames": 11, "desiredBenchSize": 2},
-    "settings": {"preferenceSlider": 8, "allowOffPreference": true,
-                 "positionVariety": 1, "rosterOffPriority": "coverage"},
+    "settings": {"preferenceSlider": 8, "allowOffPreference": false,
+                 "positionVariety": 1, "rosterOffPriority": "fairness",
+                 "loadBalance": 0,     // optional (added build 61); missing -> default
+                 "positionLoad": {"GS": 0.55, "GA": 0.7, "WA": 0.85, "C": 1, "WD": 0.85, "GD": 0.7, "GK": 0.55}},
     "players": [{"id", "name", "prefs": ["GS","GA"], "unavailable": [3]}],
     "fillIns": [{"id", "name", "prefs": [], "saved": true}],
     "games": {"1": {"isPlayed", "date", "time", "location", "rosterOffOverride",

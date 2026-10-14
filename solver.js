@@ -33,7 +33,10 @@ const PREFERENCE_RATIO_AT_0 = 0.5;     // preference:balance weight ratio at sli
 const PREFERENCE_RATIO_AT_9 = 16;       // ...and at slider 9; geometric in between, so each step multiplies the ratio by the same factor
 /* The season-wide settings' defaults — app.js's defaultState() and the
    fallbacks below both read this, so a retune can't leave them disagreeing. */
-const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness" });
+const DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55 }); // how hard a quarter there is, relative to centre
+const POSITION_LOAD_MIN = 0.1, POSITION_LOAD_MAX = 2;
+const DEFAULT_SETTINGS = Object.freeze({ preferenceSlider:8, allowOffPreference:false, positionVariety:1, rosterOffPriority:"fairness",
+  loadBalance:0, positionLoad:DEFAULT_POSITION_LOAD }); // positionLoad is shared and frozen: copy it before handing it to anything that edits (app.js's defaultState does)
 /* Phase 1 coverage weight per roster-off priority. "fairness" is a pure
    tie-break: small enough that a whole season's coverage penalties can't
    outweigh the smallest possible gain in missed-games evenness, but not 0,
@@ -485,6 +488,24 @@ function computeRosterOffAchievabilityNotes(players){
    PHASE 2a — exact per-quarter Hungarian position assignment
    ============================================================ */
 
+/* What one quarter at each position counts for in the court-time evenness
+   sums (§4 rule 2). The workload slider blends between every quarter
+   counting the same (0: equal quarters) and each counting its position's
+   load (10: equal load). Loads are scaled so the seven average 1, which keeps
+   a full line-up worth seven "quarters" at any slider value — so targets,
+   quotas and the tuned weights don't shift with it.
+   -> {pos: weight} */
+function derivePositionLoads(settings){
+  const s = settings||{};
+  const blend = clampSetting(s.loadBalance, 0, 10, DEFAULT_SETTINGS.loadBalance)/10;
+  const raw = {};
+  POSITIONS.forEach(pos=>{ raw[pos] = clampSetting((s.positionLoad||{})[pos], POSITION_LOAD_MIN, POSITION_LOAD_MAX, DEFAULT_POSITION_LOAD[pos]); });
+  const mean = POSITIONS.reduce((sum,pos)=>sum+raw[pos],0)/POSITIONS.length;
+  const loads = {};
+  POSITIONS.forEach(pos=>{ loads[pos] = 1 + blend*(raw[pos]/mean - 1); });
+  return loads;
+}
+
 /* §4 rule 2: each regular's season on-court target. Everyone gets the same
    number of quarters ("level") unless they can't reach it (`cap`: too many
    missed games) or are already past it (`floor`: quarters already played in
@@ -514,12 +535,16 @@ function baseBenchCap(squadSize, benchSlotCount){
 /* §4 rules 2-3 for one game about to be solved: the bench quarters each squad
    member is due in it, and the most they may sit before the cap penalty.
    A regular is due whatever leaves them on pace for their season target over
-   the games they have left; a fill-in (outside season fairness) an even share
+   the games they have left — the target and the tally are in load units
+   (derivePositionLoads), turned back into quarters at the rate the player
+   earns it (`quarterLoad`: the average load of the positions they list, so a
+   centre reaches their share in fewer quarters and sits out more); a fill-in (outside season fairness) an even share
    of this game's bench. Only a player who misses fewer games than someone
    else in this squad may be benched one more time, to hand that squad-mate
    court time — an absentee who isn't playing doesn't relax anyone's cap.
    input: { squad:[{id,isFillIn}], benchSlotCount, courtTargets:{id:n},
-            onCourtSoFar:{id:n}, gamesLeft:{id:n} (this game included), missed:{id:n} }
+            onCourtSoFar:{id:n}, gamesLeft:{id:n} (this game included), missed:{id:n},
+            quarterLoad?:{id:n} (default 1 each) }
    -> { benchQuota:{id:n}, benchCap:{id:n} } */
 function planGameBench(input){
   const squad = input.squad||[];
@@ -530,7 +555,8 @@ function planGameBench(input){
   squad.forEach(p=>{
     if(p.isFillIn){ benchQuota[p.id] = 4*input.benchSlotCount/squad.length; benchCap[p.id] = baseCap; return; }
     const courtDue = (input.courtTargets[p.id]||0) - (input.onCourtSoFar[p.id]||0);
-    benchQuota[p.id] = Math.max(0, Math.min(4, 4 - courtDue/Math.max(1, input.gamesLeft[p.id]||1)));
+    const quartersDue = courtDue/Math.max(1, input.gamesLeft[p.id]||1)/((input.quarterLoad||{})[p.id]||1);
+    benchQuota[p.id] = Math.max(0, Math.min(4, 4 - quartersDue));
     benchCap[p.id] = baseCap + ((missed[p.id]||0)<mostMissed ? 1 : 0);
   });
   return { benchQuota, benchCap };
@@ -847,7 +873,8 @@ const RosterSolver = {
     MISSED_GAMES_WARNING_SPREAD, PHASE2B_TIME_BUDGET_MS, BIG_M, THIN_POSITION_PREFERRER_THRESHOLD,
     COURT_TIME_WEIGHT, BENCH_CAP_PENALTY, BACK_TO_BACK_BENCH_PENALTY, STRICT_SPECIALIST_COVERAGE_BOOST, STRICT_SPECIALIST_MIN_COVERAGE_WEIGHT,
     OFF_PREFERENCE_COST, OFF_PREFERENCE_LAST_RESORT, PREFERENCE_RATIO_AT_0, PREFERENCE_RATIO_AT_9,
-    ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS
+    ROSTER_OFF_PRIORITIES, ROSTER_OFF_COVERAGE_WEIGHT, NO_PREFERENCE_COST, DEFAULT_SETTINGS,
+    DEFAULT_POSITION_LOAD, POSITION_LOAD_MIN, POSITION_LOAD_MAX
   },
   variance,
   clampSetting,
@@ -858,6 +885,7 @@ const RosterSolver = {
   deriveRosterOffWeights,
   derivePreferenceWeights,
   solveSeasonRosterOff,
+  derivePositionLoads,
   computeCourtTargets,
   baseBenchCap,
   planGameBench,
