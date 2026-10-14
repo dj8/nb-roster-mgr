@@ -1992,6 +1992,8 @@ test("QSWAP-1: swapping two quarters moves line-up, bench and slot locks togethe
   assert.deepStrictEqual(Object.keys(g.lockedSlots).sort(), ["1-C","2-GS"], "lock follows its quarter");
   assert.strictEqual(g.lockedSlots["2-GS"], g.schedule.quarters[2].onCourt.GS);
   assert.strictEqual(engine.swapGameQuarters(1, 1, 1), false, "same quarter is a no-op");
+  assert.strictEqual(engine.swapGameQuarters(1, "0", 2), false, "non-integer index refused");
+  assert.strictEqual(engine.swapGameQuarters(1, 0, 4), false, "out-of-range index refused");
   g.isPlayed = true;
   const frozen = JSON.stringify(g.schedule);
   assert.strictEqual(engine.swapGameQuarters(1, 0, 1), false, "§8.1 played game is frozen");

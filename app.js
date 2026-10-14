@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 77; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 78; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -1448,7 +1448,7 @@ function renderRotationGrid(num){
       return `<span class="grid-cell cell-bench ${isFillIn?'cell-fillin':''}" style="display:inline-block;margin:2px;">${esc(p?p.name:"(removed)")}</span>`;
     }).join("") || '<span class="hint">—</span>';
     const qLabel = editable
-      ? `<span class="quarter-handle" data-qhandle="${qi}" tabindex="0" role="button" title="Drag to swap with another quarter (or Alt+↑/↓)" aria-label="Quarter ${qi+1}: drag, or press Alt+Up/Down, to swap with another quarter"><span aria-hidden="true">&#8942;&#8942;</span>Q${qi+1}</span>`
+      ? `<span class="quarter-handle" data-qhandle="${qi}" tabindex="0" title="Drag to swap with another quarter (or Alt+↑/↓)" aria-label="Quarter ${qi+1}: drag, or press Alt+Up/Down, to swap with another quarter"><span aria-hidden="true">&#8942;&#8942;</span>Q${qi+1}</span>`
       : `Q${qi+1}`;
     return `<tr${editable?` class="quarter-row" draggable="true" data-qrow="${qi}"`:""}><td class="mono">${qLabel}</td>${cells}<td class="bench-cell">${benchNames}</td></tr>`;
   }).join("");
@@ -1730,7 +1730,7 @@ function clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid){
 function swapGameQuarters(num, a, b){
   const game = getGame(num);
   const qs = game && game.schedule && game.schedule.quarters;
-  if(!qs || game.isPlayed || a===b || !qs[a] || !qs[b]) return false;
+  if(!qs || game.isPlayed || a===b || ![a,b].every(q=>Number.isInteger(q) && qs[q])) return false;
   [qs[a], qs[b]] = [qs[b], qs[a]];
   const locks = {};
   Object.keys(game.lockedSlots||{}).forEach(k=>{

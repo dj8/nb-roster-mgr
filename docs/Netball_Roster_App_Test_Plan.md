@@ -213,6 +213,7 @@ _Now two sliders (preference, position variety); the roster-off control is a lab
 |**ED-6**|**Generate/rebalance skips played games**|**Lock game N as played, then run Generate for the season or Rebalance for remaining games**|**Game N's data is byte-for-byte unchanged after the operation; only unplayed/unlocked games are affected**|
 |**ED-7**|**Played-game lock survives fairness recalculation**|**Lock game N, generate several subsequent games, check season fairness totals**|**Game N's actual (locked) assignments are still correctly counted toward season fairness totals (§4) — locking excludes it from _being changed_, not from _counting_**|
 |**ED-8**|**Unlock a played game**|**Unlock a previously locked game, edit it, regenerate**|**Game becomes editable again and participates normally in rebalancing once unlocked**|
+|QSWAP-1|Swap two quarters|Drag one quarter row onto another (or Alt+Up/Down on its label)|The two quarters' line-up, bench, off-preference flags and slot locks trade places; a played game refuses; like any unlocked hand edit, Rebalance may re-order it|
 
 ---
 

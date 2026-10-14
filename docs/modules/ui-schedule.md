@@ -61,7 +61,8 @@ the next Generate/Rebalance if a roster-off override or checkbox was just change
   on the handle, swaps the two quarters via `swapGameQuarters(num, a, b)` (wired by
   `wireQuarterDrag`): line-up, bench, off-preference flags and `lockedSlots` keys all move
   together. Season totals are unchanged, so — like a slot edit — no regenerate is flagged;
-  a played game renders plain rows and `swapGameQuarters` refuses it (§8.1).
+  a played game renders plain rows and `swapGameQuarters` refuses it (§8.1). Like any hand
+  edit, only locked slots survive a Rebalance — an unlocked swapped order may be re-ordered.
 
 ## Manual override dialogs
 
@@ -83,7 +84,7 @@ directly.
 |---|---|
 | `refreshOffPreferenceFlag(q, pos)` | Recomputes `q.offPreference[pos]` from whoever currently occupies it (or clears the flag if empty) — called after every manual slot change so the flag never goes stale relative to the actual occupant. |
 | `clearStaleLock(lockedSlotsDraft, qi, pos, expectedPid)` | Drops a locked-slot entry if it was locked to a player who's no longer actually there (a lock pointing at a player who's just been moved elsewhere would otherwise force them back on the next rebalance). |
-| `finishSlotEdit(num)` / `commitSlotEdit(num, qi, qDraft, lockedSlotsDraft)` | The single write-back point for a slot edit — `commitSlotEdit` writes the draft quarter and locked-slots map onto `STATE`, then `finishSlotEdit` saves, closes the modal, and re-renders with this game's card left open. Every dialog above funnels through this. |
+| `finishSlotEdit(num)` / `commitSlotEdit(num, qi, qDraft, lockedSlotsDraft)` | The single write-back point for a slot edit — `commitSlotEdit` writes the draft quarter and locked-slots map onto `STATE`, then `finishSlotEdit` saves, closes the modal, and re-renders with this game's card left open. Every dialog above funnels through this, and so does a quarter swap (`finishSlotEdit` only; `closeModal` is a no-op with no modal open). |
 
 ## Called by
 
