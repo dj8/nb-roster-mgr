@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 63; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 64; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -2098,8 +2098,8 @@ function renderSettings(root){
       <div class="field">
         <label for="loadSlider">Equal quarters &#8596; equal workload</label>
         ${labelledSliderHtml({id:"loadSlider", min:0, max:10, step:1, value:s.loadBalance, valueId:"loadSliderVal",
-          leftLabel:"Everyone plays the same number of quarters", rightLabel:"Players in harder positions rest more"})}
-        <p class="hint">At 0 every quarter counts the same. Moving right counts a quarter by its position's workload below, so players in the heavier positions are given more bench time and the lighter ones less. It only changes who rests: positions still follow each player's preferences.</p>
+          leftLabel:"Everyone plays the same number of quarters", rightLabel:"Harder positions rest more, even if benched twice in a game"})}
+        <p class="hint">At 0 every quarter counts the same. Moving right counts a quarter by its position's workload below, so players in the heavier positions are given more bench time and the lighter ones less. It only changes who rests: positions still follow each player's preferences. The price is the one-bench-stint-per-game limit, which eases as you move right and is gone at 10 — there, players in heavy positions can sit twice in a game and quarters played become noticeably uneven.</p>
       </div>
       <div class="field">
         <label>Workload of a quarter in each position (centre = 1 by default; only the ratios matter)</label>

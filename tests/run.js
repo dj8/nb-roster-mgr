@@ -1547,6 +1547,50 @@ test("LOAD-5: playerLoadStats reads load from the season's position counts, and 
   assert.ok(near(r.quarterLoad.guest, 1), "no list: any position, so the average quarter");
 });
 
+test("LOAD-6: with missed games equal (nobody is ever rostered off) every workload step helps or at least doesn't hurt, through the top of the slider", ()=>{
+  // Nine players, bench of two, every game: the per-game bench limit leaves almost no room to rest anyone
+  // more than anyone else, so the slider only works up there because it relaxes that limit.
+  const NINE = [["Ana",["GS","GA","WA"]], ["Bex",["GA","GS"]], ["Cora",["WA","C","WD"]], ["Dot",["C","WA"]], ["Edie",["WD","GD","C"]],
+    ["Fern",["GD","GK","WD"]], ["Gigi",["GK","GD"]], ["Hana",["GS","GK"]], ["Indi",["C","WD","GA"]]];
+  const sd = a=>{ const m=a.reduce((x,y)=>x+y,0)/a.length; return Math.sqrt(a.reduce((x,y)=>x+(y-m)*(y-m),0)/a.length); };
+  const spreads = [], doubles = [];
+  for(let loadBalance=0; loadBalance<=10; loadBalance++){
+    const engine = freshEngine();
+    const st = engine._getState();
+    st.season.numGames = 10; st.season.desiredBenchSize = 2;
+    NINE.forEach(([name,prefs])=>addPlayer(engine, name, prefs));
+    engine.ensureGamesExist();
+    st.settings.loadBalance = loadBalance;
+    engine.runGeneration();
+    spreads.push(sd(engine.computePlayerSummaries().filter(s=>s.onCourt>0).map(s=>engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*DEFAULT_LOADS[pos],0))));
+    let twice = 0;
+    engine.gameNums().forEach(n=>{ const c={}; engine.getGame(n).schedule.quarters.forEach(q=>q.bench.forEach(id=>{ c[id]=(c[id]||0)+1; })); twice += Object.values(c).filter(v=>v>=2).length; });
+    doubles.push(twice);
+  }
+  const shown = spreads.map(v=>v.toFixed(2)).join(" ");
+  spreads.slice(1).forEach((v,i)=>assert.ok(v<=spreads[i]+0.15, `step ${i}->${i+1} made the season's workload spread noticeably worse: ${shown}`));
+  assert.ok(spreads[10] < spreads[0]*0.6, `equal workload should cut the spread well down: ${shown}`);
+  assert.ok(spreads[10] < spreads[5]-0.5, `the top half of the slider has to do real work too, not only the bottom: ${shown}`);
+  assert.ok(doubles[10] > doubles[0], `the price is the per-game bench limit, given up as the slider rises: ${doubles.join(" ")}`);
+});
+
+test("LOAD-7: the per-game bench limit's penalty is full at 'equal quarters' and gone at 'equal workload'", ()=>{
+  const S = freshEngine().RosterSolver;
+  const costs = loadBalance=>{
+    const settings = {preferenceSlider:5, allowOffPreference:false, positionVariety:1, loadBalance};
+    const cum = gameBenchSoFar=>({posCount:{}, gameBenchSoFar, benchedLastQuarter:new Set(), benchQuota:{a:1}, benchCap:{a:1}});
+    const p = {id:"a", prefs:["GS"]};
+    const under = S.buildQuarterCostFns(cum({}), settings).benchCellCost(p);            // first stint: within the limit
+    const over  = S.buildQuarterCostFns(cum({a:1}), settings).benchCellCost(p);         // second stint: one past it
+    return {under, over, weight: S.derivePreferenceWeights(5).balance*S.CONSTANTS.COURT_TIME_WEIGHT};
+  };
+  const near = (a,b)=>Math.abs(a-b)<1e-9;
+  const at0 = costs(0), at5 = costs(5), at10 = costs(10);
+  assert.ok(near(at0.over-at0.under, at0.weight*(1+S.CONSTANTS.BENCH_CAP_PENALTY)), "full penalty plus the ordinary cost of a stint");
+  assert.ok(near(at5.over-at5.under, at5.weight*(1+S.CONSTANTS.BENCH_CAP_PENALTY/2)), "half the penalty at 5");
+  assert.ok(near(at10.over-at10.under, at10.weight*1), "no penalty at 10, only the ordinary cost of a stint");
+});
+
 test("LOAD-4: the workload settings are sanitised, persisted in backups and survive a round trip", ()=>{
   const engine = freshEngine();
   const st = engine._getState();

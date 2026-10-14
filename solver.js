@@ -24,7 +24,7 @@ const PHASE2B_TIME_BUDGET_MS = 500;
 const BIG_M = 1e9;                      // disqualified-cell sentinel; finite so Hungarian's potential arithmetic stays sane
 const THIN_POSITION_PREFERRER_THRESHOLD = 1; // at or below this many preferrers, resting anyone risks zero coverage
 const COURT_TIME_WEIGHT = 24;           // bench-cell cost per bench quarter a player is ahead of their share this game (before the balance weight): at the default slider, about two preference-rank steps
-const BENCH_CAP_PENALTY = 6;            // §4 rule 3: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap
+const BENCH_CAP_PENALTY = 6;            // §4 rule 3: a bench stint beyond a player's per-game cap costs this many quarters of imbalance — a strong goal (outweighs any preference-rank gap), not a hard cap. Scaled down to 0 as the workload slider goes 0 -> 10
 const BACK_TO_BACK_BENCH_PENALTY = 0.5; // §4 rule 5, in the same units
 const OFF_PREFERENCE_COST = POSITIONS.length; // same for every player, and above any in-preference cell (worst rank is 6)
 const OFF_PREFERENCE_LAST_RESORT = 1e5;  // added to every off-preference cell: above anything court-time evenness can add up to, far below BIG_M — so evenness never buys an off-preference fill
@@ -503,9 +503,17 @@ function cleanPositionLoad(value, pos){
   return (typeof value==="number" && Number.isFinite(value))
     ? Math.max(POSITION_LOAD_MIN, Math.min(POSITION_LOAD_MAX, value)) : DEFAULT_POSITION_LOAD[pos];
 }
+/* The workload slider as a 0..1 blend. Besides weighting the quarters
+   (derivePositionLoads) it relaxes the per-game bench limit: with equal
+   missed games and the limit at full strength, the bench seats are nearly all
+   spoken for, so there is no room to rest anyone more than anyone else — the
+   effect of raising the slider flattened out within the first few steps. */
+function loadBlendOf(settings){
+  return clampSetting((settings||{}).loadBalance, 0, 10, DEFAULT_SETTINGS.loadBalance)/10;
+}
 function derivePositionLoads(settings){
   const s = settings||{};
-  const blend = clampSetting(s.loadBalance, 0, 10, DEFAULT_SETTINGS.loadBalance)/10;
+  const blend = loadBlendOf(s);
   const raw = {};
   POSITIONS.forEach(pos=>{ raw[pos] = cleanPositionLoad((s.positionLoad||{})[pos], pos); });
   const mean = POSITIONS.reduce((sum,pos)=>sum+raw[pos],0)/POSITIONS.length;
@@ -612,6 +620,7 @@ function buildQuarterCostFns(cumulative, settings){
   const { preference: prefWeight, balance: balanceWeight } = derivePreferenceWeights(settings.preferenceSlider);
   const allowOff = !!settings.allowOffPreference;
   const varietyWeight = clampSetting(settings.positionVariety, 0, 10, DEFAULT_SETTINGS.positionVariety);
+  const capPenalty = BENCH_CAP_PENALTY*(1-loadBlendOf(settings)); // the coach trades the per-game limit for equal workload as the slider rises; gone at 10
 
   function prefRank(p,pos){
     return p.prefs.indexOf(pos);
@@ -664,7 +673,7 @@ function buildQuarterCostFns(cumulative, settings){
     const cap = (cumulative.benchCap && cumulative.benchCap[p.id]) || 1;
     const overCap = Math.max(0, thisGame+1-cap);
     const backToBack = (cumulative.benchedLastQuarter && cumulative.benchedLastQuarter.has(p.id)) ? BACK_TO_BACK_BENCH_PENALTY : 0;
-    return balanceWeight*COURT_TIME_WEIGHT*(thisGame + 4 - quota + overCap*BENCH_CAP_PENALTY + backToBack);
+    return balanceWeight*COURT_TIME_WEIGHT*(thisGame + 4 - quota + overCap*capPenalty + backToBack);
   }
   return { positionCellCost, benchCellCost };
 }

@@ -187,6 +187,11 @@ function sweep(setting, fixtureName, ctx){
     results.slice(1).forEach((r,i)=>hard(r.offPrefCount<=results[i].offPrefCount, "SET-4",
       `${where}: off-preference fills rose from ${results[i].offPrefCount} to ${r.offPrefCount} between ${setting.values[i]} and ${setting.values[i+1]}`));
   }
+  if(setting.key==="loadBalance"){
+    // Raising the slider must never make the season's workload noticeably less even from one step to the next.
+    results.slice(1).forEach((r,i)=>hard(r.m.loadSd<=results[i].m.loadSd+METRICS.loadSd.min, "SET-7",
+      `${where}: workload spread rose from ${fmt(results[i].m.loadSd)} to ${fmt(r.m.loadSd)} between ${setting.values[i]} and ${setting.values[i+1]}`));
+  }
   if(setting.key==="rosterOffPriority"){
     results.slice(1).forEach((r,i)=>hard(r.m.missedVar>=results[i].m.missedVar-1e-9 && r.m.thinCover<=results[i].m.thinCover, "SET-5",
       `${where}: fairness/coverage trade-off not monotonic between ${setting.values[i]} and ${setting.values[i+1]}`));
