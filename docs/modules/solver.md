@@ -30,7 +30,7 @@ the results back onto `STATE.games[...]`.
 | `computeMissedGamesWarning(missedByPlayer, threshold?)` | `[{id,name,missed}]` | `null` or `{spread,max,min,mostMissed,leastMissed,suggestion}` | Reports-tab informational warning; never fed back into generation. |
 | `computeRosterOffAchievabilityNotes(players)` | `[{name,prefs}]` | `[{position,players,message}]` | Roster-composition note: a position with ≤1 preferrer can't be rested without risking zero coverage, independent of any setting. |
 | `clampSetting(v, lo, hi, fallback)` | untrusted value + bounds | number in `[lo,hi]` | Used everywhere an untrusted numeric setting (localStorage, CSV) needs coercing — `NaN` in used to poison every downstream comparison silently. |
-| `forcedOnCourtCount(squad)` | squad remaining after roster-off | integer | Squad members who can't be benched without leaving a position uncovered in-preference; 0 if the squad can't field in-preference at all, or has no bench. Phase 1's tie-break. |
+| `forcedOnCourtCount(squad)` | squad remaining after roster-off | integer | Squad members who can't be benched without leaving a position uncovered in-preference; the whole squad if it can't field in-preference at all, 0 if it has no bench. Phase 1's tie-break, applied to decidable games only and counting the game's assigned fill-ins (`games[].fillIns`). |
 | `gameCoveragePenalty(squadAfterOff)` | squad remaining after roster-off | number | Rank-weighted penalty: heavy at 0 remaining covering players for a position, moderate at exactly 1. |
 | `hasZeroCoverage(squadAfter)` | squad remaining | boolean | The *hard* version of the above — used to disqualify a Phase 1 move outright when `allowOffPreference` is off (a game's own `allowOffPreference` boolean, when set, overrides the season-wide value for that game's moves). |
 | `variance(nums)` | array of numbers | population variance | Phase 1's fairness term. |
@@ -49,7 +49,7 @@ plus a fixed tie-break `ROSTER_OFF_TIEBREAK_WEIGHT * FORCED_ON_COURT_PENALTY * f
 — the number of squad members who couldn't sit out a quarter without leaving a position
 uncovered in-preference (bipartite matching, `canFieldInPreference`). Too small to cost
 evenness or coverage at any priority; it only separates splits level on both
-(`FORCED-ON-COURT-1`).
+(`P1-9`).
 
 1. **Greedy seed** (`buildSeed`) — walk games in order, at each game greedily pick
    whoever's currently least-missed with the smallest resulting coverage penalty
@@ -128,8 +128,8 @@ the whole game's cost. (Slots can't be traded *between* quarters: with the whole
 every quarter that always puts someone in two slots at once, which is why the original
 cross-quarter search never made a move — `P2B-5`.) Season-level signals (position counts, bench quota/cap) come from the
 **fixed** snapshots captured at the start of each quarter during the Phase 2a forward
-pass; the within-game ones (`gameBenchSoFar`, `benchedLastQuarter`) are re-derived from
-the candidate lineup, so a swap that benches someone past their cap is priced as that.
+pass; what the game itself adds (`gameBenchSoFar`, `benchedLastQuarter`, and `posCount`
+from its earlier quarters) is re-derived from the candidate lineup, so a swap that benches someone past their cap is priced as that.
 Locked slots (`lockedSlotsPerQuarter`) are never touched. Runs until no swap improves or
 `PHASE2B_TIME_BUDGET_MS` (500ms) is hit.
 

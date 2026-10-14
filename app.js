@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 59; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 60; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -478,7 +478,8 @@ function computeSeasonRosterOff(preserveExisting){
       rosterOffCount: fixedOffIds!=null ? fixedOffIds.length : a.rosterOffCount,
       fixedOffIds,
       strictSpecialistPairing: !!game.strictSpecialistPairing,
-      allowOffPreference: gameAllowsOffPreference(game)
+      allowOffPreference: gameAllowsOffPreference(game),
+      fillIns: (game.fillInIds||[]).map(fid=>byId(STATE.fillIns,fid)).filter(Boolean).map(f=>({prefs:f.prefs.slice()}))
     };
   });
   const phase1 = RosterSolver.solveSeasonRosterOff({

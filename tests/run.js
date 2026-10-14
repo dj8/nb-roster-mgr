@@ -280,9 +280,17 @@ test("P2B-5: refinement actually moves players — a second bench stint it can s
     assert.strictEqual(new Set(ids).size, 8, "everyone still in exactly one slot each quarter");
   });
   assert.ok(Object.values(stints).every(n=>n===1), "four bench stints should end up with four different players: "+JSON.stringify(stints));
+
+  // Position variety is priced from the lineup being scored, not the Phase 2a snapshots:
+  // with variety on and court-time pressure off, one player parked at their #1 all game rotates.
+  const two = [{id:"x", prefs:["GS","GA"]}, {id:"y", prefs:["GA","GS"]}].concat(["WA","C","WD","GD","GK"].map(pos=>({id:pos, prefs:[pos]})));
+  const fixed = [0,1,2,3].map(()=>({ onCourt:{GS:"x",GA:"y",WA:"WA",C:"C",WD:"WD",GD:"GD",GK:"GK"}, bench:[], offPreference:{} }));
+  const varied = S.refineGameQuarters({ quarters:fixed, squadPool:two, cumulativeSnapshots:[0,1,2,3].map(cum), lockedSlotsPerQuarter:[{},{},{},{}],
+    settings:{preferenceSlider:10, allowOffPreference:false, positionVariety:10} });
+  assert.ok(varied.quarters.some(q=>q.onCourt.GS==="y"), "with variety at 10, the two shooters should trade ends at least once");
 });
 
-test("FORCED-ON-COURT-1: Phase 1 prefers the roster-off that leaves the bench free to rotate, without giving up evenness", ()=>{
+test("P1-9 (FORCED-ON-COURT-1): Phase 1 prefers the roster-off that leaves the bench free to rotate, without giving up evenness", ()=>{
   const engine = freshEngine();
   const S = engine.RosterSolver;
   const mk = (id,prefs)=>({id, prefs, unavailableCount:0});
@@ -294,6 +302,8 @@ test("FORCED-ON-COURT-1: Phase 1 prefers the roster-off that leaves the bench fr
   assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","d3","a","b","c","d","e"])), 5, "without the swing player, both shooters and all three mid-courters must stay on");
   assert.strictEqual(S.forcedOnCourtCount(players), 0);
   assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","a","b","c","d","e"])), 0, "a squad of seven has no bench to rotate");
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","d3","a","b","c","d"]).concat([mk("s3",["GS","GA"])])), 8, "a squad that can't field in-preference at all (two mid-courters, three mid-court positions) is the worst score, not the best");
+  assert.strictEqual(S.forcedOnCourtCount(squad(["d1","d2","a","b","c","d","e","f"]).concat([{id:"guest", prefs:[]}])), 0, "a no-preference fill-in can relieve anyone");
   // Every choice leaves each position with 2+ coverers, so only bench flexibility separates them;
   // "a", listed first, is the seed's pick when nothing does.
   const games = [{num:1, availableIds:players.map(p=>p.id), rosterOffCount:1, fixedOffIds:null}];
