@@ -44,7 +44,8 @@ erDiagram
         number positionVariety "0-10, repeat favourite <-> spread across list (default 1)"
         string rosterOffPriority "fairness (default) | balanced | coverage"
         number loadBalance "0-10, equal quarters <-> equal workload (default 0)"
-        object positionLoad "per-position workload GS..GK, each 0.1-2 (default C 1, WA/WD 0.85, GA/GD 0.7, GS/GK 0.55)"
+        number centreQuarters "1-4, Centre quarters a player should play in one game; 4 = no limit (default 4)"
+        object positionLoad "per-position workload GS..GK, each 0.1-2 (default C 1, GA/GD 0.85, WA/WD 0.7, GS/GK 0.55)"
     }
 
     GAME {

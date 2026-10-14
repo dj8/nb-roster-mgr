@@ -6,10 +6,11 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 66; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 71; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
+const PREVIOUS_DEFAULT_POSITION_LOAD = Object.freeze({ GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55 }); // shipped before build 67: a save still holding exactly these is upgraded to the new defaults (sanitizeSettingsAndSeason)
 /* Simple padlock; fills with currentColor so CSS (.lock-icon) sets its colour. */
 const LOCK_ICON_SVG = '<svg class="lock-icon" viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M17 9V7a5 5 0 0 0-10 0v2H5v12h14V9h-2zM9 7a3 3 0 0 1 6 0v2H9V7z"/></svg>';
 const STORAGE_KEY = "netballRosterApp_v1";
@@ -36,7 +37,7 @@ function defaultState(){
     fillIns:[],            // {id,name,prefs:[pos,...]}
     season:{numGames:11, desiredBenchSize:2},
     games:{},              // gameNum(string) -> gameState
-    // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority, loadBalance 0..10, positionLoad {pos: 0.1..2} (§5, §11)
+    // preferenceSlider 0..10, allowOffPreference, positionVariety 0..10, rosterOffPriority, loadBalance 0..10, positionLoad {pos: 0.1..2}, centreQuarters 1..4 (§5, §11)
     settings: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_SETTINGS, {positionLoad: Object.assign({}, RosterSolver.CONSTANTS.DEFAULT_POSITION_LOAD)}),
     activeTab:"setup"
   };
@@ -141,7 +142,14 @@ function sanitizeSettingsAndSeason(state){
   }
   state.settings.allowOffPreference = !!state.settings.allowOffPreference;
   fix(state.settings, "loadBalance", 0, 10, d.settings.loadBalance, "Workload balance");
-  const loads = state.settings.positionLoad;
+  const centreBefore = state.settings.centreQuarters, centreAfter = RosterSolver.centreQuartersOf(state.settings);
+  if(centreBefore!==undefined && centreAfter!==centreBefore) corrected.push(`Centre quarters (${JSON.stringify(centreBefore)} → ${centreAfter})`);
+  state.settings.centreQuarters = centreAfter;
+  let loads = state.settings.positionLoad;
+  if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===PREVIOUS_DEFAULT_POSITION_LOAD[pos])){ // still the old shipped defaults, so take the new ones; any other table is the coach's own
+    loads = undefined;
+    corrected.push("Position workloads (old defaults → new defaults: GA/GD 0.85, WA/WD 0.7)");
+  }
   // Rebuilt key by key: drops anything that isn't a position, and never keeps a reference to the frozen default.
   state.settings.positionLoad = {};
   POSITIONS.forEach(pos=>{
@@ -596,7 +604,7 @@ function runGeneration(){
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];
     const gameSettings = Object.assign({}, STATE.settings, {allowOffPreference: gameAllowsOffPreference(game)});
-    const gameBenchSoFar = {};
+    const gameBenchSoFar = {}, centres = []; // centres: who played Centre each quarter (§4 rule 3a; fill-ins included)
     let benchedLastQuarter = new Set();
     const quarters = [];
     const cumulativeSnapshots = [];
@@ -614,6 +622,7 @@ function runGeneration(){
         posCount: Object.assign({}, cumulative.posCount),
         gameBenchSoFar: Object.assign({}, gameBenchSoFar),
         benchedLastQuarter: new Set(benchedLastQuarter),
+        centres: centres.slice(),
         benchQuota, benchCap
       };
       cumulativeSnapshots.push(snapshot);
@@ -634,6 +643,7 @@ function runGeneration(){
       // Game-local, so fill-ins count here too (they rotate through the bench like anyone else).
       result.bench.forEach(pid=>{ gameBenchSoFar[pid]=(gameBenchSoFar[pid]||0)+1; });
       benchedLastQuarter = new Set(result.bench);
+      centres.push(result.onCourt.C);
       quarters.push({onCourt:result.onCourt, bench:result.bench, offPreference:result.offPreference});
     }
 
@@ -728,6 +738,27 @@ function computeOffPrefRate(log){
   return {count:log.length, totalSlots, rate: totalSlots? (log.length/totalSlots*100):0};
 }
 
+/* §4 rule 3a, over every generated game. Regular players only, like the other
+   Settings-tab headlines (the engine still rests fill-ins). backToBack: adjacent quarters with the same Centre. overPlayerGames / overGames: player-games / games with a
+   player past `target` Centre quarters (default: the coach's setting). */
+function computeCentreStats(target){
+  const limit = target==null ? RosterSolver.centreQuartersOf(STATE.settings) : target;
+  let backToBack = 0, overPlayerGames = 0, overGames = 0;
+  gameNums().forEach(num=>{
+    const game = getGame(num);
+    if(!game.schedule) return;
+    const counts = {};
+    game.schedule.quarters.forEach((q,i)=>{
+      const c = q.onCourt.C; if(!c || isFillInId(c)) return;
+      counts[c] = (counts[c]||0)+1;
+      if(i>0 && game.schedule.quarters[i-1].onCourt.C===c) backToBack++;
+    });
+    const over = Object.keys(counts).filter(id=>counts[id]>limit).length;
+    overPlayerGames += over; if(over) overGames++;
+  });
+  return {backToBack, overPlayerGames, overGames};
+}
+
 /* The handful of numbers the Settings controls exist to move, for that tab's
    "at a glance" card. Regular players only — fill-ins are excluded from
    season fairness. null until at least one game has a schedule. */
@@ -753,7 +784,9 @@ function computeSeasonHeadlines(){
   const positionsEach = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.filter(pos=>s.positions[pos]>0).length);
   // Season workload per player: quarters x the weights exactly as entered (so the coach can check it by hand), whatever the slider says — it's the number the slider exists to narrow.
   const workloads = summaries.filter(s=>s.onCourt>0).map(s=>POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*STATE.settings.positionLoad[pos],0));
+  const centre = computeCentreStats();
   return {
+    centreBackToBack: centre.backToBack, centreOverGames: centre.overGames,
     workloadMin: workloads.length ? Math.min(...workloads) : 0,
     workloadMax: workloads.length ? Math.max(...workloads) : 0,
     offPrefPct: 100*offPreference/regularSlots,
@@ -2024,12 +2057,15 @@ function syncRangeFill(input){
   input.style.setProperty("--range-pct", pct+"%");
 }
 
-function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel}){
+function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel, ticks}){
+  // ticks: optional labels, one per stop, each centred under its thumb position
+  const tickHtml = ticks ? `<div class="slider-ticks mono" aria-hidden="true">${ticks.map((t,i)=>
+    `<span style="--at:${i/Math.max(1,ticks.length-1)}">${esc(t)}</span>`).join("")}</div>` : "";
   return `
     <div class="slider-wrap">
       <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
       <span class="slider-val mono" id="${valueId}">${value}</span>
-    </div>
+    </div>${tickHtml}
     <div class="slider-endlabels"><span>${esc(leftLabel)}</span><span>${esc(rightLabel)}</span></div>
   `;
 }
@@ -2041,6 +2077,8 @@ function headlineStats(h){
     {label:"Off-preference quarters (regular players)", value:h.offPrefPct.toFixed(1)+"%", moves:"allow off-preference"},
     {label:"Court time, least to most", value:`${Math.round(h.courtTimeMinPct)}–${Math.round(h.courtTimeMaxPct)}%`, moves:"preference slider"},
     {label:"Season workload, lightest to heaviest", value:`${h.workloadMin.toFixed(1)}–${h.workloadMax.toFixed(1)}`, moves:"position workload"},
+    {label:"Back-to-back Centre quarters", value:String(h.centreBackToBack), moves:"centre quarters"},
+    {label:"Games with a player over the Centre target", value:String(h.centreOverGames), moves:"centre quarters"},
     {label:"Quarters at first choice", value:Math.round(h.firstChoicePct)+"%", moves:"position variety"},
     {label:"Positions per player", value:h.positionsPerPlayer.toFixed(1), moves:"position variety"},
     {label:"Missed-games spread", value:String(h.missedSpread), moves:"who sits out"},
@@ -2060,49 +2098,48 @@ function seasonHeadlinesHtml(){
 function renderSettings(root){
   const s = STATE.settings, C = RosterSolver.CONSTANTS;
   const priorities = [
-    {value:"fairness", label:"Even missed games", desc:"Everyone sits out as equally as possible (counting games they're unavailable for); coverage only decides between equally even splits"},
-    {value:"balanced", label:"Balanced", desc:"Accepts a slightly uneven split to avoid the worst coverage gaps"},
-    {value:"coverage", label:"Protect thin positions", desc:"Avoids resting the players a position depends on; missed games may come out less even"}
+    {value:"fairness", label:"Even missed games", desc:"Everyone sits out equally, counting games they're unavailable for"},
+    {value:"balanced", label:"Balanced", desc:"A slightly uneven split, to avoid the worst coverage gaps"},
+    {value:"coverage", label:"Protect thin positions", desc:"Keeps the players a position depends on; missed games may be less even"}
   ];
   root.innerHTML = `
     ${dirtySinceGeneration? `<div class="alert alert-warn">Changes here won't take effect until you regenerate or rebalance (buttons at the top).</div>` : ""}
     <div class="card">
-      <div class="card-head"><div><h2>This season at a glance</h2><p>What the current settings produced the last time the season was generated${dirtySinceGeneration?" — regenerate to see the effect of your changes":""}.</p></div></div>
+      <div class="card-head"><div><h2>This season at a glance</h2><p>What these settings produced at the last generation.</p></div></div>
       <div id="seasonHeadlines">${seasonHeadlinesHtml()}</div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Preferences vs. even court time</h2><p>How far the engine bends players' preferences to share court time evenly. Defaults to strongly favouring preference.</p></div></div>
+      <div class="card-head"><div><h2>Preferences vs. even court time</h2><p>How far players' own ranking of their positions gives way to sharing court time evenly.</p></div></div>
       <div class="field">
-        <label for="prefSlider">Even court time &#8596; strict preference</label>
+        <label for="prefSlider" class="sr-only">Even court time &#8596; strict preference</label>
         ${labelledSliderHtml({id:"prefSlider", min:0, max:10, step:1, value:s.preferenceSlider, valueId:"sliderVal",
           leftLabel:"Even court time for everyone", rightLabel:"Players in their preferred positions"})}
-        <p class="hint">Sets how firmly even court time outranks a player's order of preference among the positions they listed. Players who miss more games are given more quarters in the games they attend. At 10, court time is ignored. It never causes an off-preference fill.</p>
+        <p class="hint">Players who miss more games get more quarters in the games they attend. At 10, court time is ignored. Either way, players only play positions they listed, unless the box below is ticked.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" id="allowOffPref" ${s.allowOffPreference?"checked":""}>
         <span class="cb-label">Allow off-preference positions</span>
-        <span class="cb-desc">A last resort only: used when a quarter can't be filled in-preference, never to even out court time. When off, that quarter raises an error instead</span>
+        <span class="cb-desc">Only when a quarter can't be filled from players' lists, never to even out court time. When off, that game shows an error instead</span>
       </label>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Position variety</h2><p>Whether a player keeps returning to their favourite position or rotates through everything they listed.</p></div></div>
+      <div class="card-head"><div><h2>Position variety</h2><p>Whether players keep returning to their favourite position or rotate through everything they listed.</p></div></div>
       <div class="field">
-        <label for="varietySlider">Repeat favourite &#8596; spread across the list</label>
+        <label for="varietySlider" class="sr-only">Repeat favourite &#8596; spread across the list</label>
         ${labelledSliderHtml({id:"varietySlider", min:0, max:10, step:1, value:s.positionVariety, valueId:"varietySliderVal",
           leftLabel:"Repeat a player's favourite position", rightLabel:"Spread play across their whole preference list"})}
-        <p class="hint">A position costs a player more the more often they've already played it, so the other positions they listed get a turn. At 0 nothing discourages repeating a favourite.</p>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Position workload</h2><p>Whether court time is shared by quarters played or by how hard those quarters were. A centre covers more court than a keeper, so may need more rest.</p></div></div>
+      <div class="card-head"><div><h2>Position workload</h2><p>Share court time by quarters played, or by how hard those quarters were: a Centre covers more court than a keeper.</p></div></div>
       <div class="field">
-        <label for="loadSlider">Equal quarters &#8596; equal workload</label>
+        <label for="loadSlider" class="sr-only">Equal quarters &#8596; equal workload</label>
         ${labelledSliderHtml({id:"loadSlider", min:0, max:10, step:1, value:s.loadBalance, valueId:"loadSliderVal",
           leftLabel:"Everyone plays the same number of quarters", rightLabel:"Harder positions rest more, even if benched twice in a game"})}
-        <p class="hint">At 0 every quarter counts the same. Moving right counts a quarter by its position's workload below, so players in the heavier positions are given more bench time and the lighter ones less. It only changes who rests: positions still follow each player's preferences. The price is the one-bench-stint-per-game limit, which eases as you move right and is gone at 10 — there, players in heavy positions can sit twice in a game and quarters played become noticeably uneven.</p>
+        <p class="hint">Moving right gives players in heavier positions more bench time; it never changes their positions. The price is the one-bench-per-game limit, which eases as you go and is gone at 10.</p>
       </div>
       <div class="field">
-        <label>Workload of a quarter in each position (centre = 1 by default; only the ratios matter)</label>
+        <label>Workload of a quarter in each position (only the ratios matter; also sets where a Centre rests, below)</label>
         <div class="load-grid">
           ${POSITIONS.map(pos=>`<label class="load-cell" title="${POS_LABEL[pos]}"><span>${pos}</span>
             <input type="number" data-load="${pos}" aria-label="${POS_LABEL[pos]} workload" min="${C.POSITION_LOAD_MIN}" max="${C.POSITION_LOAD_MAX}" step="0.05" value="${s.positionLoad[pos]}"></label>`).join("")}
@@ -2111,13 +2148,22 @@ function renderSettings(root){
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what the season-wide roster-off search protects first.</p></div></div>
+      <div class="card-head"><div><h2>Centre quarters</h2><p>The most quarters a player should play in Centre in one game.</p></div></div>
+      <div class="field">
+        <label for="centreSlider" class="sr-only">Centres play 1 quarter &#8596; no limit</label>
+        ${labelledSliderHtml({id:"centreSlider", min:1, max:4, step:1, value:s.centreQuarters, valueId:"centreSliderVal",
+          leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters", ticks:["1","2","3","4"]})}
+        <p class="hint">At 2, Centres alternate quarters; at 3, they get a break in Q2 or Q3. After a Centre quarter a player rests on the bench or in the lightest position they listed. A goal, not a rule: with too few Centres someone plays more.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Who sits out</h2><p>When more players are available than a game needs, what deciding who's rostered off protects first.</p></div></div>
       ${priorities.map(p=>`<label class="checkbox-row">
         <input type="radio" name="rosterOffPriority" value="${p.value}" ${s.rosterOffPriority===p.value?"checked":""}>
         <span class="cb-label">${p.label}</span>
         <span class="cb-desc">${p.desc}</span>
       </label>`).join("")}
-      <p class="hint">With a roster that has good depth at every position these goals rarely conflict and the choice will have little visible effect — it mainly matters for positions only a few players prefer. The Reports tab warns if the missed-games spread gets large.</p>
+      <p class="hint">With good depth at every position these rarely differ; it matters for positions only a few players list. Reports warns if missed games get uneven.</p>
     </div>
   `;
   root.querySelectorAll('input[type=range]').forEach(syncRangeFill);
@@ -2130,7 +2176,7 @@ function renderSettings(root){
     };
   });
   document.getElementById("loadReset").onclick=()=>{ s.positionLoad = Object.assign({}, C.DEFAULT_POSITION_LOAD); markStale(); renderSettings(root); };
-  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"],["loadSlider","loadSliderVal","loadBalance"]].forEach(([id,valueId,key])=>{
+  [["prefSlider","sliderVal","preferenceSlider"],["varietySlider","varietySliderVal","positionVariety"],["loadSlider","loadSliderVal","loadBalance"],["centreSlider","centreSliderVal","centreQuarters"]].forEach(([id,valueId,key])=>{
     document.getElementById(id).oninput=e=>{ document.getElementById(valueId).textContent=e.target.value; syncRangeFill(e.target); };
     document.getElementById(id).onchange=e=>{ s[key]=Number(e.target.value); markStale(); };
   });
@@ -2226,7 +2272,7 @@ function buildBackup(){
       settings: {
         preferenceSlider: s.preferenceSlider, allowOffPreference: !!s.allowOffPreference,
         positionVariety: s.positionVariety, rosterOffPriority: s.rosterOffPriority,
-        loadBalance: s.loadBalance, positionLoad: Object.assign({}, s.positionLoad)
+        loadBalance: s.loadBalance, positionLoad: Object.assign({}, s.positionLoad), centreQuarters: s.centreQuarters
       },
       players: STATE.players.map(p=>({id:p.id, name:p.name, prefs:(p.prefs||[]).slice(), unavailable:(p.unavailable||[]).slice()})),
       fillIns: STATE.fillIns.map(f=>({id:f.id, name:f.name, prefs:(f.prefs||[]).slice(), saved:f.saved!==false})),
@@ -2276,6 +2322,7 @@ function importBackup(text){
     if(isPlainObject(set.positionLoad)){
       POSITIONS.forEach(pos=>{ if(typeof set.positionLoad[pos]==="number") ns.settings.positionLoad[pos] = set.positionLoad[pos]; }); // range-checked by sanitizeSettingsAndSeason
     }
+    if(typeof set.centreQuarters==="number") ns.settings.centreQuarters = set.centreQuarters; // rounded and clamped to 1..4 by sanitizeSettingsAndSeason
     if(typeof set.allowOffPreference==="boolean") ns.settings.allowOffPreference = set.allowOffPreference;
     if(typeof set.rosterOffPriority==="string") ns.settings.rosterOffPriority = set.rosterOffPriority; // validated by sanitizeSettingsAndSeason
 

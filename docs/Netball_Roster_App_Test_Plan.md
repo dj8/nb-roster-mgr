@@ -300,6 +300,8 @@ Run the full suite for releases. Use this table for focused verification of prev
 |Sliders lack useful explanations or behave contrary to labels|LBL-1–LBL-4, SLD-5|
 |Roster-off fairness versus coverage cannot be tuned|SLD-1–SLD-5|
 |Algorithm redesign regresses established behavior|REG-4|
+|Centre quarters setting changes a season at the default, or breaks a hard rule|CQ-2, CQ-6, CQ-9, CQ-12|
+|Back-to-back or over-target Centre quarters, rest quarters|CQ-1, CQ-3–CQ-5, CQ-7, CQ-8, CQ-10|
 
 ## 21. Out of Scope
 
@@ -343,7 +345,26 @@ fail it only with `--strict`.
 |SET-5|Roster-off priority is monotonic (§5.4)|Step fairness → balanced → coverage on all four fixtures|Missed-games variance never falls and thin-coverage count never rises toward the coverage end|
 |SET-6|Allow off-preference is a hard rule (§5.2)|Toggle off on every fixture, at the default preference and at 0|Zero off-preference fills in every generated game|
 |SET-7|Side effects are reported|For each sweep, compare the first and last value on the metrics the label doesn't mention|Any shift of twice the noticeable threshold is listed as a finding|
-|SET-8|At-a-glance numbers|Open Settings after generating; change the preference slider and regenerate|Six headline numbers are shown; after regenerating, each changed number shows what it was before|
+|SET-8|At-a-glance numbers|Open Settings after generating; change the preference slider and regenerate|Nine headline numbers are shown; after regenerating, each changed number shows what it was before|
 |SET-9|Every control saves and persists|In the real UI, move each slider with the arrow keys, click the checkbox and pick a roster-off priority; reload|Readout updates, value is saved with the right type, Settings and Schedule tabs both warn the season is stale, and every control shows the new value after a reload|
 |SET-10|A setting change reaches the engine|Regenerate at the default, at preference 0, then back at the default|The season differs at 0 and is reproduced exactly on return|
-|SET-11|Workload slider and position weights|`LOAD-1`..`LOAD-7` (`LOAD-6` steps through all eleven slider values on a roster where missed games are equal; `LOAD-7` pins the bench-limit penalty at 0, 5 and 10); `npm run test:settings` sweeps `loadBalance` with a hard check (SET-7) that no step makes the workload spread noticeably worse; the UI smoke test edits a weight, an out-of-range weight and Reset|At 0 every position counts 1; at 10 the ratios equal the coach's weights and always average 1. Raising the slider never makes the season workload spread noticeably worse from one step to the next, and the top half of the slider still does work, a centre is due more bench than a keeper, weights clamp to 0.1–2, and both settings round-trip through a backup with untrusted values sanitised|
+|SET-11|Workload slider and position weights|`LOAD-1`..`LOAD-8` (`LOAD-8`: a save holding the old default weights is upgraded to the new ones, an edited table is kept) (`LOAD-6` steps through all eleven slider values on a roster where missed games are equal; `LOAD-7` pins the bench-limit penalty at 0, 5 and 10); `npm run test:settings` sweeps `loadBalance` with a hard check (SET-7) that no step makes the workload spread noticeably worse; the UI smoke test edits a weight, an out-of-range weight and Reset|At 0 every position counts 1; at 10 the ratios equal the coach's weights and always average 1. Raising the slider never makes the season workload spread noticeably worse from one step to the next, and the top half of the slider still does work, a centre is due more bench than a keeper, weights clamp to 0.1–2, and both settings round-trip through a backup with untrusted values sanitised|
+
+## 23. Centre Quarters per Game (§4 rule 3a, §11)
+
+Unit cases in `tests/run.js`; the setting is also swept in `tests/settings-sweep.js` (entry `centreQuarters`, values 4, 3, 2, 1; hard check SET-8: tightening the target never adds an off-preference fill or a failed game) and covered in `tests/ui-smoke.js` (the control renders as a 1–4 slider with its four stop labels and end labels, saves as a number and survives a reload). The sweep measures `centreOver` against a fixed bar of 2 Centre quarters, not each step's own target, so every step is measured the same way (which is why its 2→1 step reads as "reshuffle only": back-to-back is already 0 at 2).
+
+|ID|Case|Expected|
+|---|---|---|
+|CQ-1|`centreCost` table|0 at 4; over-target, back-to-back and third-in-row apply at the right targets; fatigue identical on every position; always finite and far below the off-preference last resort|
+|CQ-2|Setting 4 (or absent) is a no-op|A full season is identical with the setting 4 or absent|
+|CQ-3|Target 2, two Centres|Every game alternates; nobody over 2|
+|CQ-4|Third Centre quarter|The cheapest 3-Centre shapes have the break in Q2 or Q3; three or four in a row costs more|
+|CQ-5|Target 1|Four Centres play one quarter each; two Centres play two each, alternating|
+|CQ-6|Lone Centre at target 1|Plays all four quarters, no error, no off-preference fill|
+|CQ-7|Rest ordering|The rest quarter ranks the player's positions by the coach's workload weights (rank breaks ties), regardless of the workload slider|
+|CQ-8|Bench as rest|Same court time due: the player with more Centre quarters takes the bench seat|
+|CQ-9|Safety on the four sweep rosters|Target 1 vs 4: no extra off-preference fills, failed games or missed games; back-to-back Centre quarters do not rise|
+|CQ-10|Phase 2b|Never raises a game's back-to-back Centre count above Phase 2a's|
+|CQ-11|Backup|Round-trips; missing means 4; junk is rounded, clamped or ignored; localStorage corrections|
+|CQ-12|Coach locks|Locking Centre in Q1 and Q2 for one player still generates and keeps the locks|

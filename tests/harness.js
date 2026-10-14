@@ -87,6 +87,7 @@ if(typeof module!=="undefined" && module.exports){
     describeOffPrefReason: describeOffPrefReason,
     computeOffPrefRate: computeOffPrefRate,
     computeSeasonHeadlines: computeSeasonHeadlines,
+    computeCentreStats: computeCentreStats,
     computeMissedGamesWarningForReports: computeMissedGamesWarningForReports,
     computeRosterOffAchievabilityNotesForReports: computeRosterOffAchievabilityNotesForReports,
     newGameState: newGameState,
