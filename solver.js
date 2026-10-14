@@ -678,9 +678,11 @@ function buildQuarterCostFns(cumulative, settings){
   function prefRank(p,pos){
     return p.prefs.indexOf(pos);
   }
+  // The quarter straight after this player's Centre quarter, at a listed non-Centre position (§4 rule 3a).
+  const isRestCell = (p,pos)=>centreOn && pos!=="C" && prefRank(p,pos)>=0 && centreRunOf(p)>=1;
   function preferenceCost(p,pos){
     const idx = prefRank(p,pos);
-    if(idx>=0) return (centreOn && pos!=="C" && centreRunOf(p)>=1) ? restRank(p,pos) : idx;
+    if(idx>=0) return isRestCell(p,pos) ? restRank(p,pos) : idx;
     if(!p.prefs.length) return NO_PREFERENCE_COST; // no list at all: in-preference everywhere (isInPreference)
     // §5.2: "outside the stated list". One flat cost for everyone — a cost
     // tied to the list's length made short-list players the cheapest
@@ -709,7 +711,8 @@ function buildQuarterCostFns(cumulative, settings){
     // resort at every slider value: used only when the quarter can't be filled
     // in-preference, never to even out court time.
     const lastResort = isInPreference(p,pos) ? 0 : OFF_PREFERENCE_LAST_RESORT;
-    return lastResort + prefWeight*(pc + varietyTerm(p,pos,pc)) + centreUnit*centreCost(p,pos);
+    const variety = isRestCell(p,pos) ? 0 : varietyTerm(p,pos,pc); // a rest quarter goes by workload alone: variety could reorder it
+    return lastResort + prefWeight*(pc + variety) + centreUnit*centreCost(p,pos);
   }
   /* Bench-slot cost: how far benching this player now would put them past
      the bench quarters they're due this game (benchQuota — higher for a

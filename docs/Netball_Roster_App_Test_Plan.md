@@ -301,7 +301,7 @@ Run the full suite for releases. Use this table for focused verification of prev
 |Roster-off fairness versus coverage cannot be tuned|SLD-1–SLD-5|
 |Algorithm redesign regresses established behavior|REG-4|
 |Centre quarters setting changes a season at the default, or breaks a hard rule|CQ-2, CQ-6, CQ-9, CQ-12|
-|Back-to-back or over-target Centre quarters, rest quarters|CQ-1, CQ-3–CQ-5, CQ-7, CQ-8, CQ-10, CQ-13–CQ-16|
+|Back-to-back or over-target Centre quarters, rest quarters|CQ-1, CQ-3–CQ-5, CQ-7, CQ-8, CQ-10, CQ-13–CQ-18|
 
 ## 21. Out of Scope
 
@@ -371,4 +371,6 @@ Unit cases in `tests/run.js`; the setting is also swept in `tests/settings-sweep
 |CQ-13|Quarter reordering|A game whose Centres run C1,C1,C2,C2 is reordered to no back-to-back; nothing Phase 2b returns is beaten by reordering its own quarters; a locked quarter stays put|
 |CQ-14|Centre sequences|At most 4 candidates, those ranking Centre highest (no list first); 256 orders; locked Centre kept; a player locked elsewhere isn't tried; nobody to try gives `null`|
 |CQ-16|Coach's data|`tests/fixtures/test-data-v2.json` (preference 1, target 1): no back-to-back Centre, nobody past 2 in a game, and target 1 missed in at most one game whose squad has four Centres|
+|CQ-17|solveGame|Failing quarters come back unrefined; at 4 it equals the forward pass plus refinement; below 4 the Centre-order search never raises the game's cost|
+|CQ-18|Rest quarter vs variety|At variety 10 a much-played lightest position is still the rest position (variety is left out of rest cells)|
 |CQ-15|Real roster|The backup fixture at targets 3, 2 and 1 has no three Centre quarters in a row, and at most 5 back-to-backs at 2 and 1|

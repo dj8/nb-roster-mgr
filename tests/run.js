@@ -2457,6 +2457,38 @@ test("CQ-16: the coach's test-data-v2 backup (preference slider 1, Centre target
   assert.ok(overWithFourCentres<=1, "with four Centres in the squad, target 1 is met (at most one game short)");
 });
 
+test("CQ-17: solveGame - unrefined quarters back when one can't be filled; at no limit it is just the forward pass refined; below it never worse than that", ()=>{
+  const S = freshEngine().RosterSolver;
+  const players = CQ_TWO_CENTRES.map(([id,prefs])=>({id,name:id,prefs}));
+  const seasonCum = {posCount:{}, benchQuota:{}, benchCap:{}};
+  const locks = [{},{},{},{}];
+  const input = settings=>({squad:players, benchSlotCount:players.length-7, lockedSlotsPerQuarter:locks, seasonCum, settings});
+  // a position nobody lists, off-preference off: the failing quarters come back as they are
+  const noGK = players.filter(p=>p.id!=="GK1").concat([{id:"X", name:"X", prefs:["GS"]}]);
+  const failed = S.solveGame(Object.assign(input({allowOffPreference:false}), {squad:noGK}));
+  assert.strictEqual(failed.failingQuarters.length, 4);
+  // at 4: exactly forward pass + refinement
+  const four = {centreQuarters:4, preferenceSlider:8};
+  const fwd = S.solveGameForward(input(four));
+  const ref = S.refineGameQuarters({quarters:fwd.quarters, squadPool:players, cumulativeSnapshots:[seasonCum,seasonCum,seasonCum,seasonCum], lockedSlotsPerQuarter:locks, settings:four});
+  assert.strictEqual(JSON.stringify(S.solveGame(input(four)).quarters), JSON.stringify(ref.quarters));
+  // below 4: the search can only lower the game's cost
+  [1,2,3].forEach(t=>{
+    const settings = {centreQuarters:t, preferenceSlider:1};
+    const scorer = S.makeGameScorer(players, [seasonCum,seasonCum,seasonCum,seasonCum], settings);
+    const cost = qs=>scorer(qs.map(S.quarterToAssign));
+    const plain = S.refineGameQuarters({quarters:S.solveGameForward(input(settings)).quarters, squadPool:players, cumulativeSnapshots:[seasonCum,seasonCum,seasonCum,seasonCum], lockedSlotsPerQuarter:locks, settings}).quarters;
+    assert.ok(cost(S.solveGame(input(settings)).quarters) <= cost(plain)+1e-9, "target "+t);
+  });
+});
+
+test("CQ-18: a rest quarter follows the workload order even at high position variety", ()=>{
+  const S = freshEngine().RosterSolver;
+  const p = {id:"p", prefs:["C","GA","WA","GS"]};
+  const cell = pos=>S.buildQuarterCostFns({centres:["p"], posCount:{"p::GS":20}}, {centreQuarters:2, preferenceSlider:8, positionVariety:10}).positionCellCost(p,pos);
+  assert.ok(cell("GS")<cell("WA") && cell("WA")<cell("GA"), "GS played 20 times is still the rest position");
+});
+
 /* ============================================================
    Report
    ============================================================ */

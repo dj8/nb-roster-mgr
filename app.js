@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 74; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 75; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -2115,7 +2115,7 @@ function renderSettings(root){
         <label for="centreSlider" class="sr-only">Centres play 1 quarter &#8596; no limit</label>
         ${labelledSliderHtml({id:"centreSlider", min:1, max:4, step:1, value:s.centreQuarters, valueId:"centreSliderVal",
           leftLabel:"Centres play 1 quarter a game", rightLabel:"No limit on Centre quarters", ticks:["1","2","3","4"]})}
-        <p class="hint">At 2, Centres alternate quarters; at 3, they get a break in Q2 or Q3. After a Centre quarter a player rests on the bench or in the lightest position they listed. A goal, not a rule: with too few Centres someone plays more.</p>
+        <p class="hint">At 2, Centres alternate quarters; at 3, they get a break in Q2 or Q3. After a Centre quarter a player rests on the bench or in the lightest position they listed. A goal, not a rule: with too few Centres someone plays more. It ranks above even court time, so resting a Centre can cost someone a quarter on court; later games even that out.</p>
       </div>
     </div>
     <div class="card">
