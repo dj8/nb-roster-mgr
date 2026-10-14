@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 65; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 66; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -2105,7 +2105,7 @@ function renderSettings(root){
         <label>Workload of a quarter in each position (centre = 1 by default; only the ratios matter)</label>
         <div class="load-grid">
           ${POSITIONS.map(pos=>`<label class="load-cell" title="${POS_LABEL[pos]}"><span>${pos}</span>
-            <input type="number" data-load="${pos}" min="${C.POSITION_LOAD_MIN}" max="${C.POSITION_LOAD_MAX}" step="0.05" value="${s.positionLoad[pos]}"></label>`).join("")}
+            <input type="number" data-load="${pos}" aria-label="${POS_LABEL[pos]} workload" min="${C.POSITION_LOAD_MIN}" max="${C.POSITION_LOAD_MAX}" step="0.05" value="${s.positionLoad[pos]}"></label>`).join("")}
         </div>
         <button class="btn btn-sm" id="loadReset" style="margin-top:8px;">Reset to defaults</button>
       </div>
@@ -2126,7 +2126,7 @@ function renderSettings(root){
       const pos = e.target.dataset.load;
       s.positionLoad[pos] = RosterSolver.cleanPositionLoad(parseFloat(e.target.value), pos); // an emptied box goes back to the default, not the minimum
       e.target.value = s.positionLoad[pos]; // show what was actually stored
-      markStale();
+      markStale(`${pos} workload is kept between ${C.POSITION_LOAD_MIN} and ${C.POSITION_LOAD_MAX}. Regenerate to apply.`);
     };
   });
   document.getElementById("loadReset").onclick=()=>{ s.positionLoad = Object.assign({}, C.DEFAULT_POSITION_LOAD); markStale(); renderSettings(root); };

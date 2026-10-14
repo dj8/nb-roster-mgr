@@ -488,13 +488,6 @@ function computeRosterOffAchievabilityNotes(players){
    PHASE 2a — exact per-quarter Hungarian position assignment
    ============================================================ */
 
-/* What one quarter at each position counts for in the court-time evenness
-   sums (§4 rule 2). The workload slider blends between every quarter
-   counting the same (0: equal quarters) and each counting its position's
-   load (10: equal load). Loads are scaled so the seven average 1, which keeps
-   a full line-up worth seven "quarters" at any slider value — so targets,
-   quotas and the tuned weights don't shift with it.
-   -> {pos: weight} */
 /* One position's workload weight from an untrusted value. Only a real number
    is clamped; anything else (including "" and null, which Number() would
    read as 0 and clampSetting would raise to the minimum) is that position's
@@ -508,6 +501,13 @@ function cleanPositionLoad(value, pos){
 function loadBlendOf(settings){
   return clampSetting((settings||{}).loadBalance, 0, 10, DEFAULT_SETTINGS.loadBalance)/10;
 }
+/* What one quarter at each position counts for in the court-time evenness
+   sums (§4 rule 2). The workload slider blends between every quarter
+   counting the same (0: equal quarters) and each counting its position's
+   load (10: equal load). Loads are scaled so the seven average 1, which keeps
+   a full line-up worth seven "quarters" at any slider value — so targets,
+   quotas and the tuned weights don't shift with it.
+   -> {pos: weight} */
 function derivePositionLoads(settings){
   const s = settings||{};
   const blend = loadBlendOf(s);

@@ -1554,6 +1554,7 @@ test("LOAD-6: with missed games equal (nobody is ever rostered off) every worklo
   const NINE = [["Ana",["GS","GA","WA"]], ["Bex",["GA","GS"]], ["Cora",["WA","C","WD"]], ["Dot",["C","WA"]], ["Edie",["WD","GD","C"]],
     ["Fern",["GD","GK","WD"]], ["Gigi",["GK","GD"]], ["Hana",["GS","GK"]], ["Indi",["C","WD","GA"]]];
   const spreads = [], doubles = [];
+  let mostBenched = 0; // most bench quarters anyone has in one game, at any slider value
   for(let loadBalance=0; loadBalance<=10; loadBalance++){
     const engine = freshEngine();
     const st = engine._getState();
@@ -1566,13 +1567,14 @@ test("LOAD-6: with missed games equal (nobody is ever rostered off) every worklo
       .map(s=>engine.POSITIONS.reduce((sum,pos)=>sum+s.positions[pos]*DEFAULT_LOADS[pos],0));
     spreads.push(Math.sqrt(engine.RosterSolver.variance(loads)));
     let twice = 0; // players benched twice or more in a game, summed over the season
-    engine.gameNums().forEach(n=>{ const c={}; engine.getGame(n).schedule.quarters.forEach(q=>q.bench.forEach(id=>{ c[id]=(c[id]||0)+1; })); twice += Object.values(c).filter(v=>v>=2).length; });
+    engine.gameNums().forEach(n=>{ const c={}; engine.getGame(n).schedule.quarters.forEach(q=>q.bench.forEach(id=>{ c[id]=(c[id]||0)+1; })); twice += Object.values(c).filter(v=>v>=2).length; mostBenched = Math.max(mostBenched, ...Object.values(c)); });
     doubles.push(twice);
   }
   const shown = spreads.map(v=>v.toFixed(2)).join(" ");
   spreads.slice(1).forEach((v,i)=>assert.ok(v<=spreads[i]+0.15, `step ${i}->${i+1} made the season's workload spread noticeably worse: ${shown}`));
   assert.ok(spreads[10] < spreads[0]*0.6, `equal workload should cut the spread well down: ${shown}`);
   assert.ok(spreads[10] < spreads[5]-0.5, `the top half of the slider has to do real work too, not only the bottom: ${shown}`);
+  assert.ok(mostBenched<=2, `even with the limit gone nobody should sit three quarters of a game (the per-stint cost still applies): ${mostBenched}`);
   assert.ok(doubles[10] > doubles[0], `the price is the per-game bench limit, given up as the slider rises: ${doubles.join(" ")}`);
 });
 
