@@ -506,6 +506,27 @@ function derivePositionLoads(settings){
   return loads;
 }
 
+/* Each player's court time so far in load units, straight from the season's
+   position counts, and the rate they earn it at: what they've actually
+   averaged per quarter once they've played (someone who lists three positions
+   may only ever get the heaviest), else the average of the positions they
+   list. `heaviestQuarter` bounds what one more quarter could add.
+   input: { players:[{id,prefs}], posCount:{"id::pos":n}, positionLoads:{pos:w} }
+   -> { loadSoFar:{id:n}, quarterLoad:{id:n}, heaviestQuarter:{id:n} } */
+function playerLoadStats(input){
+  const loads = input.positionLoads, posCount = input.posCount||{};
+  const loadSoFar = {}, quarterLoad = {}, heaviestQuarter = {};
+  (input.players||[]).forEach(p=>{
+    let quarters = 0, load = 0;
+    POSITIONS.forEach(pos=>{ const n = posCount[p.id+"::"+pos]||0; quarters += n; load += n*loads[pos]; });
+    const listed = ((p.prefs||[]).length ? p.prefs : POSITIONS).map(pos=>loads[pos]);
+    loadSoFar[p.id] = load;
+    quarterLoad[p.id] = quarters>0 ? load/quarters : listed.reduce((a,b)=>a+b,0)/listed.length;
+    heaviestQuarter[p.id] = Math.max(...listed);
+  });
+  return { loadSoFar, quarterLoad, heaviestQuarter };
+}
+
 /* §4 rule 2: each regular's season on-court target. Everyone gets the same
    number of quarters ("level") unless they can't reach it (`cap`: too many
    missed games) or are already past it (`floor`: quarters already played in
@@ -537,14 +558,13 @@ function baseBenchCap(squadSize, benchSlotCount){
    A regular is due whatever leaves them on pace for their season target over
    the games they have left — the target and the tally are in load units
    (derivePositionLoads), turned back into quarters at the rate the player
-   earns it (`quarterLoad`: the average load of the positions they list, so a
-   centre reaches their share in fewer quarters and sits out more); a fill-in (outside season fairness) an even share
+   earns it (`quarterLoad`, from playerLoadStats: a centre reaches their share
+   in fewer quarters and sits out more); a fill-in (outside season fairness) an even share
    of this game's bench. Only a player who misses fewer games than someone
    else in this squad may be benched one more time, to hand that squad-mate
    court time — an absentee who isn't playing doesn't relax anyone's cap.
-   input: { squad:[{id,isFillIn}], benchSlotCount, courtTargets:{id:n},
-            onCourtSoFar:{id:n}, gamesLeft:{id:n} (this game included), missed:{id:n},
-            quarterLoad?:{id:n} (default 1 each) }
+   input: { squad:[{id,isFillIn}], benchSlotCount, courtTargets:{id:n}, loadSoFar:{id:n},
+            gamesLeft:{id:n} (this game included), missed:{id:n}, quarterLoad?:{id:n} (default 1 each) }
    -> { benchQuota:{id:n}, benchCap:{id:n} } */
 function planGameBench(input){
   const squad = input.squad||[];
@@ -554,7 +574,7 @@ function planGameBench(input){
   const benchQuota = {}, benchCap = {};
   squad.forEach(p=>{
     if(p.isFillIn){ benchQuota[p.id] = 4*input.benchSlotCount/squad.length; benchCap[p.id] = baseCap; return; }
-    const courtDue = (input.courtTargets[p.id]||0) - (input.onCourtSoFar[p.id]||0);
+    const courtDue = (input.courtTargets[p.id]||0) - (input.loadSoFar[p.id]||0);
     const quartersDue = courtDue/Math.max(1, input.gamesLeft[p.id]||1)/((input.quarterLoad||{})[p.id]||1);
     benchQuota[p.id] = Math.max(0, Math.min(4, 4 - quartersDue));
     benchCap[p.id] = baseCap + ((missed[p.id]||0)<mostMissed ? 1 : 0);
@@ -886,6 +906,7 @@ const RosterSolver = {
   derivePreferenceWeights,
   solveSeasonRosterOff,
   derivePositionLoads,
+  playerLoadStats,
   computeCourtTargets,
   baseBenchCap,
   planGameBench,

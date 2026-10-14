@@ -25,7 +25,8 @@ function freshEngine(){
 }
 
 const ROSTER_OFF_PRIORITIES = freshEngine().RosterSolver.CONSTANTS.ROSTER_OFF_PRIORITIES;
-const WORKLOAD_DEFAULTS = {loadBalance:0, positionLoad:{GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55}};
+const DEFAULT_LOADS = {...freshEngine().RosterSolver.CONSTANTS.DEFAULT_POSITION_LOAD};
+const WORKLOAD_DEFAULTS = {loadBalance:0, positionLoad:DEFAULT_LOADS};
 
 function addPlayer(engine, name, prefs, unavailable){
   const st = engine._getState();
@@ -1473,7 +1474,7 @@ test("COURT-TARGET-1: season court targets are level, except for players who can
   // planGameBench: a regular behind on court time is due less bench; only those missing fewer games get the relaxed cap.
   const plan = S.planGameBench({
     squad:[{id:"a"},{id:"b"},{id:"g",isFillIn:true}].concat(["c","d","e","f","h","i"].map(id=>({id}))), benchSlotCount:2,
-    courtTargets:{a:28,b:28}, onCourtSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3,c:3,d:3,e:3,f:3,h:3,i:3,away:9}
+    courtTargets:{a:28,b:28},  loadSoFar:{a:14,b:10}, gamesLeft:{a:4,b:4}, missed:{a:2,b:3,c:3,d:3,e:3,f:3,h:3,i:3,away:9}
   });
   assert.ok(near(plan.benchQuota.a,0.5) && near(plan.benchQuota.b,0), JSON.stringify(plan.benchQuota));
   assert.ok(near(plan.benchQuota.g,8/9), "a fill-in is due an even share of this game's bench");
@@ -1489,6 +1490,7 @@ test("LOAD-1: position loads blend from equal quarters to the coach's weights, a
   assert.ok(Math.abs(sum(full)-7)<1e-9, "a full line-up is always worth seven quarters");
   assert.ok(full.C>full.WA && full.WA===full.WD && full.WA>full.GA && full.GA===full.GD && full.GA>full.GS && full.GS===full.GK, JSON.stringify(full));
   assert.ok(Math.abs(full.C/full.GK - 1/0.55)<1e-9, "at 10 the ratios are exactly the weights'");
+  assert.deepStrictEqual(DEFAULT_LOADS, {GS:0.55, GA:0.7, WA:0.85, C:1, WD:0.85, GD:0.7, GK:0.55}, "the shipped defaults");
   const half = S.derivePositionLoads({loadBalance:5});
   assert.ok(Math.abs(half.C-(1+full.C)/2)<1e-9 && Math.abs(sum(half)-7)<1e-9, "linear in between");
   const junk = S.derivePositionLoads({loadBalance:"x", positionLoad:{C:"abc", GK:-5, WA:99}});
@@ -1526,9 +1528,21 @@ test("LOAD-2: toward equal workload, players in the heavy positions rest more an
 test("LOAD-3: a centre is due more bench than a keeper for the same court time so far (planGameBench quarterLoad)", ()=>{
   const S = freshEngine().RosterSolver;
   const squad = ["c","k","a","b","d","e","f","g","h"].map(id=>({id}));
-  const plan = S.planGameBench({ squad, benchSlotCount:2, courtTargets:{c:28,k:28}, onCourtSoFar:{c:14,k:14}, gamesLeft:{c:4,k:4}, missed:{},
+  const plan = S.planGameBench({ squad, benchSlotCount:2, courtTargets:{c:28,k:28},  loadSoFar:{c:14,k:14}, gamesLeft:{c:4,k:4}, missed:{},
     quarterLoad:{c:1.4, k:0.7} });
   assert.ok(Math.abs(plan.benchQuota.c-(4-3.5/1.4))<1e-9 && plan.benchQuota.k===0, JSON.stringify(plan.benchQuota));
+});
+
+test("LOAD-5: playerLoadStats reads load from the season's position counts, and the rate a player actually earns it at", ()=>{
+  const S = freshEngine().RosterSolver;
+  const positionLoads = S.derivePositionLoads({loadBalance:10});
+  const players = [{id:"z", prefs:["C","WA","WD"]}, {id:"new", prefs:["GK","GS"]}, {id:"guest", prefs:[]}];
+  const r = S.playerLoadStats({players, posCount:{"z::C":6, "z::WA":2, "other::C":9}, positionLoads});
+  const near = (a,b)=>Math.abs(a-b)<1e-9;
+  assert.ok(near(r.loadSoFar.z, 6*positionLoads.C+2*positionLoads.WA) && near(r.quarterLoad.z, r.loadSoFar.z/8), "mostly centre so far: earns load faster than her list's average");
+  assert.ok(r.quarterLoad.z > (positionLoads.C+positionLoads.WA+positionLoads.WD)/3);
+  assert.ok(r.loadSoFar.new===0 && near(r.quarterLoad.new, positionLoads.GK) && near(r.heaviestQuarter.z, positionLoads.C), "before playing: the average of the listed positions");
+  assert.ok(near(r.quarterLoad.guest, 1), "no list: any position, so the average quarter");
 });
 
 test("LOAD-4: the workload settings are sanitised, persisted in backups and survive a round trip", ()=>{
@@ -1538,7 +1552,7 @@ test("LOAD-4: the workload settings are sanitised, persisted in backups and surv
   st.settings.loadBalance = 7; st.settings.positionLoad.C = 1.5;
   engine.exportBackup();
   const text = engine.CapturingBlob.last;
-  assert.deepStrictEqual(JSON.parse(text).plan.settings.positionLoad, {GS:0.55, GA:0.7, WA:0.85, C:1.5, WD:0.85, GD:0.7, GK:0.55});
+  assert.deepStrictEqual(JSON.parse(text).plan.settings.positionLoad, {...DEFAULT_LOADS, C:1.5});
   const fresh = freshEngine();
   fresh.importBackup(text);
   assert.strictEqual(fresh._getState().settings.loadBalance, 7);
@@ -1550,7 +1564,7 @@ test("LOAD-4: the workload settings are sanitised, persisted in backups and surv
   fresh.importBackup(JSON.stringify(bad));
   const s = fresh._getState().settings;
   assert.strictEqual(s.loadBalance, 0);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.positionLoad)), {GS:0.55, GA:0.7, WA:0.85, C:2, WD:0.85, GD:0.7, GK:0.55});
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(s.positionLoad)), {...DEFAULT_LOADS, C:2});
   bad.plan.settings.positionLoad = [1,2,3];
   fresh.importBackup(JSON.stringify(bad));
   assert.deepStrictEqual(JSON.parse(JSON.stringify(fresh._getState().settings.positionLoad)), {...WORKLOAD_DEFAULTS.positionLoad});

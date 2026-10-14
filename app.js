@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 61; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 62; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -418,11 +418,8 @@ function fillInGapSuggestions(gameNum){
   });
 }
 
-/* `load` is onCourt with each quarter weighted by its position (the workload
-   setting, RosterSolver.derivePositionLoads); the two are equal when
-   positionLoads is left unset or the workload slider is at "equal quarters". */
-function emptyCumulative(positionLoads){
-  return {onCourt:{}, bench:{}, posCount:{}, load:{}, positionLoads: positionLoads||null};
+function emptyCumulative(){
+  return {onCourt:{}, bench:{}, posCount:{}};
 }
 function posCountKey(id,pos){ return id+"::"+pos; }
 
@@ -436,7 +433,6 @@ function applyQuarterToCumulative(cumulative, q, sign){
     const pck = posCountKey(pid,pos);
     cumulative.posCount[pck] = (cumulative.posCount[pck]||0) + sign;
     cumulative.onCourt[pid] = (cumulative.onCourt[pid]||0) + sign;
-    cumulative.load[pid] = (cumulative.load[pid]||0) + sign*(cumulative.positionLoads ? cumulative.positionLoads[pos] : 1);
   });
   (q.bench||[]).forEach(pid=>{
     if(isFillInId(pid)) return;
@@ -534,15 +530,9 @@ function runGeneration(){
   const phase1Stats = computeSeasonRosterOff();
 
   const positionLoads = RosterSolver.derivePositionLoads(STATE.settings);
-  const cumulative = emptyCumulative(positionLoads);
+  const cumulative = emptyCumulative();
   const nums = scheduledGameNums();
-  // What a quarter on court is worth to each regular, before they've played any: the average over the positions they list.
-  const listedLoad = {}, heaviestQuarter = {};
-  STATE.players.forEach(p=>{
-    const loads = (p.prefs.length ? p.prefs : POSITIONS).map(pos=>positionLoads[pos]);
-    listedLoad[p.id] = loads.reduce((a,b)=>a+b,0)/loads.length;
-    heaviestQuarter[p.id] = Math.max(...loads);
-  });
+  const loadPlayers = STATE.players.map(p=>({id:p.id, prefs:p.prefs}));
 
   // §8.1: a played game is locked — every stored field stays untouched; only
   // fold its already-frozen result into cumulative fairness. Done up front,
@@ -596,19 +586,12 @@ function runGeneration(){
     const benchCount = plan.squad.length-7;
     // Targets are re-derived from what has actually been scheduled so far, so
     // a game that couldn't be scheduled doesn't leave phantom quarters in them.
-    const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>{
-      const sofar = cumulative.load[p.id]||0;
-      return {id:p.id, floor:sofar, cap:sofar+4*(gamesLeft[p.id]||0)*heaviestQuarter[p.id]};
-    }), STATE.players.reduce((sum,p)=>sum+(cumulative.load[p.id]||0), 0) + courtQuartersLeft);
-    // Once they've played, the rate they've actually earned load at — a player who lists three positions may only ever get the heaviest.
-    const quarterLoad = {};
-    STATE.players.forEach(p=>{
-      const played = cumulative.onCourt[p.id]||0;
-      quarterLoad[p.id] = played>0 ? cumulative.load[p.id]/played : listedLoad[p.id];
-    });
+    const { loadSoFar, quarterLoad, heaviestQuarter } = RosterSolver.playerLoadStats({players: loadPlayers, posCount: cumulative.posCount, positionLoads});
+    const courtTargets = RosterSolver.computeCourtTargets(STATE.players.map(p=>(
+      {id:p.id, floor:loadSoFar[p.id], cap:loadSoFar[p.id]+4*(gamesLeft[p.id]||0)*heaviestQuarter[p.id]}
+    )), STATE.players.reduce((sum,p)=>sum+loadSoFar[p.id], 0) + courtQuartersLeft);
     const { benchQuota, benchCap } = RosterSolver.planGameBench({
-      squad: plan.squad, benchSlotCount: benchCount, courtTargets,
-      onCourtSoFar: cumulative.load, gamesLeft, missed: missedById, quarterLoad
+      squad: plan.squad, benchSlotCount: benchCount, courtTargets, loadSoFar, gamesLeft, missed: missedById, quarterLoad
     });
     plan.squad.forEach(p=>{ if(!p.isFillIn) gamesLeft[p.id]--; });
     courtQuartersLeft -= courtShareOf[num];

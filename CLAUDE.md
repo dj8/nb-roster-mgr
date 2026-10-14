@@ -61,7 +61,7 @@ matching `docs/modules/*.md` / `data-model.md`.
   capped below the former and the bench (court-time) side can never total the latter, so neither position
   variety nor court-time evenness can make an off-preference cell win over an in-preference one.
 - **Court time is counted in load units** (`derivePositionLoads`: 1 per quarter unless the workload slider
-  is raised). `cumulative.load` feeds the targets; `cumulative.onCourt` stays plain quarters for reports.
+  is raised), derived from `cumulative.posCount` by `playerLoadStats`; `cumulative.onCourt` stays plain quarters.
   `DEFAULT_SETTINGS.positionLoad` is frozen and shared — copy it (as `defaultState` does), never hand it out.
 - **Court-time evenness is target-driven** (`computeCourtTargets` → per-game `benchQuota`/`benchCap`, all
   in the bench cell): players who miss more games sit out less. The per-game bench limit is a strong
