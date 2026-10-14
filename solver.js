@@ -642,9 +642,13 @@ function buildQuarterCostFns(cumulative, settings){
      it is finite, so it never disqualifies a cell. 0 throughout at the default (4). */
   const centreTarget = centreQuartersOf(settings);
   const centreOn = centreTarget<4;
-  const restLoad = rawPositionLoads(settings); // the coach's weights, not the slider's blend
+  const restLoad = centreOn ? rawPositionLoads(settings) : null; // the coach's weights, not the slider's blend
   // Read per call, not hoisted: refineGameQuarters re-points cumulative.centres after these functions are built.
-  const centreSoFarOf = p=>(cumulative.centres||[]).filter(id=>id===p.id).length;
+  function centreSoFarOf(p){
+    let n = 0;
+    for(const id of cumulative.centres||[]) if(id===p.id) n++;
+    return n;
+  }
   function centreRunOf(p){
     const centres = cumulative.centres||[];
     let run = 0;
@@ -687,11 +691,10 @@ function buildQuarterCostFns(cumulative, settings){
      own list lets a favourite lose ground as it's played out (§11's "spread
      across the whole list") while never costing more than "one worse than
      their last choice" — itself always below OFF_PREFERENCE_COST. */
-  function varietyTerm(p,pos){
-    const idx = prefRank(p,pos);
-    if(idx<0) return 0; // no variety signal off the list (or for a player with no list)
+  function varietyTerm(p,pos,rank){ // rank: the one preferenceCost used (a rest quarter's workload order replaces the player's own)
+    if(prefRank(p,pos)<0) return 0; // no variety signal off the list (or for a player with no list)
     const posCount = (cumulative.posCount && cumulative.posCount[p.id+"::"+pos]) || 0;
-    const safeCap = Math.max(0, (p.prefs.length-idx) - 0.05);
+    const safeCap = Math.max(0, (p.prefs.length-rank) - 0.05);
     return Math.min(0.15*varietyWeight*Math.log2(1+posCount), safeCap);
   }
   function positionCellCost(p,pos){
@@ -701,7 +704,7 @@ function buildQuarterCostFns(cumulative, settings){
     // resort at every slider value: used only when the quarter can't be filled
     // in-preference, never to even out court time.
     const lastResort = isInPreference(p,pos) ? 0 : OFF_PREFERENCE_LAST_RESORT;
-    return lastResort + prefWeight*(pc + varietyTerm(p,pos) + centreCost(p,pos));
+    return lastResort + prefWeight*(pc + varietyTerm(p,pos,pc) + centreCost(p,pos));
   }
   /* Bench-slot cost: how far benching this player now would put them past
      the bench quarters they're due this game (benchQuota — higher for a

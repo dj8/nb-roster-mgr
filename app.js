@@ -6,7 +6,7 @@
 "use strict";
 
 /* ---------------- Constants ---------------- */
-const BUILD_NUMBER = 70; // bump on every commit (see CLAUDE.md)
+const BUILD_NUMBER = 71; // bump on every commit (see CLAUDE.md)
 const POSITIONS = ["GS","GA","WA","C","WD","GD","GK"];
 const POS_LABEL = {GS:"Goal Shooter",GA:"Goal Attack",WA:"Wing Attack",C:"Centre",WD:"Wing Defence",GD:"Goal Defence",GK:"Goal Keeper"};
 const MAX_LOCATION_LEN = 80;
@@ -146,7 +146,10 @@ function sanitizeSettingsAndSeason(state){
   if(centreBefore!==undefined && centreAfter!==centreBefore) corrected.push(`Centre quarters (${JSON.stringify(centreBefore)} → ${centreAfter})`);
   state.settings.centreQuarters = centreAfter;
   let loads = state.settings.positionLoad;
-  if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===PREVIOUS_DEFAULT_POSITION_LOAD[pos])) loads = undefined; // still the old shipped defaults, so take the new ones; any other table is the coach's own
+  if(isPlainObject(loads) && POSITIONS.every(pos=>loads[pos]===PREVIOUS_DEFAULT_POSITION_LOAD[pos])){ // still the old shipped defaults, so take the new ones; any other table is the coach's own
+    loads = undefined;
+    corrected.push("Position workloads (old defaults → new defaults: GA/GD 0.85, WA/WD 0.7)");
+  }
   // Rebuilt key by key: drops anything that isn't a position, and never keeps a reference to the frozen default.
   state.settings.positionLoad = {};
   POSITIONS.forEach(pos=>{
@@ -2057,7 +2060,7 @@ function syncRangeFill(input){
 function labelledSliderHtml({id, min, max, step, value, valueId, leftLabel, rightLabel, ticks}){
   // ticks: optional labels, one per stop, each centred under its thumb position
   const tickHtml = ticks ? `<div class="slider-ticks mono" aria-hidden="true">${ticks.map((t,i)=>
-    `<span style="--at:${i/(ticks.length-1)}">${esc(t)}</span>`).join("")}</div>` : "";
+    `<span style="--at:${i/Math.max(1,ticks.length-1)}">${esc(t)}</span>`).join("")}</div>` : "";
   return `
     <div class="slider-wrap">
       <input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${value}">
