@@ -842,7 +842,7 @@ test("BACKUP-IMPORT-SANITIZE-1: a corrupted backup is sanitized rather than corr
   assert.strictEqual(st.players.find(p=>p.id==="p1").name, "Amy", "the first occurrence of a duplicate id should be kept");
 
   const g = engine.getGame(1);
-  assert.strictEqual(Object.keys(g.lockedSlots).length, 0, "a locked slot referencing an unknown player id should be dropped: "+JSON.stringify(g.lockedSlots));
+  assert.ok(g.lockedSlots.every(l=>!Object.keys(l).length), "a locked slot referencing an unknown player id should be dropped: "+JSON.stringify(g.lockedSlots));
   assert.strictEqual(g.schedule.quarters[0].onCourt.GS, "p2", "a valid schedule entry should still import correctly");
   assert.ok(!g.schedule.quarters[0].onCourt.GA, "an unknown player id in the schedule should be dropped, not left dangling: "+JSON.stringify(g.schedule.quarters[0].onCourt));
 });
@@ -969,7 +969,7 @@ test("BACKUP-IMPORT-KEYS-1: unexpected game/slot keys (including __proto__) are 
     "games":{"__proto__":{"isPlayed":true},"constructor":{"isPlayed":true},"0":{},"1":{"lockedSlots":{"0-GS":"p1","9-XX":"p1","__proto__":"p1"}}}}}`);
   assert.strictEqual(({}).isPlayed, undefined, "Object.prototype must not be polluted");
   assert.deepStrictEqual([...engine.gameNums()], [1,2], "only real game numbers should exist");
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(engine.getGame(1).lockedSlots)), {"0-GS":"p1"}, "only well-formed slot keys survive");
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(engine.getGame(1).lockedSlots)), [{GS:"p1"},{},{},{}], "only well-formed slot keys survive (migrated to per-quarter)");
 });
 
 /* ============================================================
@@ -986,7 +986,7 @@ test("BACKUP-ROUNDTRIP-1: the file is versioned, split into plan/results, and om
   const text = engine.CapturingBlob.last;
   const b = JSON.parse(text);
   assert.strictEqual(b.format, "netball-roster-backup");
-  assert.strictEqual(b.schemaVersion, 2);
+  assert.strictEqual(b.schemaVersion, 3);
   assert.ok(Number.isInteger(b.buildNumber) && b.buildNumber>0, "buildNumber should be recorded");
   assert.ok(b.plan && b.results, "plan and results sections should both be present");
   assert.strictEqual(b.plan.players.length, 7);
@@ -1079,12 +1079,12 @@ test("BACKUP-ROUNDTRIP-5: schedule, locks, off-preference flags and every per-ga
   g1.date = "2026-03-14"; g1.time = "10:30"; g1.location = "=Court 3, \"Main\" Hall";
   g1.rosterOffOverride = 0; g1.allowOffPreference = false; g1.strictSpecialistPairing = true;
   engine.runGeneration();
-  g1.lockedSlots["0-GS"] = st.players[0].id;
+  g1.lockedSlots[0].GS = st.players[0].id;
   const scheduleBefore = JSON.parse(JSON.stringify(g1.schedule));
   backupRoundTrip(engine);
   const g = engine.getGame(1);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(g.schedule)), scheduleBefore, "schedule must round-trip exactly");
-  assert.strictEqual(g.lockedSlots["0-GS"], st.players[0].id);
+  assert.strictEqual(g.lockedSlots[0].GS, st.players[0].id);
   assert.strictEqual(g.date, "2026-03-14");
   assert.strictEqual(g.time, "10:30");
   assert.strictEqual(g.location, "=Court 3, \"Main\" Hall", "free text must come back exactly");
@@ -1285,7 +1285,7 @@ test("OP-13: an off-preference slot the coach locked is flagged in the off-prefe
   const before = engine.computeOffPrefLog();
   assert.ok(before.length>0 && before.every(o=>o.locked===false), "sanity: unlocked off-preference fills are not flagged locked");
   const first = before[0];
-  engine.getGame(1).lockedSlots[(first.quarter-1)+"-"+first.position] = first.playerId;
+  engine.getGame(1).lockedSlots[first.quarter-1][first.position] = first.playerId;
   const after = engine.computeOffPrefLog();
   const hit = after.find(o=>o.quarter===first.quarter && o.position===first.position);
   assert.strictEqual(hit.locked, true, "the locked off-preference slot must be flagged");
@@ -1985,12 +1985,12 @@ test("QSWAP-1: swapping two quarters moves line-up, bench and slot locks togethe
   engine.runGeneration();
   const g = engine.getGame(1);
   const q0 = JSON.stringify(g.schedule.quarters[0]), q2 = JSON.stringify(g.schedule.quarters[2]);
-  g.lockedSlots = {"0-GS": g.schedule.quarters[0].onCourt.GS, "1-C": g.schedule.quarters[1].onCourt.C};
+  g.lockedSlots = [{GS: g.schedule.quarters[0].onCourt.GS}, {C: g.schedule.quarters[1].onCourt.C}, {}, {}];
   assert.strictEqual(engine.swapGameQuarters(1, 0, 2), true);
   assert.strictEqual(JSON.stringify(g.schedule.quarters[0]), q2);
   assert.strictEqual(JSON.stringify(g.schedule.quarters[2]), q0);
-  assert.deepStrictEqual(Object.keys(g.lockedSlots).sort(), ["1-C","2-GS"], "lock follows its quarter");
-  assert.strictEqual(g.lockedSlots["2-GS"], g.schedule.quarters[2].onCourt.GS);
+  assert.deepStrictEqual(g.lockedSlots.map(l=>Object.keys(l)), [[],["C"],["GS"],[]], "lock follows its quarter");
+  assert.strictEqual(g.lockedSlots[2].GS, g.schedule.quarters[2].onCourt.GS);
   assert.strictEqual(engine.swapGameQuarters(1, 1, 1), false, "same quarter is a no-op");
   assert.strictEqual(engine.swapGameQuarters(1, "0", 2), false, "non-integer index refused");
   assert.strictEqual(engine.swapGameQuarters(1, 0, 4), false, "out-of-range index refused");
@@ -1998,6 +1998,29 @@ test("QSWAP-1: swapping two quarters moves line-up, bench and slot locks togethe
   const frozen = JSON.stringify(g.schedule);
   assert.strictEqual(engine.swapGameQuarters(1, 0, 1), false, "§8.1 played game is frozen");
   assert.strictEqual(JSON.stringify(g.schedule), frozen);
+});
+
+test("LOCKS-1: slot locks are stored per quarter; older flat \"q-pos\" maps migrate from saves and v1/v2 backups", ()=>{
+  const engine = freshEngine();
+  const st = engine._getState();
+  st.players.push({id:"p1", name:"Amy", prefs:["GS"], unavailable:[]});
+  st.season.numGames = 1; engine.ensureGamesExist();
+  // A pre-build-80 localStorage save
+  engine.getGame(1).lockedSlots = {"0-GS":"p1", "3-C":"p1", "4-GS":"p1", "1-ZZ":"p1"};
+  engine.saveState();
+  const plain = v => JSON.parse(JSON.stringify(v));
+  assert.deepStrictEqual(plain(engine.loadState().games["1"].lockedSlots), [{GS:"p1"},{},{},{C:"p1"}], "legacy save migrates; bad keys dropped");
+  // A v2 backup with the flat map
+  engine.importBackup(makeBackup({players:[{id:"p1", name:"Amy", prefs:["GS"], unavailable:[]}], games:{"1":{lockedSlots:{"2-WA":"p1"}}}}));
+  assert.deepStrictEqual(plain(engine.getGame(1).lockedSlots), [{},{},{WA:"p1"},{}], "v2 backup migrates");
+  // A v3 backup: junk entries, unknown positions and non-string ids are dropped; a v3 flat map isn't read as legacy
+  const v3 = locks=>JSON.stringify({format:"netball-roster-backup", schemaVersion:3,
+    plan:{season:{numGames:1, desiredBenchSize:0}, settings:{}, fillIns:[], players:[{id:"p1", name:"Amy", prefs:["GS"], unavailable:[]}], games:{"1":{lockedSlots:locks}}},
+    results:{games:{}}});
+  engine.importBackup(v3([{GS:"p1", XX:"p1"}, null, {C:5}, {GK:"p1", __proto__:{GA:"p1"}}, {GS:"p1"}]));
+  assert.deepStrictEqual(plain(engine.getGame(1).lockedSlots), [{GS:"p1"},{},{},{GK:"p1"}]);
+  engine.importBackup(v3({"0-GS":"p1"}));
+  assert.deepStrictEqual(plain(engine.getGame(1).lockedSlots), [{},{},{},{}]);
 });
 
 test("PURGE-1: removing a person clears them from unplayed games only (played games stay frozen)", ()=>{
@@ -2010,7 +2033,7 @@ test("PURGE-1: removing a person clears them from unplayed games only (played ga
   const victim = st.players[0].id;
   engine.getGame(1).isPlayed = true;
   const g2 = engine.getGame(2);
-  g2.lockedSlots["0-GS"] = victim; g2.rosterOffLockIds = [victim];
+  g2.lockedSlots[0].GS = victim; g2.rosterOffLockIds = [victim];
   const inGame = g=>g.schedule.quarters.some(q=>Object.values(q.onCourt).includes(victim) || q.bench.includes(victim));
   const playedBefore = JSON.stringify(engine.getGame(1));
   st.players = st.players.filter(p=>p.id!==victim);
@@ -2018,7 +2041,7 @@ test("PURGE-1: removing a person clears them from unplayed games only (played ga
   assert.strictEqual(JSON.stringify(engine.getGame(1)), playedBefore, "played game untouched");
   assert.strictEqual(inGame(g2), false, "gone from the unplayed schedule");
   assert.ok(!g2.squadIds.includes(victim));
-  assert.strictEqual(g2.lockedSlots["0-GS"], undefined);
+  assert.strictEqual(g2.lockedSlots[0].GS, undefined);
   assert.strictEqual(g2.rosterOffLockIds, null, "a lock naming only them reverts to auto, not []");
 });
 
@@ -2102,7 +2125,7 @@ test("HEADLINES-1: the Settings tab's at-a-glance numbers are empty before gener
   st.fillIns.push({id:"fi1", name:"Guest", prefs:["GS"], saved:true});
   engine.getGame(1).fillInIds = ["fi1"];
   engine.getGame(2).fillInIds = ["fi1"];
-  engine.getGame(1).lockedSlots = {"0-GK":"fi1"};
+  engine.getGame(1).lockedSlots = [{GK:"fi1"},{},{},{}];
   engine.runGeneration();
   const h = engine.computeSeasonHeadlines();
   assert.ok(engine.computeOffPrefLog().length > 0, "sanity: the fill-in did play off-preference quarters");
@@ -2147,8 +2170,9 @@ test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates 
   assert.deepStrictEqual([...engine.gameNums()], [1,2,3,4,5,6,7,8,9,10,11]);
   engine.gameNums().forEach(n=>{
     const g = engine.getGame(n), plan = src.plan.games[n], res = src.results.games[n];
-    ["date","time","location","fillInIds","lockedSlots","rosterOffLockIds","allowOffPreference"].forEach(k=>
+    ["date","time","location","fillInIds","rosterOffLockIds","allowOffPreference"].forEach(k=>
       assert.deepStrictEqual(plain(g[k]), plan[k], `game ${n} ${k}`));
+    assert.deepStrictEqual(plain(g.lockedSlots), plain(engine.migrateLegacyLocks(plan.lockedSlots)), `game ${n} lockedSlots`);
     // Import keeps only the `true` off-preference flags; a locked game exports explicit `false`s too.
     const expected = res.schedule.quarters.map(q=>({onCourt:q.onCourt, bench:q.bench,
       offPreference:Object.fromEntries(Object.entries(q.offPreference).filter(([,v])=>v===true))}));
@@ -2156,17 +2180,16 @@ test("BACKUP-V1-2: a real version-1 season export imports whole and regenerates 
   });
 
   const locked4 = plain(engine.getGame(4).lockedSlots);
-  assert.strictEqual(Object.keys(locked4).length, 28, "sanity: game 4 is fully locked in the fixture");
+  assert.strictEqual(locked4.reduce((n,l)=>n+Object.keys(l).length, 0), 28, "sanity: game 4 is fully locked in the fixture");
   engine.runGeneration();
   engine.gameNums().forEach(n=>{
     const g = engine.getGame(n);
     assert.strictEqual(g.error, null, `game ${n} should regenerate without error`);
     assert.strictEqual(g.schedule.quarters.length, 4);
   });
-  Object.keys(locked4).forEach(k=>{
-    const [q, pos] = k.split("-");
-    assert.strictEqual(engine.getGame(4).schedule.quarters[q].onCourt[pos], locked4[k], `locked slot ${k} must survive regeneration`);
-  });
+  locked4.forEach((locks, q)=>Object.keys(locks).forEach(pos=>{
+    assert.strictEqual(engine.getGame(4).schedule.quarters[q].onCourt[pos], locks[pos], `locked slot Q${q+1} ${pos} must survive regeneration`);
+  }));
   assert.deepStrictEqual([...engine.getGame(7).fillInIds], ["fi_bga58q12hq1"]);
 });
 
@@ -2404,7 +2427,7 @@ test("CQ-11: centreQuarters survives a backup round trip; missing means 4; junk 
 
 test("CQ-12: a coach locking Centre for one player in Q1 and Q2 still generates, with the locks kept", ()=>{
   const r = centreSeason(CQ_TWO_CENTRES, {centre:1, bench:1, games:2, setup:(engine, made)=>{
-    const g = engine.getGame(1); g.lockedSlots = {"0-C":made[6].id, "1-C":made[6].id};
+    const g = engine.getGame(1); g.lockedSlots = [{C:made[6].id}, {C:made[6].id}, {}, {}];
   }});
   assert.strictEqual(r.perGame[0].error, null);
   assert.strictEqual(r.perGame[0].quarters[0].centre, "C1"); assert.strictEqual(r.perGame[0].quarters[1].centre, "C1");

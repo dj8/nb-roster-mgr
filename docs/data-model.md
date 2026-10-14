@@ -58,7 +58,7 @@ erDiagram
         string_array unavailableIds FK "-> PLAYER.id, computed from PLAYER.unavailable"
         string_array squadIds FK "-> PLAYER.id | FILLIN.id, this game's on-court+bench pool"
         string_array fillInIds FK "-> FILLIN.id, assigned to this game"
-        object lockedSlots "'qi-pos' -> playerId|fillInId, manual per-slot lock"
+        object_array lockedSlots "4 entries, one per quarter: {pos: playerId|fillInId}, manual per-slot lock"
         string date "optional YYYY-MM-DD label; never read by generation"
         string time "optional HH:MM (24h) label"
         string location "optional free-text label, max 80 chars"

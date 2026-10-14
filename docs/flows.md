@@ -107,33 +107,33 @@ sequenceDiagram
     Coach->>Edit: pick a player + Save
 
     alt picked the same player (lock toggle only)
-        Edit->>Commit: commitSlotEdit(qDraft, lockedSlotsDraft)
+        Edit->>Commit: commitSlotEdit(qDraft, locksDraft)
     else picked "— unassigned —"
         Edit->>Edit: old occupant (if any) moves to qDraft.bench
-        Edit->>Commit: commitSlotEdit(qDraft, lockedSlotsDraft)
+        Edit->>Commit: commitSlotEdit(qDraft, locksDraft)
     else picked a bench player
         Edit->>Edit: straight swap — bench player onto court, old occupant to bench
-        Edit->>Commit: commitSlotEdit(qDraft, lockedSlotsDraft)
+        Edit->>Commit: commitSlotEdit(qDraft, locksDraft)
     else picked a player already on-court at a DIFFERENT position this quarter
         Edit->>Edit: qDraft.onCourt[pos] = chosen — find otherPos (their old slot), qDraft.onCourt[otherPos] = null
         Edit->>Edit: clearStaleLock(otherPos) if it was locked to the now-moved player
-        Edit->>Vacancy: openFillVacancyDialog(num, qi, otherPos, displacedPlayer, qDraft, lockedSlotsDraft)
+        Edit->>Vacancy: openFillVacancyDialog(num, qi, otherPos, displacedPlayer, qDraft, locksDraft)
         Vacancy->>Vacancy: offer the displaced player (default) or any bench player to fill otherPos
         Coach->>Vacancy: pick + Save (or Cancel)
         alt Save
             Vacancy->>Vacancy: chosen player fills otherPos — anyone left over goes to qDraft.bench
-            Vacancy->>Commit: commitSlotEdit(qDraft, lockedSlotsDraft)
+            Vacancy->>Commit: commitSlotEdit(qDraft, locksDraft)
         else Cancel / dismiss
-            Vacancy--xState: nothing written — qDraft/lockedSlotsDraft are discarded with the modal
+            Vacancy--xState: nothing written — qDraft/locksDraft are discarded with the modal
         end
     end
 
-    Commit->>State: game.schedule.quarters[qi] = qDraft, game.lockedSlots = lockedSlotsDraft
+    Commit->>State: game.schedule.quarters[qi] = qDraft, game.lockedSlots[qi] = locksDraft
     Commit->>State: saveState() — reopen this game's card, re-render
 ```
 
 **Why the draft/commit split matters:** every branch above builds `qDraft` and
-`lockedSlotsDraft` as copies and only `commitSlotEdit` ever writes to live `STATE`. A
+`locksDraft` (that quarter's `{pos: id}` locks) as copies and only `commitSlotEdit` ever writes to live `STATE`. A
 Cancel, a backdrop click, or Escape at *any* point — including abandoning the follow-up
 vacancy dialog — leaves the schedule byte-for-byte unchanged, because nothing was mutated
 in place to begin with. (This replaced an earlier version that mutated `STATE` directly
