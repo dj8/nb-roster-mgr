@@ -17,7 +17,7 @@ const PHASE1_TIME_BUDGET_MS = 3000;
 const PHASE1_MAX_PASSES = 50;
 const COVERAGE_GAP_ZERO_PENALTY = 100;  // zero players left covering the position
 const COVERAGE_GAP_ONE_PENALTY = 30;    // exactly one player left covering it
-const FORCED_ON_COURT_PENALTY = 10;     // per squad member who can't be benched without leaving a position uncovered in-preference (tie-break only, see below)
+const FORCED_ON_COURT_PENALTY = 0.02;   // per squad member who can't be benched without leaving a position uncovered in-preference. A tie-break below per-position coverage too: a whole season's worth (12 players x 60 games) stays under the smallest coverage step (30)
 const ROSTER_OFF_TIEBREAK_WEIGHT = 1e-6; // small enough that a whole season of penalties can't outweigh the smallest gain in missed-games evenness
 const MISSED_GAMES_WARNING_SPREAD = 2;  // Reports-tab warning threshold (max-min missed games)
 const PHASE2B_TIME_BUDGET_MS = 500;
@@ -218,35 +218,33 @@ function solveSeasonRosterOff(input){
   /* One roster-off outcome's coverage cost. Bench flexibility is a tie-break
      at every priority: it never costs missed-games evenness or per-position
      coverage, it only picks between splits that are level on both. */
-  function coverageTermOf(g, squadAfter){
-    return effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter)
-      + ROSTER_OFF_TIEBREAK_WEIGHT*FORCED_ON_COURT_PENALTY*forcedOnCourtCount(squadAfter);
-  }
-  // Each game's available players (invariant for the whole solve) and its
-  // memoised coverage term per roster-off choice.
   const COVERAGE_CACHE_MAX_PER_GAME = 5000; // bounds memory on a long solve; a cleared entry is just recomputed
-  const poolByNum = {}, coverageTermCache = {};
-  games.forEach(g=>{
-    poolByNum[g.num] = g.availableIds.map(id=>playerById[id]).filter(Boolean);
-    coverageTermCache[g.num] = new Map();
-  });
+  const coverageTermCache = {};
+  function coverageTermOf(g, squadAfter){
+    // Restarts and moves re-score the same squads constantly; pool order makes the ids a canonical key.
+    const cache = coverageTermCache[g.num] || (coverageTermCache[g.num] = new Map());
+    const key = squadAfter.map(p=>p.id).join(",");
+    let term = cache.get(key);
+    if(term===undefined){
+      term = effectiveCoverageWeight(g)*gameCoveragePenalty(squadAfter)
+        + ROSTER_OFF_TIEBREAK_WEIGHT*FORCED_ON_COURT_PENALTY*forcedOnCourtCount(squadAfter);
+      if(cache.size>=COVERAGE_CACHE_MAX_PER_GAME) cache.clear();
+      cache.set(key, term);
+    }
+    return term;
+  }
+  // Each game's available players (invariant for the whole solve).
+  const poolByNum = {};
+  games.forEach(g=>{ poolByNum[g.num] = g.availableIds.map(id=>playerById[id]).filter(Boolean); });
   function totalObjectiveOf(current){
     const missed = totalMissedMapOf(current);
     const fairnessTerm = fairnessWeight*variance(Object.values(missed));
     let coverageTerm = 0;
     games.forEach(g=>{
       const offIds = g.fixedOffIds!=null ? g.fixedOffIds : (current[g.num]||[]);
-      // A move touches one or two games; the rest hit the cache. Summed in
-      // the same game order, so the float total is unchanged.
-      const key = JSON.stringify(offIds);
-      let term = coverageTermCache[g.num].get(key);
-      if(term===undefined){
-        const offSet = new Set(offIds);
-        term = coverageTermOf(g, poolByNum[g.num].filter(p=>!offSet.has(p.id)));
-        if(coverageTermCache[g.num].size>=COVERAGE_CACHE_MAX_PER_GAME) coverageTermCache[g.num].clear();
-        coverageTermCache[g.num].set(key, term);
-      }
-      coverageTerm += term;
+      // A move touches one or two games; the rest hit coverageTermOf's cache.
+      const offSet = new Set(offIds);
+      coverageTerm += coverageTermOf(g, poolByNum[g.num].filter(p=>!offSet.has(p.id)));
     });
     return fairnessTerm + coverageTerm;
   }
@@ -705,8 +703,9 @@ function refineGameQuarters(input){
   const qs = input.quarters.map(toAssign);
   const nQ = qs.length;
 
+  const isBenchKey = k=>k.charAt(0)==="B";
   function isLocked(qi,key){
-    if(key.charAt(0)==="B") return false;
+    if(isBenchKey(key)) return false;
     const locks = lockedSlotsPerQuarter[qi]||{};
     return !!locks[key];
   }
@@ -725,7 +724,7 @@ function refineGameQuarters(input){
       const bench = [];
       Object.keys(qs[qi]).forEach(key=>{
         const pid = qs[qi][key]; if(!pid) return;
-        const isBench = key.charAt(0)==="B";
+        const isBench = isBenchKey(key);
         if(isBench) bench.push(pid);
         const p = playerById[pid]; if(!p) return;
         total += isBench ? benchCellCost(p) : positionCellCost(p,key);
@@ -742,7 +741,7 @@ function refineGameQuarters(input){
   function trade(qi,keyA,keyB){
     const tmp = qs[qi][keyA]; qs[qi][keyA] = qs[qi][keyB]; qs[qi][keyB] = tmp;
   }
-  const isBenchKey = k=>k.charAt(0)==="B";
+  const bothBench = (a,b)=>isBenchKey(a) && isBenchKey(b); // trading two bench seats changes nothing
   const freeKeys = qi=>Object.keys(qs[qi]).filter(k=>!isLocked(qi,k));
   const keyOf = (qi,pid)=>Object.keys(qs[qi]).find(k=>qs[qi][k]===pid);
 
@@ -765,7 +764,7 @@ function refineGameQuarters(input){
       const keys = freeKeys(qi);
       for(let a=0; a<keys.length; a++){
         for(let b=a+1; b<keys.length; b++){
-          if(isBenchKey(keys[a]) && isBenchKey(keys[b])) continue; // bench order means nothing
+          if(bothBench(keys[a],keys[b])) continue;
           trade(qi,keys[a],keys[b]);
           if(!keep()) trade(qi,keys[a],keys[b]);
         }
@@ -782,8 +781,7 @@ function refineGameQuarters(input){
           for(let b=a+1; b<keysI.length; b++){
             const keyAj = keyOf(qj, qs[qi][keysI[a]]), keyBj = keyOf(qj, qs[qi][keysI[b]]);
             if(!keyAj || !keyBj || isLocked(qj,keyAj) || isLocked(qj,keyBj)) continue;
-            if(isBenchKey(keysI[a])===isBenchKey(keysI[b]) && isBenchKey(keyAj)===isBenchKey(keyBj)
-              && isBenchKey(keysI[a])) continue; // both on the bench in both quarters
+            if(bothBench(keysI[a],keysI[b]) || bothBench(keyAj,keyBj)) continue; // one half is a no-op: that's just Move 1
             trade(qi,keysI[a],keysI[b]); trade(qj,keyAj,keyBj);
             if(!keep()){ trade(qi,keysI[a],keysI[b]); trade(qj,keyAj,keyBj); }
           }
@@ -796,7 +794,7 @@ function refineGameQuarters(input){
     const onCourt = {}; const bench = []; const offPreference = {};
     Object.keys(assign).forEach(key=>{
       const pid = assign[key];
-      if(key.charAt(0)==="B") bench.push(pid);
+      if(isBenchKey(key)) bench.push(pid);
       else {
         onCourt[key]=pid;
         const p = playerById[pid];
